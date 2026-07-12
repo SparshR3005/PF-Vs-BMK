@@ -13,7 +13,7 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     line-height:1.5;padding:24px;}
-  .wrap{max-width:900px;margin:0 auto;}
+  .wrap{max-width:960px;margin:0 auto;}
   h1{font-size:22px;margin:0 0 4px;}
   .sub{color:var(--muted);font-size:14px;margin:0 0 20px;}
   .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
@@ -51,12 +51,16 @@
   .loadbar{font-size:13px;color:var(--accent2);margin-bottom:12px;min-height:18px;}
   .fund-name{font-weight:600;}
   .fund-meta{color:var(--muted);font-size:11px;margin-top:2px;}
+  .bmk-line{font-size:11px;margin-top:4px;color:var(--accent2);}
+  .bmk-line .approx{color:var(--muted);}
+  .sub2{color:var(--muted);font-size:11px;margin-top:1px;}
+  .verdict{font-size:11px;margin-top:4px;font-weight:600;}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>SIP Performance — Fund XIRR</h1>
-  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return. Benchmark comparison comes later.</p>
+  <h1>SIP Performance — Fund vs Benchmark XIRR</h1>
+  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return next to the matching index fund's return over the same period.</p>
 
   <div class="card">
     <div class="loadbar" id="loadbar">Loading scheme list…</div>
@@ -105,12 +109,13 @@
 const API = "https://api.mfapi.in";
 let selectedScheme = null;   // {schemeCode, schemeName}
 let searchTimer = null;
-let navCache = {};           // schemeCode -> parsed nav array
+let detailCache = {};        // schemeCode -> {navArr, category, name}
 const schemes = [];          // added schemes with computed metrics
 
 // full scheme list, split by plan, each entry: {schemeCode, schemeName, lower}
 let listDirect = [];
 let listRegular = [];
+let allSchemes = [];         // raw full list {schemeCode, schemeName} — used for benchmark lookup
 let listReady = false;
 
 const $ = id => document.getElementById(id);
@@ -119,11 +124,193 @@ function getPlan(){
   return document.querySelector('input[name=plan]:checked').value;
 }
 
+/* ============================================================
+   BENCHMARK CONFIG  (edit here if a mapping ever needs changing)
+   ------------------------------------------------------------
+   Resolution order for a fund:
+     1. Flexi-cap name override
+     2. Sector/thematic keyword (only if category is Sectoral/Thematic)
+     3. Category default table
+     4. Fallback: NIFTY500
+   Each benchmark key then resolves to a real Direct-Growth index fund
+   found in the live mfapi list (see BENCH_FUNDS patterns below).
+   ============================================================ */
+
+// 1. Flexi-cap per-scheme overrides. Matched on the normalised scheme name.
+//    (BSE 500 is proxied by Nifty 500 — they track near-identically.)
+const FLEXI_OVERRIDES = [
+  { name: "parag parikh flexi cap", key: "NIFTY500" },
+  { name: "hdfc flexi cap",         key: "NIFTY500" },
+  { name: "kotak flexi cap",        key: "NIFTY500" },
+  { name: "sbi flexi cap",          key: "NIFTY500" },
+  { name: "icici prudential flexi cap", key: "NIFTY500" },
+  { name: "aditya birla sun life flexi cap", key: "NIFTY500" },
+  { name: "uti flexi cap",          key: "NIFTY500" },
+  { name: "franklin india flexi cap", key: "NIFTY500" },
+  { name: "axis flexi cap",         key: "NIFTY500" },
+  { name: "dsp flexi cap",          key: "NIFTY500" },
+  { name: "canara robeco flexi cap", key: "NIFTY500" },
+  { name: "nippon india flexi cap", key: "NIFTY500" },
+  { name: "bank of india flexi cap", key: "NIFTY500" },
+  { name: "jm flexicap",            key: "NIFTY500" },
+  { name: "quant flexi cap",        key: "NIFTY500" },
+];
+
+// 2. Sector/thematic keyword map. FIRST MATCH WINS — order matters.
+//    "words" are matched as whole words; "subs" as plain substrings.
+const SECTOR_KEYWORDS = [
+  { words: ["bank","banking"], subs: ["financial services"], key: "NIFTY_FINSERV_OR_BANK" },
+  { words: [], subs: ["pharma","healthcare"], key: "NIFTY_PHARMA" },
+  { words: ["it"], subs: ["information technology","technology","digital"], key: "NIFTY_IT" },
+  { words: [], subs: ["fmcg"], key: "NIFTY_FMCG" },
+  { words: [], subs: ["consumption","consumer"], key: "NIFTY_CONSUMPTION" },
+  { words: [], subs: ["infrastructure","infra"], key: "NIFTY_INFRA" },
+  { words: [], subs: ["auto","automobile"], key: "NIFTY_AUTO" },
+  { words: [], subs: ["energy","power"], key: "NIFTY_ENERGY" },
+  { words: ["psu"], subs: ["public sector"], key: "NIFTY_PSE" },
+];
+
+// 3. Category default table. Keyed by substrings found in mfapi's scheme_category.
+const CATEGORY_DEFAULTS = [
+  { match: "large & mid",   key: "NIFTY_LARGEMIDCAP250" },
+  { match: "large and mid", key: "NIFTY_LARGEMIDCAP250" },
+  { match: "large cap",     key: "NIFTY100" },
+  { match: "mid cap",       key: "NIFTY_MIDCAP150" },
+  { match: "midcap",        key: "NIFTY_MIDCAP150" },
+  { match: "small cap",     key: "NIFTY_SMALLCAP250" },
+  { match: "smallcap",      key: "NIFTY_SMALLCAP250" },
+  { match: "multi cap",     key: "NIFTY_MULTICAP" },
+  { match: "multicap",      key: "NIFTY_MULTICAP" },
+  { match: "flexi cap",     key: "NIFTY500" },
+  { match: "flexicap",      key: "NIFTY500" },
+  { match: "focused",       key: "NIFTY500" },
+  { match: "value",         key: "NIFTY500" },
+  { match: "contra",        key: "NIFTY500" },
+  { match: "dividend yield",key: "NIFTY500" },
+  { match: "elss",          key: "NIFTY500" },
+];
+
+const FALLBACK_KEY = "NIFTY500";
+
+// Index-fund resolution patterns. For each benchmark key we search the live
+// scheme list for a Direct-Growth index fund whose compacted name contains all
+// `req` substrings and none of `exc`. `fb` is the fallback key if none found.
+// Matching is done on name with all non-alphanumerics removed & lowercased.
+const BENCH_FUNDS = {
+  NIFTY50:              { label:"Nifty 50 TRI",              req:["nifty50"], exc:["500","100","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY500" },
+  NIFTY100:             { label:"Nifty 100 TRI",             req:["nifty100"], exc:["500","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY50" },
+  NIFTY500:             { label:"Nifty 500 TRI",             req:["nifty500"], exc:["multicap","502525","value","equal","quality","momentum","low","alpha","esg"], fb:null },
+  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 TRI",      req:["midcap150"], exc:["quality","momentum","select","largemidcap"], fb:"NIFTY500" },
+  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 TRI",    req:["smallcap250"], exc:["quality","momentum","largemidcap"], fb:"NIFTY500" },
+  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 TRI", req:["largemidcap250"], exc:[], fb:"NIFTY500" },
+  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 TRI", req:["multicap","502525"], exc:[], fb:"NIFTY500" },
+  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services TRI", req:["financialservices"], exc:["exbank","2530"], fb:"NIFTY_BANK" },
+  NIFTY_BANK:           { label:"Nifty Bank TRI",            req:["niftybank"], exc:["private","psu"], fb:"NIFTY500" },
+  NIFTY_IT:             { label:"Nifty IT TRI",              req:["niftyit"], exc:[], fb:"NIFTY500" },
+  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",          req:["pharma"], exc:[], fb:"NIFTY500" },
+  NIFTY_FMCG:           { label:"Nifty FMCG TRI",            req:["fmcg"], exc:[], fb:"NIFTY_CONSUMPTION" },
+  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption TRI", req:["consumption"], exc:[], fb:"NIFTY500" },
+  NIFTY_INFRA:          { label:"Nifty Infrastructure TRI",  req:["infrastructure"], exc:[], fb:"NIFTY500" },
+  NIFTY_AUTO:           { label:"Nifty Auto TRI",            req:["niftyauto"], exc:[], fb:"NIFTY500" },
+  NIFTY_ENERGY:         { label:"Nifty Energy TRI",          req:["energy"], exc:["renewable"], fb:"NIFTY500" },
+  NIFTY_PSE:            { label:"Nifty PSE TRI",             req:["niftypse"], exc:[], fb:"NIFTY500" },
+};
+
+// ---- name helpers for resolution ----
+function normName(s){ return s.toLowerCase().replace(/\s+/g," ").trim(); }
+function compact(s){ return s.toLowerCase().replace(/[^a-z0-9]/g,""); }
+function hasWord(hay, w){ return new RegExp("(^|[^a-z])"+w+"([^a-z]|$)","i").test(hay); }
+
+// decide which benchmark KEY a fund maps to; returns {key, approx}
+function resolveBenchmarkKey(schemeName, category){
+  const n = normName(schemeName);
+  const cat = (category || "").toLowerCase();
+
+  // 1. flexi overrides
+  for(const o of FLEXI_OVERRIDES){ if(n.includes(o.name)) return { key:o.key, approx:false }; }
+
+  // 2. sector keywords — only when the category says sectoral/thematic
+  const isSectoral = cat.includes("sectoral") || cat.includes("thematic");
+  if(isSectoral){
+    for(const s of SECTOR_KEYWORDS){
+      const wordHit = (s.words||[]).some(w => hasWord(n, w));
+      const subHit  = (s.subs||[]).some(sub => n.includes(sub));
+      if(wordHit || subHit) return { key:s.key, approx:false };
+    }
+    // sectoral but no keyword matched -> broad fallback, flag approximate
+    return { key:FALLBACK_KEY, approx:true };
+  }
+
+  // 3. category defaults
+  for(const c of CATEGORY_DEFAULTS){ if(cat.includes(c.match)) return { key:c.key, approx:false }; }
+
+  // 4. fallback — category is missing or not a clean equity type
+  const cleanEquity = cat.includes("equity");
+  return { key:FALLBACK_KEY, approx:!cleanEquity };
+}
+
+// find a real index fund in the loaded list for a benchmark key; follows fallbacks.
+// returns {code, name, label, approx} or null
+const benchFundCache = {};
+function resolveBenchmarkFund(key, approxIn){
+  let approx = !!approxIn;
+  let guard = 0;
+  while(key && guard++ < 6){
+    if(benchFundCache[key] !== undefined){
+      const cached = benchFundCache[key];
+      if(cached) return { ...cached, approx };
+    } else {
+      const pat = BENCH_FUNDS[key];
+      if(!pat){ benchFundCache[key] = null; }
+      else{
+        const found = pickIndexFund(pat);
+        benchFundCache[key] = found ? { code:found.schemeCode, name:found.schemeName, label:pat.label } : null;
+        if(benchFundCache[key]) return { ...benchFundCache[key], approx };
+      }
+    }
+    // not found -> go to fallback, mark approximate
+    const pat = BENCH_FUNDS[key];
+    key = pat ? pat.fb : null;
+    approx = true;
+  }
+  return null;
+}
+
+// scan allSchemes for the best matching index fund/ETF
+function pickIndexFund(pat){
+  const income = ["idcw","dividend","reinvest","payout","bonus"];
+  let best = null, bestScore = -1;
+  for(const s of allSchemes){
+    const c = compact(s.schemeName);
+    if(!pat.req.every(r => c.includes(r))) continue;
+    if(pat.exc.some(e => c.includes(e))) continue;
+    if(income.some(i => c.includes(i))) continue;
+    const isIndex = c.includes("index");
+    const isETF   = c.includes("etf");
+    if(!isIndex && !isETF) continue;
+    const isDirect = c.includes("direct");
+    const isGrowth = c.includes("growth");
+    // prefer: index + direct + growth  >  index  >  etf ; then oldest (lowest code)
+    let score = 0;
+    if(isIndex) score += 100;
+    if(isDirect) score += 40;
+    if(isGrowth) score += 20;
+    if(isETF && !isIndex) score += 10;
+    // ETFs have no direct/growth; accept them, but index-direct-growth wins
+    if(isIndex && !isGrowth) score -= 60; // avoid index ETF-in-name oddities without growth unless nothing else
+    const codeNum = Number(s.schemeCode) || 999999;
+    const total = score * 1e7 + (9999999 - codeNum); // tie-break: lower code = older = longer history
+    if(total > bestScore){ bestScore = total; best = s; }
+  }
+  return best;
+}
+
 // ---- load + filter full scheme list once ----
 async function loadSchemeList(){
   try{
     const res = await fetch(`${API}/mf`);
     const all = await res.json();
+    allSchemes = all;   // keep the raw list for benchmark lookup (includes index funds & ETFs)
 
     all.forEach(s=>{
       const n = s.schemeName.toLowerCase();
@@ -221,18 +408,22 @@ function updateAddState(){
 }
 ["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
 
-// ---- NAV fetch + parse ----
-async function getNav(code){
-  if(navCache[code]) return navCache[code];
+// ---- scheme detail fetch (NAV + category, one call) ----
+async function getDetail(code){
+  if(detailCache[code]) return detailCache[code];
   const res = await fetch(`${API}/mf/${code}`);
   const json = await res.json();
-  // data is newest-first; convert to {date:Date, nav:Number} sorted ascending
-  const arr = json.data.map(d=>{
+  const arr = (json.data||[]).map(d=>{
     const p = d.date.split("-"); // dd-mm-yyyy
     return { date: new Date(+p[2], +p[1]-1, +p[0]), nav: parseFloat(d.nav) };
   }).filter(x=>!isNaN(x.nav)).sort((a,b)=>a.date-b.date);
-  navCache[code] = arr;
-  return arr;
+  const detail = {
+    navArr: arr,
+    category: (json.meta && json.meta.scheme_category) || "",
+    name: (json.meta && json.meta.scheme_name) || ""
+  };
+  detailCache[code] = detail;
+  return detail;
 }
 
 // nearest NAV on or before a given date
@@ -256,6 +447,8 @@ function addMonths(d,n){
 }
 function daysBetween(a,b){ return (b.getTime()-a.getTime())/86400000; }
 function parseInput(v){ const p=v.split("-"); return new Date(+p[0],+p[1]-1,+p[2]); }
+function maxDate(a,b){ return a.getTime()>=b.getTime()?a:b; }
+function minDate(a,b){ return a.getTime()<=b.getTime()?a:b; }
 
 // ---- XIRR ----
 function xirr(flows){
@@ -280,49 +473,84 @@ function xirr(flows){
   return (lo+hi)/2;
 }
 
+// run a SIP over a fixed set of installment dates against one NAV series
+function runSIP(navArr, dates, amount, valueDate){
+  let units=0, invested=0;
+  const flows=[];
+  for(const d of dates){
+    const n = navOnOrBefore(navArr, d);
+    if(n && n.nav>0){
+      units += amount / n.nav;
+      invested += amount;
+      flows.push({date:new Date(d.getTime()), amount:-amount});
+    }
+  }
+  if(flows.length===0) return null;
+  const vn = navOnOrBefore(navArr, valueDate);
+  const currentValue = units * (vn ? vn.nav : 0);
+  flows.push({date:new Date(valueDate.getTime()), amount:currentValue});
+  return { invested, currentValue, units, xirr: xirr(flows) };
+}
+
 // ---- add scheme ----
 $("addBtn").addEventListener("click", async ()=>{
   if(!selectedScheme) return;
   $("addBtn").disabled = true;
   $("status").textContent = "Fetching NAV history…";
   try{
-    const navArr = await getNav(selectedScheme.schemeCode);
-    if(!navArr.length){ $("status").textContent="No NAV data for this scheme."; return; }
+    const detail = await getDetail(selectedScheme.schemeCode);
+    const fundNav = detail.navArr;
+    if(!fundNav.length){ $("status").textContent="No NAV data for this scheme."; return; }
 
     const start = parseInput($("startDate").value);
     const endVal = $("endDate").value ? parseInput($("endDate").value) : null;
-    const latest = navArr[navArr.length-1];
-    const today = latest.date; // value everything at latest available NAV date
-    const end = endVal && endVal < today ? endVal : today;
     const amount = Number($("amount").value);
 
-    // build SIP flows: buy units at NAV on/after each SIP date
-    let d = new Date(start.getTime());
-    let units = 0, invested = 0;
-    const flows = [];
-    while(d.getTime() <= end.getTime()){
-      const n = navOnOrBefore(navArr, d) || navArr.find(x=>x.date>=d);
-      if(n && n.nav>0){
-        units += amount / n.nav;
-        invested += amount;
-        flows.push({date:new Date(d.getTime()), amount:-amount});
-      }
-      d = addMonths(d,1);
-    }
-    if(flows.length===0){ $("status").textContent="Start date is before this fund's NAV history. Pick a later date."; return; }
+    // resolve the benchmark index fund
+    $("status").textContent = "Matching benchmark…";
+    const bk = resolveBenchmarkKey(selectedScheme.schemeName, detail.category);
+    const benchFund = resolveBenchmarkFund(bk.key, bk.approx);
 
-    const currentValue = units * latest.nav;
-    flows.push({date:new Date(today.getTime()), amount:currentValue});
-    const rate = xirr(flows);
+    let benchNav = null, benchInfo = null;
+    if(benchFund){
+      try{
+        const bd = await getDetail(benchFund.code);
+        if(bd.navArr.length){ benchNav = bd.navArr; benchInfo = benchFund; }
+      }catch(e){ /* benchmark fetch failed — fall through to fund-only */ }
+    }
+
+    // common valuation date & effective start
+    const fundLast = fundNav[fundNav.length-1].date;
+    const valueDate = benchNav ? minDate(fundLast, benchNav[benchNav.length-1].date) : fundLast;
+    let effStart = maxDate(start, fundNav[0].date);
+    if(benchNav) effStart = maxDate(effStart, benchNav[0].date);
+
+    // installment end = min(user end or valueDate, valueDate)
+    let sipEnd = valueDate;
+    if(endVal && endVal.getTime() < sipEnd.getTime()) sipEnd = endVal;
+
+    // shared installment dates
+    const dates=[];
+    let d = new Date(effStart.getTime());
+    while(d.getTime() <= sipEnd.getTime()){ dates.push(new Date(d.getTime())); d = addMonths(d,1); }
+    if(dates.length===0){ $("status").textContent="Start date is after available data. Pick an earlier date."; updateAddState(); return; }
+
+    const fundRes = runSIP(fundNav, dates, amount, valueDate);
+    if(!fundRes){ $("status").textContent="Couldn't value this SIP. Try a different start date."; updateAddState(); return; }
+
+    let benchRes = null;
+    if(benchNav){ benchRes = runSIP(benchNav, dates, amount, valueDate); }
 
     schemes.push({
       name: selectedScheme.schemeName,
       code: selectedScheme.schemeCode,
       startStr: $("startDate").value,
-      amount, invested, currentValue,
-      gain: currentValue - invested,
-      xirr: rate,
-      navDate: latest.date
+      effStart, valueDate, amount,
+      truncated: effStart.getTime() > start.getTime(),
+      fund: fundRes,
+      bench: benchRes,
+      benchLabel: benchInfo ? benchInfo.label : null,
+      benchApprox: benchInfo ? benchInfo.approx : false,
     });
 
     // reset inputs (keep plan)
@@ -340,6 +568,7 @@ $("addBtn").addEventListener("click", async ()=>{
 // ---- render table ----
 function inr(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
 function pct(n){ return n==null?"N/A":(n*100).toFixed(2)+"%"; }
+function pp(n){ return (n>=0?"+":"")+(n*100).toFixed(2)+" pp"; }
 function fmtDate(d){ return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); }
 
 function render(){
@@ -347,21 +576,58 @@ function render(){
   if(schemes.length===0){ wrap.innerHTML='<div class="empty">No schemes added yet.</div>'; return; }
   let rows="";
   schemes.forEach((s,i)=>{
-    const cls = s.xirr==null?"":(s.xirr>=0?"pos":"neg");
+    const f = s.fund, b = s.bench;
+    const fx = f.xirr;
+
+    // benchmark line under the name
+    let bmkLine = '<div class="bmk-line">Benchmark: unavailable</div>';
+    if(s.benchLabel && b){
+      const approx = s.benchApprox ? ' <span class="approx">(≈ approximate)</span>' : '';
+      let note = '';
+      if(s.truncated) note = ' <span class="approx">· from '+fmtDate(s.effStart)+' (benchmark history)</span>';
+      bmkLine = '<div class="bmk-line">vs '+s.benchLabel+approx+note+'</div>';
+    } else if(s.benchLabel && !b){
+      bmkLine = '<div class="bmk-line">vs '+s.benchLabel+' <span class="approx">(no data)</span></div>';
+    }
+
+    // verdict
+    let verdict = '';
+    if(b && b.xirr!=null && fx!=null){
+      const alpha = fx - b.xirr;
+      const cls = alpha>=0 ? 'pos' : 'neg';
+      const word = alpha>=0 ? 'Beating' : 'Lagging';
+      verdict = '<div class="verdict '+cls+'">'+word+' the benchmark by '+Math.abs(alpha*100).toFixed(2)+' pp p.a.</div>';
+    }
+
+    // current column: fund + (bench muted)
+    const curCell = inr(f.currentValue) + (b ? '<div class="sub2">'+inr(b.currentValue)+'</div>' : '');
+    // xirr column: fund + (bench muted)
+    const xCell = '<span class="'+(fx>=0?'pos':'neg')+'" style="font-weight:600;">'+pct(fx)+'</span>'
+                + (b ? '<div class="sub2">'+pct(b.xirr)+'</div>' : '');
+    // alpha column
+    let alphaCell = '—';
+    if(b && b.xirr!=null && fx!=null){
+      const alpha = fx - b.xirr;
+      alphaCell = '<span class="'+(alpha>=0?'pos':'neg')+'" style="font-weight:600;">'+pp(alpha)+'</span>';
+    }
+
     rows += `<tr>
       <td><div class="fund-name">${s.name}</div>
-          <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.navDate)}</div></td>
-      <td class="num">${inr(s.invested)}</td>
-      <td class="num">${inr(s.currentValue)}</td>
-      <td class="num ${s.gain>=0?'pos':'neg'}">${inr(s.gain)}</td>
-      <td class="num ${cls}" style="font-weight:600;">${pct(s.xirr)}</td>
+          <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.valueDate)}</div>
+          ${bmkLine}${verdict}</td>
+      <td class="num">${inr(f.invested)}</td>
+      <td class="num">${curCell}</td>
+      <td class="num">${xCell}</td>
+      <td class="num">${alphaCell}</td>
       <td class="num"><button class="btn small" data-i="${i}">Remove</button></td>
     </tr>`;
   });
   wrap.innerHTML = `<table><thead><tr>
-    <th>Scheme</th><th style="text-align:right;">Invested</th>
-    <th style="text-align:right;">Current</th><th style="text-align:right;">Gain</th>
-    <th style="text-align:right;">XIRR</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    <th>Scheme <span style="font-weight:400;text-transform:none;">(fund / benchmark)</span></th>
+    <th style="text-align:right;">Invested</th>
+    <th style="text-align:right;">Current</th>
+    <th style="text-align:right;">XIRR</th>
+    <th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>{
     b.onclick=()=>{ schemes.splice(+b.dataset.i,1); render(); };
   });
