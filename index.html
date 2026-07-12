@@ -8,12 +8,14 @@
   :root{
     --bg:#0f1720; --card:#17212b; --line:#2a3a49; --text:#e6edf3;
     --muted:#9fb0c0; --accent:#2f9e6f; --accent2:#c9a227; --danger:#c85a54;
+    /* performance colour scale */
+    --darkgreen:#1e7d46; --green:#3ec27a; --red:#e07a72; --darkred:#b23b34;
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     line-height:1.5;padding:24px;}
-  .wrap{max-width:960px;margin:0 auto;}
+  .wrap{max-width:1040px;margin:0 auto;}
   h1{font-size:22px;margin:0 0 4px;}
   .sub{color:var(--muted);font-size:14px;margin:0 0 20px;}
   .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
@@ -37,8 +39,10 @@
   .btn{padding:10px 18px;border:none;border-radius:6px;background:var(--accent);
     color:#fff;font-size:14px;font-weight:600;cursor:pointer;}
   .btn:disabled{opacity:.5;cursor:not-allowed;}
+  .btn.ghost{background:transparent;border:1px solid var(--accent);color:var(--accent);}
   .btn.small{padding:5px 10px;font-size:12px;background:transparent;
     border:1px solid var(--danger);color:var(--danger);font-weight:400;}
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
   .selected{font-size:14px;color:var(--accent);margin:8px 0 0;min-height:20px;}
   table{width:100%;border-collapse:collapse;font-size:13px;}
   th{text-align:left;padding:8px;border-bottom:2px solid var(--line);
@@ -48,13 +52,26 @@
   .pos{color:var(--accent);} .neg{color:var(--danger);}
   .empty{color:var(--muted);text-align:center;padding:24px;}
   .status{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px;}
-  .loadbar{font-size:13px;color:var(--accent2);margin-bottom:12px;min-height:18px;}
+  .loadbar{font-size:13px;color:var(--accent2);margin-bottom:12px;min-height:18px;display:flex;align-items:center;gap:8px;}
+  .spinner{width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--accent2);border-radius:50%;display:inline-block;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
   .fund-name{font-weight:600;}
   .fund-meta{color:var(--muted);font-size:11px;margin-top:2px;}
   .bmk-line{font-size:11px;margin-top:4px;color:var(--accent2);}
   .bmk-line .approx{color:var(--muted);}
   .sub2{color:var(--muted);font-size:11px;margin-top:1px;}
   .verdict{font-size:11px;margin-top:4px;font-weight:600;}
+  /* performance chips */
+  .chip{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;color:#fff;}
+  .c-darkgreen{background:var(--darkgreen);} .c-green{background:var(--green);color:#062a15;}
+  .c-red{background:var(--red);color:#2a0806;} .c-darkred{background:var(--darkred);}
+  .c-flat{background:#4b5b6a;}
+  tr.portfolio td{border-top:2px solid var(--line);border-bottom:none;font-weight:600;background:#101923;}
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:6px;}
+  .stat{background:#101923;border:1px solid var(--line);border-radius:6px;padding:10px 12px;}
+  .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
+  .stat .v{font-size:18px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;}
+  .foot{color:var(--muted);font-size:11px;margin-top:12px;}
 </style>
 </head>
 <body>
@@ -63,7 +80,7 @@
   <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return next to the matching index fund's return over the same period.</p>
 
   <div class="card">
-    <div class="loadbar" id="loadbar">Loading scheme list…</div>
+    <div class="loadbar" id="loadbar"><span class="spinner"></span> Loading…</div>
 
     <div class="plan-toggle">
       <span style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);">Plan:</span>
@@ -97,12 +114,25 @@
     <div class="status" id="status"></div>
   </div>
 
+  <div class="card" id="summaryCard" style="display:none;">
+    <div class="summary-grid" id="summaryGrid"></div>
+  </div>
+
   <div class="card">
+    <div class="toolbar" id="toolbar" style="display:none;">
+      <button class="btn ghost" id="exportBtn">⤓ Export to Excel</button>
+      <button class="btn small" id="clearBtn" style="border-color:var(--muted);color:var(--muted);">Clear all</button>
+      <span class="status" id="exportStatus" style="margin:0;"></span>
+    </div>
     <div id="tableWrap">
       <div class="empty">No schemes added yet.</div>
     </div>
+    <div class="foot" id="foot" style="display:none;"></div>
   </div>
 </div>
+
+<!-- SheetJS for client-side Excel export with cell styling (community build with styles) -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 
 <script>
 "use strict";
@@ -112,32 +142,17 @@ let searchTimer = null;
 let detailCache = {};        // schemeCode -> {navArr, category, name}
 const schemes = [];          // added schemes with computed metrics
 
-// full scheme list, split by plan, each entry: {schemeCode, schemeName, lower}
 let listDirect = [];
 let listRegular = [];
-let allSchemes = [];         // raw full list {schemeCode, schemeName} — used for benchmark lookup
+let allSchemes = [];         // raw full list {schemeCode, schemeName}
 let listReady = false;
 
 const $ = id => document.getElementById(id);
-
-function getPlan(){
-  return document.querySelector('input[name=plan]:checked').value;
-}
+function getPlan(){ return document.querySelector('input[name=plan]:checked').value; }
 
 /* ============================================================
-   BENCHMARK CONFIG  (edit here if a mapping ever needs changing)
-   ------------------------------------------------------------
-   Resolution order for a fund:
-     1. Flexi-cap name override
-     2. Sector/thematic keyword (only if category is Sectoral/Thematic)
-     3. Category default table
-     4. Fallback: NIFTY500
-   Each benchmark key then resolves to a real Direct-Growth index fund
-   found in the live mfapi list (see BENCH_FUNDS patterns below).
+   BENCHMARK CONFIG (unchanged mapping logic)
    ============================================================ */
-
-// 1. Flexi-cap per-scheme overrides. Matched on the normalised scheme name.
-//    (BSE 500 is proxied by Nifty 500 — they track near-identically.)
 const FLEXI_OVERRIDES = [
   { name: "parag parikh flexi cap", key: "NIFTY500" },
   { name: "hdfc flexi cap",         key: "NIFTY500" },
@@ -155,9 +170,6 @@ const FLEXI_OVERRIDES = [
   { name: "jm flexicap",            key: "NIFTY500" },
   { name: "quant flexi cap",        key: "NIFTY500" },
 ];
-
-// 2. Sector/thematic keyword map. FIRST MATCH WINS — order matters.
-//    "words" are matched as whole words; "subs" as plain substrings.
 const SECTOR_KEYWORDS = [
   { words: ["bank","banking"], subs: ["financial services"], key: "NIFTY_FINSERV_OR_BANK" },
   { words: [], subs: ["pharma","healthcare"], key: "NIFTY_PHARMA" },
@@ -169,8 +181,6 @@ const SECTOR_KEYWORDS = [
   { words: [], subs: ["energy","power"], key: "NIFTY_ENERGY" },
   { words: ["psu"], subs: ["public sector"], key: "NIFTY_PSE" },
 ];
-
-// 3. Category default table. Keyed by substrings found in mfapi's scheme_category.
 const CATEGORY_DEFAULTS = [
   { match: "large & mid",   key: "NIFTY_LARGEMIDCAP250" },
   { match: "large and mid", key: "NIFTY_LARGEMIDCAP250" },
@@ -189,47 +199,35 @@ const CATEGORY_DEFAULTS = [
   { match: "dividend yield",key: "NIFTY500" },
   { match: "elss",          key: "NIFTY500" },
 ];
-
 const FALLBACK_KEY = "NIFTY500";
-
-// Index-fund resolution patterns. For each benchmark key we search the live
-// scheme list for a Direct-Growth index fund whose compacted name contains all
-// `req` substrings and none of `exc`. `fb` is the fallback key if none found.
-// Matching is done on name with all non-alphanumerics removed & lowercased.
 const BENCH_FUNDS = {
-  NIFTY50:              { label:"Nifty 50 TRI",              req:["nifty50"], exc:["500","100","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY500" },
-  NIFTY100:             { label:"Nifty 100 TRI",             req:["nifty100"], exc:["500","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY50" },
-  NIFTY500:             { label:"Nifty 500 TRI",             req:["nifty500"], exc:["multicap","502525","value","equal","quality","momentum","low","alpha","esg"], fb:null },
-  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 TRI",      req:["midcap150"], exc:["quality","momentum","select","largemidcap"], fb:"NIFTY500" },
-  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 TRI",    req:["smallcap250"], exc:["quality","momentum","largemidcap"], fb:"NIFTY500" },
-  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 TRI", req:["largemidcap250"], exc:[], fb:"NIFTY500" },
-  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 TRI", req:["multicap","502525"], exc:[], fb:"NIFTY500" },
-  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services TRI", req:["financialservices"], exc:["exbank","2530"], fb:"NIFTY_BANK" },
-  NIFTY_BANK:           { label:"Nifty Bank TRI",            req:["niftybank"], exc:["private","psu"], fb:"NIFTY500" },
-  NIFTY_IT:             { label:"Nifty IT TRI",              req:["niftyit"], exc:[], fb:"NIFTY500" },
-  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",          req:["pharma"], exc:[], fb:"NIFTY500" },
-  NIFTY_FMCG:           { label:"Nifty FMCG TRI",            req:["fmcg"], exc:[], fb:"NIFTY_CONSUMPTION" },
-  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption TRI", req:["consumption"], exc:[], fb:"NIFTY500" },
-  NIFTY_INFRA:          { label:"Nifty Infrastructure TRI",  req:["infrastructure"], exc:[], fb:"NIFTY500" },
-  NIFTY_AUTO:           { label:"Nifty Auto TRI",            req:["niftyauto"], exc:[], fb:"NIFTY500" },
-  NIFTY_ENERGY:         { label:"Nifty Energy TRI",          req:["energy"], exc:["renewable"], fb:"NIFTY500" },
-  NIFTY_PSE:            { label:"Nifty PSE TRI",             req:["niftypse"], exc:[], fb:"NIFTY500" },
+  NIFTY50:              { label:"Nifty 50 Index",              req:["nifty50"], exc:["500","100","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY500" },
+  NIFTY100:             { label:"Nifty 100 Index",             req:["nifty100"], exc:["500","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY50" },
+  NIFTY500:             { label:"Nifty 500 Index",             req:["nifty500"], exc:["multicap","502525","value","equal","quality","momentum","low","alpha","esg"], fb:null },
+  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 Index",      req:["midcap150"], exc:["quality","momentum","select","largemidcap"], fb:"NIFTY500" },
+  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 Index",    req:["smallcap250"], exc:["quality","momentum","largemidcap"], fb:"NIFTY500" },
+  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 Index", req:["largemidcap250"], exc:[], fb:"NIFTY500" },
+  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 Index", req:["multicap","502525"], exc:[], fb:"NIFTY500" },
+  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services Index", req:["financialservices"], exc:["exbank","2530"], fb:"NIFTY_BANK" },
+  NIFTY_BANK:           { label:"Nifty Bank Index",            req:["niftybank"], exc:["private","psu"], fb:"NIFTY500" },
+  NIFTY_IT:             { label:"Nifty IT Index",              req:["niftyit"], exc:[], fb:"NIFTY500" },
+  NIFTY_PHARMA:         { label:"Nifty Pharma Index",          req:["pharma"], exc:[], fb:"NIFTY500" },
+  NIFTY_FMCG:           { label:"Nifty FMCG Index",            req:["fmcg"], exc:[], fb:"NIFTY_CONSUMPTION" },
+  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption Index", req:["consumption"], exc:[], fb:"NIFTY500" },
+  NIFTY_INFRA:          { label:"Nifty Infrastructure Index",  req:["infrastructure"], exc:[], fb:"NIFTY500" },
+  NIFTY_AUTO:           { label:"Nifty Auto Index",            req:["niftyauto"], exc:[], fb:"NIFTY500" },
+  NIFTY_ENERGY:         { label:"Nifty Energy Index",          req:["energy"], exc:["renewable"], fb:"NIFTY500" },
+  NIFTY_PSE:            { label:"Nifty PSE Index",             req:["niftypse"], exc:[], fb:"NIFTY500" },
 };
 
-// ---- name helpers for resolution ----
 function normName(s){ return s.toLowerCase().replace(/\s+/g," ").trim(); }
 function compact(s){ return s.toLowerCase().replace(/[^a-z0-9]/g,""); }
 function hasWord(hay, w){ return new RegExp("(^|[^a-z])"+w+"([^a-z]|$)","i").test(hay); }
 
-// decide which benchmark KEY a fund maps to; returns {key, approx}
 function resolveBenchmarkKey(schemeName, category){
   const n = normName(schemeName);
   const cat = (category || "").toLowerCase();
-
-  // 1. flexi overrides
   for(const o of FLEXI_OVERRIDES){ if(n.includes(o.name)) return { key:o.key, approx:false }; }
-
-  // 2. sector keywords — only when the category says sectoral/thematic
   const isSectoral = cat.includes("sectoral") || cat.includes("thematic");
   if(isSectoral){
     for(const s of SECTOR_KEYWORDS){
@@ -237,20 +235,13 @@ function resolveBenchmarkKey(schemeName, category){
       const subHit  = (s.subs||[]).some(sub => n.includes(sub));
       if(wordHit || subHit) return { key:s.key, approx:false };
     }
-    // sectoral but no keyword matched -> broad fallback, flag approximate
     return { key:FALLBACK_KEY, approx:true };
   }
-
-  // 3. category defaults
   for(const c of CATEGORY_DEFAULTS){ if(cat.includes(c.match)) return { key:c.key, approx:false }; }
-
-  // 4. fallback — category is missing or not a clean equity type
   const cleanEquity = cat.includes("equity");
   return { key:FALLBACK_KEY, approx:!cleanEquity };
 }
 
-// find a real index fund in the loaded list for a benchmark key; follows fallbacks.
-// returns {code, name, label, approx} or null
 const benchFundCache = {};
 function resolveBenchmarkFund(key, approxIn){
   let approx = !!approxIn;
@@ -268,7 +259,6 @@ function resolveBenchmarkFund(key, approxIn){
         if(benchFundCache[key]) return { ...benchFundCache[key], approx };
       }
     }
-    // not found -> go to fallback, mark approximate
     const pat = BENCH_FUNDS[key];
     key = pat ? pat.fb : null;
     approx = true;
@@ -276,7 +266,6 @@ function resolveBenchmarkFund(key, approxIn){
   return null;
 }
 
-// scan allSchemes for the best matching index fund/ETF
 function pickIndexFund(pat){
   const income = ["idcw","dividend","reinvest","payout","bonus"];
   let best = null, bestScore = -1;
@@ -290,38 +279,38 @@ function pickIndexFund(pat){
     if(!isIndex && !isETF) continue;
     const isDirect = c.includes("direct");
     const isGrowth = c.includes("growth");
-    // prefer: index + direct + growth  >  index  >  etf ; then oldest (lowest code)
     let score = 0;
     if(isIndex) score += 100;
     if(isDirect) score += 40;
     if(isGrowth) score += 20;
     if(isETF && !isIndex) score += 10;
-    // ETFs have no direct/growth; accept them, but index-direct-growth wins
-    if(isIndex && !isGrowth) score -= 60; // avoid index ETF-in-name oddities without growth unless nothing else
+    if(isIndex && !isGrowth) score -= 60;
     const codeNum = Number(s.schemeCode) || 999999;
-    const total = score * 1e7 + (9999999 - codeNum); // tie-break: lower code = older = longer history
+    const total = score * 1e7 + (9999999 - codeNum);
     if(total > bestScore){ bestScore = total; best = s; }
   }
   return best;
 }
 
-// ---- load + filter full scheme list once ----
+/* ---- load + dedupe scheme list ---- */
 async function loadSchemeList(){
   try{
     const res = await fetch(`${API}/mf`);
     const all = await res.json();
-    allSchemes = all;   // keep the raw list for benchmark lookup (includes index funds & ETFs)
+    allSchemes = all;
+
+    // dedupe holders keyed by normalised scheme name (collapses duplicate codes)
+    const seenDirect = new Set();
+    const seenRegular = new Set();
 
     all.forEach(s=>{
       const n = s.schemeName.toLowerCase();
-
       const isGrowth = n.includes("growth");
       const isIncome = n.includes("idcw") || n.includes("dividend") ||
                        n.includes("payout") || n.includes("reinvest") ||
                        n.includes("bonus");
       if(!isGrowth || isIncome) return;
 
-      // drop obvious non-equity noise to keep the list lean
       const isNonEquity = n.includes("liquid") || n.includes("overnight") ||
                           n.includes("gilt") || n.includes("money market") ||
                           n.includes("ultra short") || n.includes("low duration") ||
@@ -330,25 +319,28 @@ async function loadSchemeList(){
                           n.includes("duration");
       if(isNonEquity) return;
 
+      const key = normName(s.schemeName);        // dedupe key
       const entry = { schemeCode: s.schemeCode, schemeName: s.schemeName, lower: n };
       const hasDirect  = n.includes("direct");
       const hasRegular = n.includes("regular");
-      if(hasDirect) listDirect.push(entry);
-      else if(hasRegular || (!hasDirect && !hasRegular)) listRegular.push(entry);
+
+      if(hasDirect){
+        if(!seenDirect.has(key)){ seenDirect.add(key); listDirect.push(entry); }
+      } else if(hasRegular || (!hasDirect && !hasRegular)){
+        if(!seenRegular.has(key)){ seenRegular.add(key); listRegular.push(entry); }
+      }
     });
 
     listReady = true;
-    $("loadbar").textContent = "Ready — " + listDirect.length + " Direct / " + listRegular.length + " Regular equity Growth schemes loaded.";
-    $("loadbar").style.color = "var(--accent)";
+    $("loadbar").innerHTML = '<span style="color:var(--accent);">✓ Ready</span>';
     $("search").disabled = false;
     $("search").placeholder = "Type AMC or fund name, e.g. HDFC Flexi, ICICI, Parag Parikh";
   }catch(e){
-    $("loadbar").textContent = "Could not load scheme list. Refresh the page to retry.";
-    $("loadbar").style.color = "var(--danger)";
+    $("loadbar").innerHTML = '<span style="color:var(--danger);">Could not load scheme list. Refresh to retry.</span>';
   }
 }
 
-// ---- local search ----
+/* ---- search (dedupe at display too, in case of stray dupes) ---- */
 $("search").addEventListener("input", function(){
   const q = this.value.trim().toLowerCase();
   selectedScheme = null;
@@ -363,18 +355,23 @@ function runSearch(q){
   if(!listReady) return;
   const box = $("results");
   box.style.display = "block";
-
   const list = getPlan() === "Direct" ? listDirect : listRegular;
   const words = q.split(/\s+/).filter(Boolean);
 
-  // every typed word must appear somewhere in the scheme name
-  const matches = list.filter(s => words.every(w => s.lower.includes(w)));
-
-  if(matches.length === 0){
-    box.innerHTML = '<div class="hint">No matches. Try fewer or different words (e.g. just “hdfc” or “flexi cap”).</div>';
-    return;
+  const seen = new Set();
+  const matches = [];
+  for(const s of list){
+    if(!words.every(w => s.lower.includes(w))) continue;
+    const key = normName(s.schemeName);
+    if(seen.has(key)) continue;      // extra safety dedupe
+    seen.add(key);
+    matches.push(s);
   }
 
+  if(matches.length === 0){
+    box.innerHTML = '<div class="hint">No matches. Try fewer or different words (e.g. just "hdfc" or "flexi cap").</div>';
+    return;
+  }
   box.innerHTML = '<div class="hint">'+matches.length+' match(es)'+(matches.length>50?' — showing first 50':'')+':</div>';
   matches.slice(0,50).forEach(s=>{
     const d = document.createElement("div");
@@ -408,13 +405,13 @@ function updateAddState(){
 }
 ["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
 
-// ---- scheme detail fetch (NAV + category, one call) ----
+/* ---- detail fetch ---- */
 async function getDetail(code){
   if(detailCache[code]) return detailCache[code];
   const res = await fetch(`${API}/mf/${code}`);
   const json = await res.json();
   const arr = (json.data||[]).map(d=>{
-    const p = d.date.split("-"); // dd-mm-yyyy
+    const p = d.date.split("-");
     return { date: new Date(+p[2], +p[1]-1, +p[0]), nav: parseFloat(d.nav) };
   }).filter(x=>!isNaN(x.nav)).sort((a,b)=>a.date-b.date);
   const detail = {
@@ -426,7 +423,6 @@ async function getDetail(code){
   return detail;
 }
 
-// nearest NAV on or before a given date
 function navOnOrBefore(navArr, date){
   let lo=0, hi=navArr.length-1, ans=null;
   const t = date.getTime();
@@ -435,10 +431,9 @@ function navOnOrBefore(navArr, date){
     if(navArr[mid].date.getTime() <= t){ ans=navArr[mid]; lo=mid+1; }
     else hi=mid-1;
   }
-  return ans; // {date,nav} or null if before first NAV
+  return ans;
 }
 
-// ---- date helpers ----
 function addMonths(d,n){
   const nd=new Date(d.getTime()); const day=nd.getDate();
   nd.setDate(1); nd.setMonth(nd.getMonth()+n);
@@ -450,7 +445,6 @@ function parseInput(v){ const p=v.split("-"); return new Date(+p[0],+p[1]-1,+p[2
 function maxDate(a,b){ return a.getTime()>=b.getTime()?a:b; }
 function minDate(a,b){ return a.getTime()<=b.getTime()?a:b; }
 
-// ---- XIRR ----
 function xirr(flows){
   if(flows.length<2) return null;
   if(!flows.some(f=>f.amount>0)||!flows.some(f=>f.amount<0)) return null;
@@ -473,26 +467,40 @@ function xirr(flows){
   return (lo+hi)/2;
 }
 
-// run a SIP over a fixed set of installment dates against one NAV series
+// run a SIP over a fixed set of installment dates; also returns the flow list
+// so the portfolio can be aggregated from the union of all fund flows.
 function runSIP(navArr, dates, amount, valueDate){
-  let units=0, invested=0;
+  let units=0, invested=0, placed=0;
   const flows=[];
   for(const d of dates){
     const n = navOnOrBefore(navArr, d);
     if(n && n.nav>0){
       units += amount / n.nav;
       invested += amount;
+      placed++;
       flows.push({date:new Date(d.getTime()), amount:-amount});
     }
   }
   if(flows.length===0) return null;
   const vn = navOnOrBefore(navArr, valueDate);
   const currentValue = units * (vn ? vn.nav : 0);
-  flows.push({date:new Date(valueDate.getTime()), amount:currentValue});
-  return { invested, currentValue, units, xirr: xirr(flows) };
+  const redemption = {date:new Date(valueDate.getTime()), amount:currentValue};
+  const xirrFlows = flows.concat([redemption]);
+  return { invested, currentValue, units, placed, xirr: xirr(xirrFlows), flows, redemption };
 }
 
-// ---- add scheme ----
+/* ============================================================
+   ADD SCHEME
+   Invested-value fix:
+   - The installment SCHEDULE is driven purely by the user's
+     start/end dates (identical for fund and its benchmark).
+   - We no longer shove the whole start forward to the latest
+     NAV history. If a given month has no NAV yet, that single
+     installment is skipped for that series only, and we report
+     how many of the scheduled months were actually placed.
+   - Fund and benchmark are valued on a COMMON valuation date and
+     use the SAME schedule, so their invested totals match.
+   ============================================================ */
 $("addBtn").addEventListener("click", async ()=>{
   if(!selectedScheme) return;
   $("addBtn").disabled = true;
@@ -506,7 +514,6 @@ $("addBtn").addEventListener("click", async ()=>{
     const endVal = $("endDate").value ? parseInput($("endDate").value) : null;
     const amount = Number($("amount").value);
 
-    // resolve the benchmark index fund
     $("status").textContent = "Matching benchmark…";
     const bk = resolveBenchmarkKey(selectedScheme.schemeName, detail.category);
     const benchFund = resolveBenchmarkFund(bk.key, bk.approx);
@@ -516,24 +523,23 @@ $("addBtn").addEventListener("click", async ()=>{
       try{
         const bd = await getDetail(benchFund.code);
         if(bd.navArr.length){ benchNav = bd.navArr; benchInfo = benchFund; }
-      }catch(e){ /* benchmark fetch failed — fall through to fund-only */ }
+      }catch(e){ /* fall through */ }
     }
 
-    // common valuation date & effective start
+    // common valuation date = latest date both series can be valued on
     const fundLast = fundNav[fundNav.length-1].date;
     const valueDate = benchNav ? minDate(fundLast, benchNav[benchNav.length-1].date) : fundLast;
-    let effStart = maxDate(start, fundNav[0].date);
-    if(benchNav) effStart = maxDate(effStart, benchNav[0].date);
 
-    // installment end = min(user end or valueDate, valueDate)
+    // SCHEDULE: user start -> min(user end, valueDate). Independent of NAV history start.
     let sipEnd = valueDate;
     if(endVal && endVal.getTime() < sipEnd.getTime()) sipEnd = endVal;
 
-    // shared installment dates
     const dates=[];
-    let d = new Date(effStart.getTime());
+    let d = new Date(start.getTime());
     while(d.getTime() <= sipEnd.getTime()){ dates.push(new Date(d.getTime())); d = addMonths(d,1); }
-    if(dates.length===0){ $("status").textContent="Start date is after available data. Pick an earlier date."; updateAddState(); return; }
+    if(dates.length===0){ $("status").textContent="Start date is after the latest available NAV. Pick an earlier date."; updateAddState(); return; }
+
+    const scheduled = dates.length;
 
     const fundRes = runSIP(fundNav, dates, amount, valueDate);
     if(!fundRes){ $("status").textContent="Couldn't value this SIP. Try a different start date."; updateAddState(); return; }
@@ -541,19 +547,28 @@ $("addBtn").addEventListener("click", async ()=>{
     let benchRes = null;
     if(benchNav){ benchRes = runSIP(benchNav, dates, amount, valueDate); }
 
+    // NAV-history truncation flags (per series) — for a note only, invested is now
+    // simply amount * placed for each series.
+    const fundHistStart = fundNav[0].date;
+    const benchHistStart = benchNav ? benchNav[0].date : null;
+    const fundTrunc = start.getTime() < fundHistStart.getTime();
+    const benchTrunc = benchNav ? (start.getTime() < benchHistStart.getTime()) : false;
+
     schemes.push({
       name: selectedScheme.schemeName,
       code: selectedScheme.schemeCode,
+      category: detail.category || "",
       startStr: $("startDate").value,
-      effStart, valueDate, amount,
-      truncated: effStart.getTime() > start.getTime(),
+      start, valueDate, amount,
+      scheduled,
+      fundTrunc, benchTrunc,
+      fundHistStart, benchHistStart,
       fund: fundRes,
       bench: benchRes,
       benchLabel: benchInfo ? benchInfo.label : null,
       benchApprox: benchInfo ? benchInfo.approx : false,
     });
 
-    // reset inputs (keep plan)
     selectedScheme=null; $("search").value=""; $("selected").textContent="";
     $("startDate").value=""; $("endDate").value=""; $("amount").value="";
     $("status").textContent="";
@@ -565,80 +580,373 @@ $("addBtn").addEventListener("click", async ()=>{
   }
 });
 
-// ---- render table ----
+/* ---- formatting ---- */
 function inr(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
 function pct(n){ return n==null?"N/A":(n*100).toFixed(2)+"%"; }
 function pp(n){ return (n>=0?"+":"")+(n*100).toFixed(2)+" pp"; }
 function fmtDate(d){ return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); }
 
+// classify alpha (fund xirr - bench xirr, in fraction) into a 4-band scale
+function perfBand(alpha){
+  if(alpha==null) return {cls:"c-flat", word:"No benchmark", key:"na"};
+  const a = alpha*100; // pp
+  if(a >= 3)  return {cls:"c-darkgreen", word:"Strongly beating", key:"strong_beat"};
+  if(a >= 0)  return {cls:"c-green",     word:"Beating",          key:"beat"};
+  if(a > -3)  return {cls:"c-red",       word:"Lagging",          key:"lag"};
+  return              {cls:"c-darkred",  word:"Strongly lagging", key:"strong_lag"};
+}
+
+/* ---- portfolio aggregation ---- */
+// Build a combined cashflow: union of every fund's contribution flows +
+// a single redemption equal to the sum of all current values on the common
+// (latest) valuation date. Same for the benchmark side.
+function portfolioMetrics(){
+  if(!schemes.length) return null;
+  let invested=0, current=0, benchCurrent=0, benchInvested=0;
+  let anyBench=false;
+  const fundFlows=[]; const benchFlows=[];
+  let valueDate = schemes[0].valueDate;
+  schemes.forEach(s=>{ if(s.valueDate.getTime()>valueDate.getTime()) valueDate=s.valueDate; });
+
+  schemes.forEach(s=>{
+    invested += s.fund.invested;
+    current  += s.fund.currentValue;
+    s.fund.flows.forEach(f=>fundFlows.push({date:f.date, amount:f.amount}));
+    if(s.bench){
+      anyBench=true;
+      benchInvested += s.bench.invested;
+      benchCurrent  += s.bench.currentValue;
+      s.bench.flows.forEach(f=>benchFlows.push({date:f.date, amount:f.amount}));
+    }
+  });
+
+  fundFlows.push({date:new Date(valueDate.getTime()), amount:current});
+  fundFlows.sort((a,b)=>a.date-b.date);
+  const fundX = xirr(fundFlows);
+
+  let benchX=null;
+  if(anyBench){
+    benchFlows.push({date:new Date(valueDate.getTime()), amount:benchCurrent});
+    benchFlows.sort((a,b)=>a.date-b.date);
+    benchX = xirr(benchFlows);
+  }
+
+  return {
+    invested, current, gain: current-invested,
+    absReturn: invested>0 ? (current-invested)/invested : null,
+    xirr: fundX,
+    benchInvested, benchCurrent, benchXirr: benchX,
+    alpha: (fundX!=null && benchX!=null) ? fundX-benchX : null,
+    valueDate, anyBench
+  };
+}
+
+/* ---- render ---- */
 function render(){
   const wrap = $("tableWrap");
-  if(schemes.length===0){ wrap.innerHTML='<div class="empty">No schemes added yet.</div>'; return; }
+  if(schemes.length===0){
+    wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
+    $("toolbar").style.display="none";
+    $("summaryCard").style.display="none";
+    $("foot").style.display="none";
+    return;
+  }
+  $("toolbar").style.display="flex";
+
+  const port = portfolioMetrics();
+
+  // summary cards
+  const alphaBand = perfBand(port.alpha);
+  $("summaryCard").style.display="block";
+  $("summaryGrid").innerHTML = `
+    <div class="stat"><div class="k">Schemes</div><div class="v">${schemes.length}</div></div>
+    <div class="stat"><div class="k">Total invested</div><div class="v">${inr(port.invested)}</div></div>
+    <div class="stat"><div class="k">Current value</div><div class="v">${inr(port.current)}</div></div>
+    <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>
+    <div class="stat"><div class="k">Absolute return</div><div class="v ${port.absReturn>=0?'pos':'neg'}">${pct(port.absReturn)}</div></div>
+    <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${port.xirr>=0?'pos':'neg'}">${pct(port.xirr)}</div></div>
+    <div class="stat"><div class="k">Benchmark XIRR</div><div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div></div>
+    <div class="stat"><div class="k">Portfolio alpha</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div></div>
+  `;
+
   let rows="";
   schemes.forEach((s,i)=>{
     const f = s.fund, b = s.bench;
     const fx = f.xirr;
+    const alpha = (b && b.xirr!=null && fx!=null) ? fx-b.xirr : null;
+    const band = perfBand(alpha);
+    const gain = f.currentValue - f.invested;
+    const absR = f.invested>0 ? gain/f.invested : null;
 
-    // benchmark line under the name
     let bmkLine = '<div class="bmk-line">Benchmark: unavailable</div>';
     if(s.benchLabel && b){
       const approx = s.benchApprox ? ' <span class="approx">(≈ approximate)</span>' : '';
       let note = '';
-      if(s.truncated) note = ' <span class="approx">· from '+fmtDate(s.effStart)+' (benchmark history)</span>';
+      if(s.benchTrunc || s.fundTrunc){
+        const dt = maxDate(s.fundTrunc?s.fundHistStart:s.start, s.benchTrunc?s.benchHistStart:s.start);
+        note = ' <span class="approx">· some early months skipped (history starts '+fmtDate(dt)+')</span>';
+      }
       bmkLine = '<div class="bmk-line">vs '+s.benchLabel+approx+note+'</div>';
     } else if(s.benchLabel && !b){
       bmkLine = '<div class="bmk-line">vs '+s.benchLabel+' <span class="approx">(no data)</span></div>';
     }
 
-    // verdict
     let verdict = '';
-    if(b && b.xirr!=null && fx!=null){
-      const alpha = fx - b.xirr;
-      const cls = alpha>=0 ? 'pos' : 'neg';
-      const word = alpha>=0 ? 'Beating' : 'Lagging';
-      verdict = '<div class="verdict '+cls+'">'+word+' the benchmark by '+Math.abs(alpha*100).toFixed(2)+' pp p.a.</div>';
+    if(alpha!=null){
+      verdict = '<div class="verdict '+(alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(alpha*100).toFixed(2)+' pp p.a.</div>';
     }
 
-    // current column: fund + (bench muted)
+    const placedNote = (f.placed < s.scheduled)
+      ? '<div class="fund-meta">'+f.placed+' of '+s.scheduled+' scheduled installments placed</div>' : '';
+
     const curCell = inr(f.currentValue) + (b ? '<div class="sub2">'+inr(b.currentValue)+'</div>' : '');
-    // xirr column: fund + (bench muted)
+    const gainCell = '<span class="'+(gain>=0?'pos':'neg')+'">'+(gain>=0?'+':'')+inr(gain)+'</span>'
+                   + '<div class="sub2">'+pct(absR)+'</div>';
     const xCell = '<span class="'+(fx>=0?'pos':'neg')+'" style="font-weight:600;">'+pct(fx)+'</span>'
                 + (b ? '<div class="sub2">'+pct(b.xirr)+'</div>' : '');
-    // alpha column
     let alphaCell = '—';
-    if(b && b.xirr!=null && fx!=null){
-      const alpha = fx - b.xirr;
-      alphaCell = '<span class="'+(alpha>=0?'pos':'neg')+'" style="font-weight:600;">'+pp(alpha)+'</span>';
+    if(alpha!=null){
+      alphaCell = '<span class="chip '+band.cls+'">'+pp(alpha)+'</span>';
     }
 
     rows += `<tr>
       <td><div class="fund-name">${s.name}</div>
           <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.valueDate)}</div>
-          ${bmkLine}${verdict}</td>
+          ${placedNote}${bmkLine}${verdict}</td>
       <td class="num">${inr(f.invested)}</td>
       <td class="num">${curCell}</td>
+      <td class="num">${gainCell}</td>
       <td class="num">${xCell}</td>
       <td class="num">${alphaCell}</td>
       <td class="num"><button class="btn small" data-i="${i}">Remove</button></td>
     </tr>`;
   });
+
+  // portfolio total row
+  const pBand = perfBand(port.alpha);
+  rows += `<tr class="portfolio">
+    <td>PORTFOLIO (all schemes)<div class="fund-meta">valued ${fmtDate(port.valueDate)}</div></td>
+    <td class="num">${inr(port.invested)}</td>
+    <td class="num">${inr(port.current)}${port.anyBench?'<div class="sub2">'+inr(port.benchCurrent)+'</div>':''}</td>
+    <td class="num"><span class="${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
+    <td class="num"><span class="${port.xirr>=0?'pos':'neg'}" style="font-weight:600;">${pct(port.xirr)}</span>${port.anyBench?'<div class="sub2">'+pct(port.benchXirr)+'</div>':''}</td>
+    <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td>
+    <td></td>
+  </tr>`;
+
   wrap.innerHTML = `<table><thead><tr>
     <th>Scheme <span style="font-weight:400;text-transform:none;">(fund / benchmark)</span></th>
     <th style="text-align:right;">Invested</th>
     <th style="text-align:right;">Current</th>
+    <th style="text-align:right;">Gain / Abs %</th>
     <th style="text-align:right;">XIRR</th>
     <th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+
   wrap.querySelectorAll("button[data-i]").forEach(b=>{
     b.onclick=()=>{ schemes.splice(+b.dataset.i,1); render(); };
   });
+
+  // footer note
+  $("foot").style.display="block";
+  $("foot").innerHTML =
+    "Benchmarks use the matching Nifty <b>index fund's</b> Direct-Growth NAV (post-expense), not the pure TRI, "
+    + "so benchmark returns are already net of a small tracking cost. XIRR is money-weighted (annualised). "
+    + "Colour bands: dark green ≥ +3 pp, green 0 to +3 pp, red 0 to −3 pp, dark red ≤ −3 pp vs benchmark. "
+    + "Report generated " + fmtDate(new Date()) + ".";
 }
 
-// close dropdown on outside click
+/* ---- clear ---- */
+$("clearBtn").addEventListener("click", ()=>{
+  if(!schemes.length) return;
+  if(confirm("Remove all added schemes?")){ schemes.length=0; render(); }
+});
+
+/* ============================================================
+   EXCEL EXPORT  (SheetJS, client-side, with cell colouring)
+   ============================================================ */
+$("exportBtn").addEventListener("click", ()=>{
+  if(!schemes.length){ return; }
+  try{
+    exportExcel();
+    $("exportStatus").textContent = "Downloaded.";
+    setTimeout(()=>{ $("exportStatus").textContent=""; }, 2500);
+  }catch(e){
+    $("exportStatus").textContent = "Export failed: " + e.message;
+  }
+});
+
+// fill colours for the 4-band scale (ARGB, no leading #)
+const FILL = {
+  strong_beat: "1E7D46",  // dark green
+  beat:        "3EC27A",  // green
+  lag:         "E07A72",  // red
+  strong_lag:  "B23B34",  // dark red
+  na:          "4B5B6A",  // grey
+};
+function styleCell(v, fill, opts={}){
+  const c = { v, s:{ font:{ name:"Arial", sz:11, color:{rgb: opts.light?"FFFFFF":"1A1A1A"} },
+                     alignment:{ horizontal: opts.align||"left", vertical:"center" } } };
+  if(fill) c.s.fill = { patternType:"solid", fgColor:{rgb:fill} };
+  if(opts.bold) c.s.font.bold = true;
+  if(opts.numFmt) c.s.numFmt = opts.numFmt;
+  if(opts.border){ c.s.border = { top:{style:"thin",color:{rgb:"BBBBBB"}}, bottom:{style:"thin",color:{rgb:"BBBBBB"}}, left:{style:"thin",color:{rgb:"BBBBBB"}}, right:{style:"thin",color:{rgb:"BBBBBB"}} }; }
+  return c;
+}
+
+function exportExcel(){
+  const port = portfolioMetrics();
+  const genDate = fmtDate(new Date());
+  const wb = XLSX.utils.book_new();
+
+  /* ---------- Sheet 1: Summary ---------- */
+  const s1 = {};
+  const put = (addr, cell)=>{ s1[addr]=cell; };
+  put("A1", styleCell("SIP Performance Report — Fund vs Benchmark", null, {bold:true}));
+  s1["A1"].s.font.sz = 14;
+  put("A2", styleCell("Generated: "+genDate, null, {}));
+  put("A2").s = s1["A2"].s; // noop safe
+
+  // portfolio KPIs
+  const kpis = [
+    ["Total schemes", schemes.length, null],
+    ["Total invested (₹)", Math.round(port.invested), "#,##0"],
+    ["Current value (₹)", Math.round(port.current), "#,##0"],
+    ["Gain / loss (₹)", Math.round(port.gain), "#,##0"],
+    ["Absolute return", port.absReturn, "0.00%"],
+    ["Portfolio XIRR", port.xirr, "0.00%"],
+    ["Benchmark XIRR", port.anyBench?port.benchXirr:null, "0.00%"],
+    ["Portfolio alpha (pp p.a.)", port.alpha!=null?port.alpha*100:null, "0.00"],
+    ["Valued on", fmtDate(port.valueDate), null],
+  ];
+  let r = 4;
+  kpis.forEach(([k,v,fmt])=>{
+    put("A"+r, styleCell(k, null, {bold:true}));
+    const isNum = typeof v === "number";
+    put("B"+r, styleCell(v==null?"N/A":v, null, {align:isNum?"right":"left", numFmt:fmt||undefined}));
+    r++;
+  });
+
+  // portfolio alpha colour cell
+  const pBand = perfBand(port.alpha);
+  if(port.alpha!=null){
+    put("C"+(4+7), styleCell(pBand.word, FILL[pBand.key], {light:pBand.key!=="beat", align:"center", bold:true}));
+  }
+
+  s1["!ref"] = "A1:C"+(r+1);
+  s1["!cols"] = [{wch:26},{wch:20},{wch:18}];
+  XLSX.utils.book_append_sheet(wb, s1, "Summary");
+
+  /* ---------- Sheet 2: Holdings ---------- */
+  const headers = ["Scheme","Category","Plan-implied","Benchmark","Approx?","SIP/mo (₹)",
+    "Start","Valued","Installments placed","Invested (₹)","Current (₹)","Gain (₹)",
+    "Abs return","Fund XIRR","Bench XIRR","Alpha (pp)","Verdict"];
+  const aoa = [];
+  const rowMeta = []; // remember band per data row for colouring
+
+  schemes.forEach(s=>{
+    const f=s.fund, b=s.bench;
+    const fx=f.xirr;
+    const alpha = (b && b.xirr!=null && fx!=null)? fx-b.xirr : null;
+    const band = perfBand(alpha);
+    const gain = f.currentValue - f.invested;
+    const absR = f.invested>0 ? gain/f.invested : null;
+    aoa.push([
+      s.name, s.category || "", (s.name.toLowerCase().includes("direct")?"Direct":"Regular"),
+      s.benchLabel||"—", s.benchApprox?"Yes":"No",
+      s.amount, s.startStr, fmtDate(s.valueDate),
+      f.placed+" / "+s.scheduled,
+      Math.round(f.invested), Math.round(f.currentValue), Math.round(gain),
+      absR, fx, (b?b.xirr:null), (alpha!=null?alpha*100:null), band.word
+    ]);
+    rowMeta.push(band);
+  });
+
+  // portfolio row
+  aoa.push([
+    "PORTFOLIO (all schemes)","","","","", "", "", fmtDate(port.valueDate), "",
+    Math.round(port.invested), Math.round(port.current), Math.round(port.gain),
+    port.absReturn, port.xirr, (port.anyBench?port.benchXirr:null),
+    (port.alpha!=null?port.alpha*100:null), pBand.word
+  ]);
+  rowMeta.push(pBand);
+
+  const s2 = XLSX.utils.aoa_to_sheet([headers, ...aoa]);
+
+  // style header
+  headers.forEach((h,ci)=>{
+    const addr = XLSX.utils.encode_cell({r:0,c:ci});
+    s2[addr].s = { font:{name:"Arial",sz:11,bold:true,color:{rgb:"FFFFFF"}},
+                   fill:{patternType:"solid",fgColor:{rgb:"17212B"}},
+                   alignment:{horizontal:"center",vertical:"center",wrapText:true},
+                   border:{bottom:{style:"medium",color:{rgb:"2A3A49"}}} };
+  });
+
+  const numFmtByCol = {5:"#,##0",9:"#,##0",10:"#,##0",11:"#,##0",12:"0.00%",13:"0.00%",14:"0.00%",15:"0.00"};
+  const rightCols = new Set([5,8,9,10,11,12,13,14,15]);
+
+  aoa.forEach((row,ri)=>{
+    const band = rowMeta[ri];
+    const isPortfolio = ri === aoa.length-1;
+    row.forEach((val,ci)=>{
+      const addr = XLSX.utils.encode_cell({r:ri+1,c:ci});
+      if(!s2[addr]) return;
+      const opts = { align: rightCols.has(ci)?"right":"left", border:true };
+      if(numFmtByCol[ci]) opts.numFmt = numFmtByCol[ci];
+      if(isPortfolio) opts.bold = true;
+      // colour the Alpha (15) and Verdict (16) cells by band; also tint scheme name lightly
+      let fill = null, light=false;
+      if(ci===15 || ci===16){ fill = FILL[band.key]; light = (band.key!=="beat"); }
+      else if(isPortfolio){ fill = "101923"; light=true; }
+      s2[addr].s = styleCell(val==null?"":val, fill, {...opts, light}).s;
+    });
+  });
+
+  s2["!cols"] = [{wch:42},{wch:20},{wch:12},{wch:24},{wch:8},{wch:12},{wch:12},{wch:13},
+                 {wch:18},{wch:14},{wch:14},{wch:13},{wch:11},{wch:11},{wch:11},{wch:11},{wch:18}];
+  s2["!freeze"] = { xSplit:1, ySplit:1 };
+  XLSX.utils.book_append_sheet(wb, s2, "Holdings");
+
+  /* ---------- Sheet 3: Legend ---------- */
+  const legend = [
+    ["Colour band","Meaning","Alpha (fund XIRR − benchmark XIRR)"],
+    ["Dark green","Strongly beating benchmark","≥ +3 pp per year"],
+    ["Green","Beating benchmark","0 to +3 pp per year"],
+    ["Red","Lagging benchmark","0 to −3 pp per year"],
+    ["Dark red","Strongly lagging benchmark","≤ −3 pp per year"],
+    ["",""],
+    ["Notes",""],
+    ["Benchmark = matching Nifty index fund (Direct-Growth) NAV, net of tracking cost — not pure TRI.",""],
+    ["XIRR is money-weighted (annualised IRR of dated cashflows).",""],
+    ["Absolute return = (Current − Invested) / Invested (not annualised).",""],
+    ["Some early installments may be skipped if NAV history starts after your SIP start date.",""],
+    ["Generated "+genDate,""],
+  ];
+  const s3 = XLSX.utils.aoa_to_sheet(legend);
+  const bandFills = ["", FILL.strong_beat, FILL.beat, FILL.lag, FILL.strong_lag];
+  const bandLight = [false,true,false,false,true];
+  legend.forEach((row,ri)=>{
+    row.forEach((val,ci)=>{
+      const addr = XLSX.utils.encode_cell({r:ri,c:ci});
+      if(!s3[addr]) return;
+      let fill=null, light=false, bold=false;
+      if(ri===0){ fill="17212B"; light=true; bold=true; }
+      else if(ci===0 && ri>=1 && ri<=4){ fill=bandFills[ri]; light=bandLight[ri]; bold=true; }
+      else if(ri===6 && ci===0){ bold=true; }
+      s3[addr].s = styleCell(val, fill, {light, bold, border:ri<=4}).s;
+    });
+  });
+  s3["!cols"] = [{wch:14},{wch:52},{wch:30}];
+  XLSX.utils.book_append_sheet(wb, s3, "Legend");
+
+  const fname = "SIP_vs_Benchmark_"+new Date().toISOString().slice(0,10)+".xlsx";
+  XLSX.writeFile(wb, fname);
+}
+
+/* close dropdown on outside click */
 document.addEventListener("click", e=>{
   if(!e.target.closest(".search-wrap")) $("results").style.display="none";
 });
 
-// kick off list load
 loadSchemeList();
 </script>
 </body>
