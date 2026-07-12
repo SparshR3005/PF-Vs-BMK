@@ -1,12 +1,330 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PF vs Benchmark</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PF vs Benchmark — SIP XIRR</title>
+<style>
+  :root{
+    --bg:#0f1720; --card:#17212b; --line:#2a3a49; --text:#e6edf3;
+    --muted:#9fb0c0; --accent:#2f9e6f; --accent2:#c9a227; --danger:#c85a54;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;padding:24px;}
+  .wrap{max-width:900px;margin:0 auto;}
+  h1{font-size:22px;margin:0 0 4px;}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 20px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:16px 18px;margin-bottom:18px;}
+  label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;
+    color:var(--muted);margin-bottom:5px;}
+  input,select{width:100%;padding:9px 10px;border:1px solid var(--line);
+    border-radius:6px;background:#0d141c;color:var(--text);font-size:14px;}
+  input:focus,select:focus{outline:2px solid var(--accent);}
+  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;}
+  .plan-toggle{display:flex;gap:8px;align-items:center;margin-bottom:16px;}
+  .plan-toggle .opt{display:flex;gap:6px;align-items:center;font-size:14px;color:var(--text);cursor:pointer;}
+  .search-wrap{position:relative;}
+  .results{position:absolute;z-index:10;left:0;right:0;top:100%;
+    background:#0d141c;border:1px solid var(--line);border-top:none;
+    border-radius:0 0 6px 6px;max-height:240px;overflow-y:auto;}
+  .results div{padding:9px 10px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line);}
+  .results div:hover{background:#16222e;}
+  .results .hint{color:var(--muted);cursor:default;}
+  .btn{padding:10px 18px;border:none;border-radius:6px;background:var(--accent);
+    color:#fff;font-size:14px;font-weight:600;cursor:pointer;}
+  .btn:disabled{opacity:.5;cursor:not-allowed;}
+  .btn.small{padding:5px 10px;font-size:12px;background:transparent;
+    border:1px solid var(--danger);color:var(--danger);font-weight:400;}
+  .selected{font-size:14px;color:var(--accent);margin:8px 0 0;min-height:20px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;padding:8px;border-bottom:2px solid var(--line);
+    color:var(--muted);font-size:11px;text-transform:uppercase;}
+  td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;}
+  .pos{color:var(--accent);} .neg{color:var(--danger);}
+  .empty{color:var(--muted);text-align:center;padding:24px;}
+  .status{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px;}
+  .fund-name{font-weight:600;}
+  .fund-meta{color:var(--muted);font-size:11px;margin-top:2px;}
+</style>
 </head>
 <body>
-  <h1>PF-Vs-BMK is live</h1>
-  <p>Starter page — the real app comes next.</p>
+<div class="wrap">
+  <h1>SIP Performance — Fund XIRR</h1>
+  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return. Benchmark comparison comes later.</p>
+
+  <div class="card">
+    <div class="plan-toggle">
+      <span style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);">Plan:</span>
+      <label class="opt"><input type="radio" name="plan" value="Direct" checked style="width:auto;"> Direct</label>
+      <label class="opt"><input type="radio" name="plan" value="Regular" style="width:auto;"> Regular</label>
+      <span style="font-size:12px;color:var(--muted);">(Growth only)</span>
+    </div>
+
+    <label for="search">Scheme</label>
+    <div class="search-wrap">
+      <input type="text" id="search" placeholder="Type a fund name, e.g. Parag Parikh Flexi Cap" autocomplete="off">
+      <div class="results" id="results" style="display:none;"></div>
+    </div>
+    <div class="selected" id="selected"></div>
+
+    <div class="row" style="margin-top:14px;">
+      <div>
+        <label for="startDate">SIP start date</label>
+        <input type="date" id="startDate">
+      </div>
+      <div>
+        <label for="endDate">SIP end date (optional)</label>
+        <input type="date" id="endDate">
+      </div>
+      <div>
+        <label for="amount">Monthly SIP (₹)</label>
+        <input type="number" id="amount" min="0" step="100" placeholder="5000">
+      </div>
+    </div>
+    <button class="btn" id="addBtn" disabled>Add scheme</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card">
+    <div id="tableWrap">
+      <div class="empty">No schemes added yet.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const API = "https://api.mfapi.in";
+let selectedScheme = null;   // {schemeCode, schemeName}
+let searchTimer = null;
+let navCache = {};           // schemeCode -> parsed nav array
+const schemes = [];          // added schemes with computed metrics
+
+const $ = id => document.getElementById(id);
+
+function getPlan(){
+  return document.querySelector('input[name=plan]:checked').value;
+}
+
+// ---- live search ----
+$("search").addEventListener("input", function(){
+  const q = this.value.trim();
+  selectedScheme = null;
+  $("selected").textContent = "";
+  updateAddState();
+  clearTimeout(searchTimer);
+  if(q.length < 3){ $("results").style.display="none"; return; }
+  searchTimer = setTimeout(()=>runSearch(q), 300);
+});
+
+async function runSearch(q){
+  const box = $("results");
+  box.style.display = "block";
+  box.innerHTML = '<div class="hint">Searching…</div>';
+  try{
+    const res = await fetch(`${API}/mf/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    const plan = getPlan();
+    const filtered = data.filter(s=>{
+      const n = s.schemeName.toLowerCase();
+      const isGrowth = n.includes("growth");
+      const isPlan = plan === "Direct" ? n.includes("direct") : (!n.includes("direct"));
+      return isGrowth && isPlan;
+    });
+    if(filtered.length === 0){
+      box.innerHTML = '<div class="hint">No '+plan+' Growth matches. Try a different name.</div>';
+      return;
+    }
+    box.innerHTML = "";
+    filtered.slice(0,25).forEach(s=>{
+      const d = document.createElement("div");
+      d.textContent = s.schemeName;
+      d.onclick = ()=>pickScheme(s);
+      box.appendChild(d);
+    });
+  }catch(e){
+    box.innerHTML = '<div class="hint">Search failed — check connection and retry.</div>';
+  }
+}
+
+function pickScheme(s){
+  selectedScheme = s;
+  $("search").value = s.schemeName;
+  $("selected").textContent = "Selected: " + s.schemeName;
+  $("results").style.display = "none";
+  updateAddState();
+}
+
+document.querySelectorAll('input[name=plan]').forEach(r=>{
+  r.addEventListener("change", ()=>{
+    selectedScheme = null;
+    $("selected").textContent = "";
+    $("search").value = "";
+    $("results").style.display = "none";
+    updateAddState();
+  });
+});
+
+function updateAddState(){
+  const ok = selectedScheme && $("startDate").value && Number($("amount").value) > 0;
+  $("addBtn").disabled = !ok;
+}
+["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
+
+// ---- NAV fetch + parse ----
+async function getNav(code){
+  if(navCache[code]) return navCache[code];
+  const res = await fetch(`${API}/mf/${code}`);
+  const json = await res.json();
+  // data is newest-first; convert to {date:Date, nav:Number} sorted ascending
+  const arr = json.data.map(d=>{
+    const p = d.date.split("-"); // dd-mm-yyyy
+    return { date: new Date(+p[2], +p[1]-1, +p[0]), nav: parseFloat(d.nav) };
+  }).filter(x=>!isNaN(x.nav)).sort((a,b)=>a.date-b.date);
+  navCache[code] = arr;
+  return arr;
+}
+
+// nearest NAV on or before a given date
+function navOnOrBefore(navArr, date){
+  let lo=0, hi=navArr.length-1, ans=null;
+  const t = date.getTime();
+  while(lo<=hi){
+    const mid=(lo+hi)>>1;
+    if(navArr[mid].date.getTime() <= t){ ans=navArr[mid]; lo=mid+1; }
+    else hi=mid-1;
+  }
+  return ans; // {date,nav} or null if before first NAV
+}
+
+// ---- date helpers ----
+function addMonths(d,n){
+  const nd=new Date(d.getTime()); const day=nd.getDate();
+  nd.setDate(1); nd.setMonth(nd.getMonth()+n);
+  const last=new Date(nd.getFullYear(),nd.getMonth()+1,0).getDate();
+  nd.setDate(Math.min(day,last)); return nd;
+}
+function daysBetween(a,b){ return (b.getTime()-a.getTime())/86400000; }
+function parseInput(v){ const p=v.split("-"); return new Date(+p[0],+p[1]-1,+p[2]); }
+
+// ---- XIRR ----
+function xirr(flows){
+  if(flows.length<2) return null;
+  if(!flows.some(f=>f.amount>0)||!flows.some(f=>f.amount<0)) return null;
+  const d0=flows[0].date;
+  const npv=r=>flows.reduce((s,f)=>s+f.amount/Math.pow(1+r,daysBetween(d0,f.date)/365),0);
+  const dnpv=r=>flows.reduce((s,f)=>{const t=daysBetween(d0,f.date)/365; return t?s-t*f.amount/Math.pow(1+r,t+1):s;},0);
+  let r=0.15, ok=false;
+  for(let i=0;i<100;i++){
+    const f=npv(r), df=dnpv(r);
+    if(Math.abs(df)<1e-9) break;
+    let nx=r-f/df; if(nx<=-0.999999) nx=-0.999999;
+    if(Math.abs(nx-r)<1e-8){ r=nx; ok=true; break; } r=nx;
+  }
+  if(ok && isFinite(r)) return r;
+  let lo=-0.9999, hi=10, flo=npv(lo);
+  if((flo>0)===(npv(hi)>0)) return isFinite(r)?r:null;
+  for(let i=0;i<200;i++){ const m=(lo+hi)/2, fm=npv(m);
+    if(Math.abs(fm)<1e-6) return m;
+    if((fm>0)===(flo>0)){lo=m;flo=fm;} else hi=m; }
+  return (lo+hi)/2;
+}
+
+// ---- add scheme ----
+$("addBtn").addEventListener("click", async ()=>{
+  if(!selectedScheme) return;
+  $("addBtn").disabled = true;
+  $("status").textContent = "Fetching NAV history…";
+  try{
+    const navArr = await getNav(selectedScheme.schemeCode);
+    if(!navArr.length){ $("status").textContent="No NAV data for this scheme."; return; }
+
+    const start = parseInput($("startDate").value);
+    const endVal = $("endDate").value ? parseInput($("endDate").value) : null;
+    const latest = navArr[navArr.length-1];
+    const today = latest.date; // value everything at latest available NAV date
+    const end = endVal && endVal < today ? endVal : today;
+    const amount = Number($("amount").value);
+
+    // build SIP flows: buy units at NAV on/after each SIP date
+    let d = new Date(start.getTime());
+    let units = 0, invested = 0;
+    const flows = [];
+    while(d.getTime() <= end.getTime()){
+      const n = navOnOrBefore(navArr, d) || navArr.find(x=>x.date>=d);
+      if(n && n.nav>0){
+        units += amount / n.nav;
+        invested += amount;
+        flows.push({date:new Date(d.getTime()), amount:-amount});
+      }
+      d = addMonths(d,1);
+    }
+    if(flows.length===0){ $("status").textContent="Start date is before this fund's NAV history. Pick a later date."; return; }
+
+    const currentValue = units * latest.nav;
+    flows.push({date:new Date(today.getTime()), amount:currentValue});
+    const rate = xirr(flows);
+
+    schemes.push({
+      name: selectedScheme.schemeName,
+      code: selectedScheme.schemeCode,
+      startStr: $("startDate").value,
+      amount, invested, currentValue,
+      gain: currentValue - invested,
+      xirr: rate,
+      navDate: latest.date
+    });
+
+    // reset inputs (keep plan)
+    selectedScheme=null; $("search").value=""; $("selected").textContent="";
+    $("startDate").value=""; $("endDate").value=""; $("amount").value="";
+    $("status").textContent="";
+    render();
+  }catch(e){
+    $("status").textContent = "Something went wrong fetching data. Try again.";
+  }finally{
+    updateAddState();
+  }
+});
+
+// ---- render table ----
+function inr(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
+function pct(n){ return n==null?"N/A":(n*100).toFixed(2)+"%"; }
+function fmtDate(d){ return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); }
+
+function render(){
+  const wrap = $("tableWrap");
+  if(schemes.length===0){ wrap.innerHTML='<div class="empty">No schemes added yet.</div>'; return; }
+  let rows="";
+  schemes.forEach((s,i)=>{
+    const cls = s.xirr==null?"":(s.xirr>=0?"pos":"neg");
+    rows += `<tr>
+      <td><div class="fund-name">${s.name}</div>
+          <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.navDate)}</div></td>
+      <td class="num">${inr(s.invested)}</td>
+      <td class="num">${inr(s.currentValue)}</td>
+      <td class="num ${s.gain>=0?'pos':'neg'}">${inr(s.gain)}</td>
+      <td class="num ${cls}" style="font-weight:600;">${pct(s.xirr)}</td>
+      <td class="num"><button class="btn small" data-i="${i}">Remove</button></td>
+    </tr>`;
+  });
+  wrap.innerHTML = `<table><thead><tr>
+    <th>Scheme</th><th style="text-align:right;">Invested</th>
+    <th style="text-align:right;">Current</th><th style="text-align:right;">Gain</th>
+    <th style="text-align:right;">XIRR</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.querySelectorAll("button[data-i]").forEach(b=>{
+    b.onclick=()=>{ schemes.splice(+b.dataset.i,1); render(); };
+  });
+}
+
+// close dropdown on outside click
+document.addEventListener("click", e=>{
+  if(!e.target.closest(".search-wrap")) $("results").style.display="none";
+});
+</script>
 </body>
 </html>
