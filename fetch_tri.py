@@ -3,7 +3,6 @@ import os
 import time
 import requests
 
-# 2010-01-01 to today
 START = "01-Jan-2010"
 END = time.strftime("%d-%b-%Y")
 
@@ -27,9 +26,18 @@ INDICES = {
 
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
 
 POST_HEADERS = {
@@ -40,7 +48,13 @@ POST_HEADERS = {
     "Content-Type": "application/json; charset=UTF-8",
     "Origin": "https://niftyindices.com",
     "Referer": "https://niftyindices.com/reports/historical-data",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 
 TRI_URL = "https://niftyindices.com/Backpage.aspx/getTotalReturnIndexString"
@@ -49,35 +63,47 @@ TRI_URL = "https://niftyindices.com/Backpage.aspx/getTotalReturnIndexString"
 def make_session():
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS)
-    # Visit pages to collect the cookies the endpoint checks for.
-    for url in [
-        "https://niftyindices.com",
+    warmup = [
+        "https://www.niftyindices.com",
+        "https://www.niftyindices.com/reports/historical-data",
         "https://niftyindices.com/reports/historical-data",
-    ]:
+    ]
+    for url in warmup:
         try:
-            s.get(url, timeout=30)
+            r = s.get(url, timeout=30)
+            print(f"  warm-up {url} -> {r.status_code}, cookies now: {list(s.cookies.keys())}")
         except Exception as e:
-            print(f"  warm-up warning for {url}: {e}")
-        time.sleep(1)
+            print(f"  warm-up warning {url}: {e}")
+        time.sleep(2)
     return s
 
 
-def fetch_one(session, index_name):
+def fetch_one(session, index_name, attempts=4):
     body = {
         "cinfo": "{'name':'" + index_name + "','startDate':'" + START +
                  "','endDate':'" + END + "','indexName':'" + index_name + "'}"
     }
-    r = session.post(TRI_URL, headers=POST_HEADERS, json=body, timeout=60)
-    r.raise_for_status()
-    text = r.text
-    # If it's not JSON, surface what came back so we can diagnose.
-    try:
-        outer = r.json()
-    except ValueError:
-        snippet = text[:200].replace("\n", " ")
-        raise ValueError(f"non-JSON response (first 200 chars): {snippet!r}")
-    rows = json.loads(outer["d"])
-    return rows
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            r = session.post(TRI_URL, headers=POST_HEADERS, json=body, timeout=60)
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code}"
+                time.sleep(3 * attempt)
+                continue
+            try:
+                outer = r.json()
+            except ValueError:
+                snippet = r.text[:180].replace("\n", " ").replace("\r", " ")
+                last_err = f"non-JSON (try {attempt}): {snippet!r}"
+                time.sleep(3 * attempt)   # back off and retry
+                continue
+            rows = json.loads(outer["d"])
+            return rows
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(3 * attempt)
+    raise ValueError(last_err)
 
 
 def normalise(rows):
@@ -109,7 +135,7 @@ def main():
             rows = fetch_one(session, index_name)
             clean = normalise(rows)
             if not clean:
-                print(f"FAIL  {index_name}: 0 usable rows (parsed but empty)")
+                print(f"FAIL  {index_name}: parsed but 0 usable rows")
                 fail += 1
                 continue
             with open(os.path.join("data", filename), "w") as f:
