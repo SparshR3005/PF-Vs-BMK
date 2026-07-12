@@ -1,12 +1,12 @@
 name: Refresh TRI data
 
 on:
-  workflow_dispatch:        # lets you click "Run workflow"
+  workflow_dispatch:
   schedule:
-    - cron: "0 20 * * 0"    # every Sunday 20:00 UTC (~1:30am Mon IST)
+    - cron: "0 20 * * 0"
 
 permissions:
-  contents: write            # allow committing data files back
+  contents: write
 
 jobs:
   fetch:
@@ -18,8 +18,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install requests
-        run: pip install requests
+      - name: Install deps
+        run: pip install "httpx[http2]"
 
       - name: Fetch TRI data
         run: python fetch_tri.py
