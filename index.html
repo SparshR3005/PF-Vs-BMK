@@ -66,7 +66,7 @@
 
     <label for="search">Scheme</label>
     <div class="search-wrap">
-      <input type="text" id="search" placeholder="Type a fund name, e.g. Parag Parikh Flexi Cap" autocomplete="off">
+      <input type="text" id="search" placeholder="Type a full word, e.g. HDFC, Parag, Flexi, Bluechip" autocomplete="off">
       <div class="results" id="results" style="display:none;"></div>
     </div>
     <div class="selected" id="selected"></div>
@@ -129,18 +129,35 @@ async function runSearch(q){
     const res = await fetch(`${API}/mf/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     const plan = getPlan();
+
     const filtered = data.filter(s=>{
       const n = s.schemeName.toLowerCase();
+
+      // must be a Growth variant, not income/dividend variants
       const isGrowth = n.includes("growth");
-      const isPlan = plan === "Direct" ? n.includes("direct") : (!n.includes("direct"));
-      return isGrowth && isPlan;
+      const isIncome = n.includes("idcw") || n.includes("dividend") ||
+                       n.includes("payout") || n.includes("reinvest") ||
+                       n.includes("bonus");
+      if(!isGrowth || isIncome) return false;
+
+      // plan detection
+      const hasDirect  = n.includes("direct");
+      const hasRegular = n.includes("regular");
+      if(plan === "Direct"){
+        return hasDirect;
+      } else {
+        // Regular = explicitly regular, OR neither word present (older names)
+        return hasRegular || (!hasDirect && !hasRegular);
+      }
     });
+
     if(filtered.length === 0){
-      box.innerHTML = '<div class="hint">No '+plan+' Growth matches. Try a different name.</div>';
+      box.innerHTML = '<div class="hint">No '+plan+' Growth matches for “'+q+'”. Try a fuller name (a complete word like HDFC, Flexi, Bluechip).</div>';
       return;
     }
-    box.innerHTML = "";
-    filtered.slice(0,25).forEach(s=>{
+
+    box.innerHTML = '<div class="hint">'+filtered.length+' match(es):</div>';
+    filtered.slice(0,30).forEach(s=>{
       const d = document.createElement("div");
       d.textContent = s.schemeName;
       d.onclick = ()=>pickScheme(s);
