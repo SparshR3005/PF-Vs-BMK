@@ -23,6 +23,7 @@
   input,select{width:100%;padding:9px 10px;border:1px solid var(--line);
     border-radius:6px;background:#0d141c;color:var(--text);font-size:14px;}
   input:focus,select:focus{outline:2px solid var(--accent);}
+  input:disabled{opacity:.5;}
   .row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;}
   .plan-toggle{display:flex;gap:8px;align-items:center;margin-bottom:16px;}
   .plan-toggle .opt{display:flex;gap:6px;align-items:center;font-size:14px;color:var(--text);cursor:pointer;}
@@ -47,6 +48,7 @@
   .pos{color:var(--accent);} .neg{color:var(--danger);}
   .empty{color:var(--muted);text-align:center;padding:24px;}
   .status{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px;}
+  .loadbar{font-size:13px;color:var(--accent2);margin-bottom:12px;min-height:18px;}
   .fund-name{font-weight:600;}
   .fund-meta{color:var(--muted);font-size:11px;margin-top:2px;}
 </style>
@@ -57,6 +59,8 @@
   <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return. Benchmark comparison comes later.</p>
 
   <div class="card">
+    <div class="loadbar" id="loadbar">Loading scheme list…</div>
+
     <div class="plan-toggle">
       <span style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);">Plan:</span>
       <label class="opt"><input type="radio" name="plan" value="Direct" checked style="width:auto;"> Direct</label>
@@ -66,7 +70,7 @@
 
     <label for="search">Scheme</label>
     <div class="search-wrap">
-      <input type="text" id="search" placeholder="Type a full word, e.g. HDFC, Parag, Flexi, Bluechip" autocomplete="off">
+      <input type="text" id="search" placeholder="Type AMC or fund name, e.g. HDFC Flexi, ICICI, Parag Parikh" autocomplete="off" disabled>
       <div class="results" id="results" style="display:none;"></div>
     </div>
     <div class="selected" id="selected"></div>
@@ -104,68 +108,93 @@ let searchTimer = null;
 let navCache = {};           // schemeCode -> parsed nav array
 const schemes = [];          // added schemes with computed metrics
 
+// full scheme list, split by plan, each entry: {schemeCode, schemeName, lower}
+let listDirect = [];
+let listRegular = [];
+let listReady = false;
+
 const $ = id => document.getElementById(id);
 
 function getPlan(){
   return document.querySelector('input[name=plan]:checked').value;
 }
 
-// ---- live search ----
-$("search").addEventListener("input", function(){
-  const q = this.value.trim();
-  selectedScheme = null;
-  $("selected").textContent = "";
-  updateAddState();
-  clearTimeout(searchTimer);
-  if(q.length < 3){ $("results").style.display="none"; return; }
-  searchTimer = setTimeout(()=>runSearch(q), 300);
-});
-
-async function runSearch(q){
-  const box = $("results");
-  box.style.display = "block";
-  box.innerHTML = '<div class="hint">Searching…</div>';
+// ---- load + filter full scheme list once ----
+async function loadSchemeList(){
   try{
-    const res = await fetch(`${API}/mf/search?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
-    const plan = getPlan();
+    const res = await fetch(`${API}/mf`);
+    const all = await res.json();
 
-    const filtered = data.filter(s=>{
+    all.forEach(s=>{
       const n = s.schemeName.toLowerCase();
 
-      // must be a Growth variant, not income/dividend variants
       const isGrowth = n.includes("growth");
       const isIncome = n.includes("idcw") || n.includes("dividend") ||
                        n.includes("payout") || n.includes("reinvest") ||
                        n.includes("bonus");
-      if(!isGrowth || isIncome) return false;
+      if(!isGrowth || isIncome) return;
 
-      // plan detection
+      // drop obvious non-equity noise to keep the list lean
+      const isNonEquity = n.includes("liquid") || n.includes("overnight") ||
+                          n.includes("gilt") || n.includes("money market") ||
+                          n.includes("ultra short") || n.includes("low duration") ||
+                          n.includes("banking and psu") || n.includes("corporate bond") ||
+                          n.includes("credit risk") || n.includes("debt") ||
+                          n.includes("duration");
+      if(isNonEquity) return;
+
+      const entry = { schemeCode: s.schemeCode, schemeName: s.schemeName, lower: n };
       const hasDirect  = n.includes("direct");
       const hasRegular = n.includes("regular");
-      if(plan === "Direct"){
-        return hasDirect;
-      } else {
-        // Regular = explicitly regular, OR neither word present (older names)
-        return hasRegular || (!hasDirect && !hasRegular);
-      }
+      if(hasDirect) listDirect.push(entry);
+      else if(hasRegular || (!hasDirect && !hasRegular)) listRegular.push(entry);
     });
 
-    if(filtered.length === 0){
-      box.innerHTML = '<div class="hint">No '+plan+' Growth matches for “'+q+'”. Try a fuller name (a complete word like HDFC, Flexi, Bluechip).</div>';
-      return;
-    }
-
-    box.innerHTML = '<div class="hint">'+filtered.length+' match(es):</div>';
-    filtered.slice(0,30).forEach(s=>{
-      const d = document.createElement("div");
-      d.textContent = s.schemeName;
-      d.onclick = ()=>pickScheme(s);
-      box.appendChild(d);
-    });
+    listReady = true;
+    $("loadbar").textContent = "Ready — " + listDirect.length + " Direct / " + listRegular.length + " Regular equity Growth schemes loaded.";
+    $("loadbar").style.color = "var(--accent)";
+    $("search").disabled = false;
+    $("search").placeholder = "Type AMC or fund name, e.g. HDFC Flexi, ICICI, Parag Parikh";
   }catch(e){
-    box.innerHTML = '<div class="hint">Search failed — check connection and retry.</div>';
+    $("loadbar").textContent = "Could not load scheme list. Refresh the page to retry.";
+    $("loadbar").style.color = "var(--danger)";
   }
+}
+
+// ---- local search ----
+$("search").addEventListener("input", function(){
+  const q = this.value.trim().toLowerCase();
+  selectedScheme = null;
+  $("selected").textContent = "";
+  updateAddState();
+  clearTimeout(searchTimer);
+  if(q.length < 2){ $("results").style.display="none"; return; }
+  searchTimer = setTimeout(()=>runSearch(q), 150);
+});
+
+function runSearch(q){
+  if(!listReady) return;
+  const box = $("results");
+  box.style.display = "block";
+
+  const list = getPlan() === "Direct" ? listDirect : listRegular;
+  const words = q.split(/\s+/).filter(Boolean);
+
+  // every typed word must appear somewhere in the scheme name
+  const matches = list.filter(s => words.every(w => s.lower.includes(w)));
+
+  if(matches.length === 0){
+    box.innerHTML = '<div class="hint">No matches. Try fewer or different words (e.g. just “hdfc” or “flexi cap”).</div>';
+    return;
+  }
+
+  box.innerHTML = '<div class="hint">'+matches.length+' match(es)'+(matches.length>50?' — showing first 50':'')+':</div>';
+  matches.slice(0,50).forEach(s=>{
+    const d = document.createElement("div");
+    d.textContent = s.schemeName;
+    d.onclick = ()=>pickScheme(s);
+    box.appendChild(d);
+  });
 }
 
 function pickScheme(s){
@@ -342,6 +371,9 @@ function render(){
 document.addEventListener("click", e=>{
   if(!e.target.closest(".search-wrap")) $("results").style.display="none";
 });
+
+// kick off list load
+loadSchemeList();
 </script>
 </body>
 </html>
