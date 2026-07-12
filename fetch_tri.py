@@ -1,7 +1,7 @@
 import json
 import os
 import time
-import requests
+import httpx
 
 START = "01-Jan-2010"
 END = time.strftime("%d-%b-%Y")
@@ -26,7 +26,7 @@ INDICES = {
 
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
@@ -41,7 +41,6 @@ BROWSER_HEADERS = {
 }
 
 POST_HEADERS = {
-    "Connection": "keep-alive",
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -60,25 +59,23 @@ POST_HEADERS = {
 TRI_URL = "https://niftyindices.com/Backpage.aspx/getTotalReturnIndexString"
 
 
-def make_session():
-    s = requests.Session()
-    s.headers.update(BROWSER_HEADERS)
-    warmup = [
+def make_client():
+    # HTTP/2 via httpx is the technique that gets past NSE's datacenter block.
+    client = httpx.Client(http2=True, headers=BROWSER_HEADERS, timeout=60.0, follow_redirects=True)
+    for url in [
         "https://www.niftyindices.com",
-        "https://www.niftyindices.com/reports/historical-data",
         "https://niftyindices.com/reports/historical-data",
-    ]
-    for url in warmup:
+    ]:
         try:
-            r = s.get(url, timeout=30)
-            print(f"  warm-up {url} -> {r.status_code}, cookies now: {list(s.cookies.keys())}")
+            r = client.get(url)
+            print(f"  warm-up {url} -> HTTP {r.status_code} (http2={r.http_version}), cookies: {list(client.cookies.keys())}")
         except Exception as e:
             print(f"  warm-up warning {url}: {e}")
-        time.sleep(2)
-    return s
+        time.sleep(1.5)
+    return client
 
 
-def fetch_one(session, index_name, attempts=4):
+def fetch_one(client, index_name, attempts=4):
     body = {
         "cinfo": "{'name':'" + index_name + "','startDate':'" + START +
                  "','endDate':'" + END + "','indexName':'" + index_name + "'}"
@@ -86,17 +83,17 @@ def fetch_one(session, index_name, attempts=4):
     last_err = None
     for attempt in range(1, attempts + 1):
         try:
-            r = session.post(TRI_URL, headers=POST_HEADERS, json=body, timeout=60)
+            r = client.post(TRI_URL, headers=POST_HEADERS, json=body)
             if r.status_code != 200:
                 last_err = f"HTTP {r.status_code}"
                 time.sleep(3 * attempt)
                 continue
             try:
                 outer = r.json()
-            except ValueError:
-                snippet = r.text[:180].replace("\n", " ").replace("\r", " ")
+            except Exception:
+                snippet = r.text[:200].replace("\n", " ").replace("\r", " ")
                 last_err = f"non-JSON (try {attempt}): {snippet!r}"
-                time.sleep(3 * attempt)   # back off and retry
+                time.sleep(3 * attempt)
                 continue
             rows = json.loads(outer["d"])
             return rows
@@ -127,12 +124,12 @@ def normalise(rows):
 
 def main():
     os.makedirs("data", exist_ok=True)
-    session = make_session()
+    client = make_client()
 
     ok, fail = 0, 0
     for index_name, filename in INDICES.items():
         try:
-            rows = fetch_one(session, index_name)
+            rows = fetch_one(client, index_name)
             clean = normalise(rows)
             if not clean:
                 print(f"FAIL  {index_name}: parsed but 0 usable rows")
@@ -147,6 +144,7 @@ def main():
             fail += 1
         time.sleep(2)
 
+    client.close()
     print(f"\nDone. {ok} succeeded, {fail} failed.")
     if ok == 0:
         raise SystemExit("No indices fetched — see errors above.")
