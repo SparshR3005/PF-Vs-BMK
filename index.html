@@ -71,6 +71,9 @@
   .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
   .stat .v{font-size:18px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;}
   .foot{color:var(--muted);font-size:11px;margin-top:12px;}
+  .tri-banner{background:#3a2f1a;border:1px solid #7a5c1e;color:#e8d9a8;
+    border-radius:8px;padding:10px 14px;margin:0 0 18px;font-size:13px;line-height:1.45;}
+  .tri-banner b{color:#f4e6bc;}
   /* portfolio manager */
   .pm-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
   .pm-bar select{width:auto;min-width:200px;}
@@ -101,7 +104,9 @@
 <body>
 <div class="wrap">
   <h1>SIP Performance — Fund vs Benchmark XIRR</h1>
-  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return next to the matching index fund's return over the same period.</p>
+  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return next to the matching index's Total Return Index (TRI) over the same period.</p>
+
+  <div id="triBanner" class="tri-banner" style="display:none;"></div>
 
   <!-- ===== PORTFOLIO MANAGER ===== -->
   <div class="card">
@@ -272,28 +277,29 @@ const CATEGORY_DEFAULTS = [
   { match: "elss",          key: "NIFTY500" },
 ];
 const FALLBACK_KEY = "NIFTY500";
+// label = display name for the benchmark; fb = fallback key used when this
+// index's TRI file is missing (degrades a sector to its broad-market proxy).
 const BENCH_FUNDS = {
-  NIFTY50:              { label:"Nifty 50 TRI",              req:["nifty50"], exc:["500","100","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY500" },
-  NIFTY100:             { label:"Nifty 100 TRI",             req:["nifty100"], exc:["500","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY50" },
-  NIFTY500:             { label:"Nifty 500 TRI",             req:["nifty500"], exc:["multicap","502525","value","equal","quality","momentum","low","alpha","esg"], fb:null },
-  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 TRI",      req:["midcap150"], exc:["quality","momentum","select","largemidcap"], fb:"NIFTY500" },
-  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 TRI",    req:["smallcap250"], exc:["quality","momentum","largemidcap"], fb:"NIFTY500" },
-  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 TRI", req:["largemidcap250"], exc:[], fb:"NIFTY500" },
-  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 TRI", req:["multicap","502525"], exc:[], fb:"NIFTY500" },
-  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services TRI", req:["financialservices"], exc:["exbank","2530"], fb:"NIFTY_BANK" },
-  NIFTY_BANK:           { label:"Nifty Bank TRI",            req:["niftybank"], exc:["private","psu"], fb:"NIFTY500" },
-  NIFTY_IT:             { label:"Nifty IT TRI",              req:["niftyit"], exc:[], fb:"NIFTY500" },
-  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",          req:["pharma"], exc:[], fb:"NIFTY500" },
-  NIFTY_FMCG:           { label:"Nifty FMCG TRI",            req:["fmcg"], exc:[], fb:"NIFTY_CONSUMPTION" },
-  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption TRI", req:["consumption"], exc:[], fb:"NIFTY500" },
-  NIFTY_INFRA:          { label:"Nifty Infrastructure TRI",  req:["infrastructure"], exc:[], fb:"NIFTY500" },
-  NIFTY_AUTO:           { label:"Nifty Auto TRI",            req:["niftyauto"], exc:[], fb:"NIFTY500" },
-  NIFTY_ENERGY:         { label:"Nifty Energy TRI",          req:["energy"], exc:["renewable"], fb:"NIFTY500" },
-  NIFTY_PSE:            { label:"Nifty PSE TRI",             req:["niftypse"], exc:[], fb:"NIFTY500" },
+  NIFTY50:              { label:"Nifty 50 TRI",                   fb:"NIFTY500" },
+  NIFTY100:             { label:"Nifty 100 TRI",                  fb:"NIFTY50" },
+  NIFTY500:             { label:"Nifty 500 TRI",                  fb:null },
+  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 TRI",           fb:"NIFTY500" },
+  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 TRI",         fb:"NIFTY500" },
+  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 TRI",      fb:"NIFTY500" },
+  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 TRI", fb:"NIFTY500" },
+  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services TRI",   fb:"NIFTY_BANK" },
+  NIFTY_BANK:           { label:"Nifty Bank TRI",                 fb:"NIFTY500" },
+  NIFTY_IT:             { label:"Nifty IT TRI",                   fb:"NIFTY500" },
+  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",               fb:"NIFTY500" },
+  NIFTY_FMCG:           { label:"Nifty FMCG TRI",                 fb:"NIFTY_CONSUMPTION" },
+  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption TRI",    fb:"NIFTY500" },
+  NIFTY_INFRA:          { label:"Nifty Infrastructure TRI",       fb:"NIFTY500" },
+  NIFTY_AUTO:           { label:"Nifty Auto TRI",                 fb:"NIFTY500" },
+  NIFTY_ENERGY:         { label:"Nifty Energy TRI",               fb:"NIFTY500" },
+  NIFTY_PSE:            { label:"Nifty PSE TRI",                  fb:"NIFTY500" },
 };
 
 function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
-function compact(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,""); }
 function hasWord(hay, w){ return new RegExp("(^|[^a-z])"+w+"([^a-z]|$)","i").test(hay); }
 function escapeHtml(v){ return String(v==null?"":v).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
 function uid(){ return (typeof crypto!=="undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2)); }
@@ -374,6 +380,36 @@ async function resolveBenchmarkTri(key, approxIn){
     approx = true;                       // any fallback is an approximation of the ideal benchmark
   }
   return null;
+}
+
+/* ---- TRI freshness check ----------------------------------------------
+   The nightly fetcher writes data/tri/index.json (a manifest listing each
+   index's latest covered market day). If that newest day is older than a
+   few days, the fetch has probably been failing and every comparison is
+   silently running on stale TRI data. Surface that with a banner instead
+   of the footer's cheerful "refreshed automatically each market day".
+   Silent no-op if the manifest is absent (comparisons still work). ------- */
+const TRI_STALE_DAYS = 6;   // tolerate a weekend + one holiday before warning
+async function checkTriFreshness(){
+  try{
+    const res = await fetch(`${TRI_DIR}/index.json`, {cache:"no-store"});
+    if(!res.ok) return;
+    const m = await res.json();
+    const ends = (m.indices||[]).map(x=>x&&x.end).filter(Boolean).sort();
+    if(!ends.length) return;
+    const newestDate = parseInput(ends[ends.length-1]);   // "YYYY-MM-DD"
+    if(!newestDate) return;
+    const ageDays = Math.floor(daysBetween(newestDate, new Date()));
+    if(ageDays > TRI_STALE_DAYS){
+      const el = $("triBanner");
+      if(el){
+        el.style.display = "block";
+        el.innerHTML = "⚠ Benchmark (TRI) data looks stale — the latest covered market day is <b>"
+          + fmtDate(newestDate) + "</b> (" + ageDays + " days ago). Comparisons use the newest available TRI, "
+          + "so alpha may be off until the nightly fetch catches up. Check the repo's Actions log if this persists.";
+      }
+    }
+  }catch(e){ /* no manifest / offline: stay silent */ }
 }
 
 /* ---- load + dedupe scheme list ---- */
@@ -623,8 +659,16 @@ function xirr(inputFlows){
 }
 
 function scheduleDates(start,end){
+  // Anchor every installment to the ORIGINAL start day-of-month. addMonths
+  // clamps for short months (e.g. 31 -> 28/30) but the anchor is recomputed
+  // from `start` each time, so it recovers on longer months instead of
+  // permanently drifting down to the shortest month seen so far.
   const dates=[];
-  for(let d=new Date(start.getTime());d<=end;d=addMonths(d,1)) dates.push(new Date(d.getTime()));
+  for(let i=0;;i++){
+    const d=addMonths(start,i);
+    if(d>end) break;
+    dates.push(d);
+  }
   return dates;
 }
 
@@ -1545,7 +1589,8 @@ document.addEventListener("click", e=>{
 /* ---- boot ---- */
 loadStore();
 refreshPfSelect();
-loadSchemeList();   // will call afterListReady() -> hydrateActive()
+loadSchemeList();      // will call afterListReady() -> hydrateActive()
+checkTriFreshness();   // warn if committed TRI data has gone stale
 </script>
 </body>
 </html>
