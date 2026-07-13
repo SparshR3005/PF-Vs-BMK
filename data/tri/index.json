@@ -1,0 +1,54 @@
+{
+  "generated_utc": "2026-07-13T19:14:01Z",
+  "indices": [
+    {
+      "index": "NIFTY 50",
+      "file": "NIFTY_50.json",
+      "count": 6724,
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "index": "NIFTY 500",
+      "file": "NIFTY_500.json",
+      "count": 6849,
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "index": "NIFTY NEXT 50",
+      "file": "NIFTY_NEXT_50.json",
+      "count": 5882,
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "index": "NIFTY MIDCAP 150",
+      "file": "NIFTY_MIDCAP_150.json",
+      "count": 5277,
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "index": "NIFTY SMALLCAP 250",
+      "file": "NIFTY_SMALLCAP_250.json",
+      "count": 5277,
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "index": "NIFTY FMCG",
+      "file": "NIFTY_FMCG.json",
+      "count": 6849,
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "index": "NIFTY FINANCIAL SERVICES",
+      "file": "NIFTY_FINANCIAL_SERVICES.json",
+      "count": 5592,
+      "end": "2026-07-13",
+      "fresh": true
+    }
+  ]
+}
