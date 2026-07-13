@@ -79,6 +79,23 @@
   .hidden-file{display:none;}
   .divider{height:1px;background:var(--line);margin:14px 0;}
   .hintline{font-size:12px;color:var(--muted);margin-top:6px;}
+
+  .privacy-note{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:#101923;color:var(--muted);font-size:12px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
+  .privacy-note b{color:var(--text);}
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:1000;display:none;align-items:center;justify-content:center;padding:20px;}
+  .modal{width:min(1180px,100%);max-height:90vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;box-shadow:0 20px 70px rgba(0,0,0,.45);}
+  .modal h2{font-size:18px;margin:0 0 6px;}
+  .modal-actions{display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:14px;flex-wrap:wrap;}
+  .preview-table{min-width:980px;}
+  .preview-table td,.preview-table th{padding:8px 7px;}
+  .preview-table .ok{color:var(--accent);}
+  .preview-table .warn{color:var(--accent2);}
+  .preview-table .bad{color:var(--danger);}
+  .preview-table input[type=checkbox]{width:auto;}
+  .scroll-x{overflow-x:auto;}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;}
+  @media(max-width:760px){body{padding:12px}.row{grid-template-columns:1fr}.wrap{max-width:100%}.stat .v{font-size:16px;}}
+
 </style>
 </head>
 <body>
@@ -108,6 +125,10 @@
       <span class="status" id="pmStatus" style="margin:0;"></span>
     </div>
     <div class="hintline">Portfolios are saved in this browser automatically. Import accepts the template's columns: Scheme, Plan, Start (YYYY-MM-DD), End (optional), Monthly.</div>
+    <div class="privacy-note">
+      <span><b>Privacy:</b> portfolio inputs are stored only in this browser under this website's origin. A person opening the same link on another device or browser does not receive these portfolios.</span>
+      <button class="btn small" id="eraseLocalBtn" style="border-color:var(--muted);color:var(--muted);">Erase browser data</button>
+    </div>
   </div>
 
   <div class="card">
@@ -162,6 +183,25 @@
   </div>
 </div>
 
+
+<div class="modal-backdrop" id="importModal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+  <div class="modal">
+    <h2 id="importModalTitle">Review Excel import</h2>
+    <div class="hintline" id="importPreviewSummary"></div>
+    <div class="scroll-x" style="margin-top:12px;">
+      <table class="preview-table">
+        <thead><tr><th>Import</th><th>Excel row</th><th>Input scheme</th><th>Input plan</th><th>Resolved scheme</th><th>Start</th><th>Monthly</th><th>Status</th></tr></thead>
+        <tbody id="importPreviewBody"></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <span class="status" id="importModalStatus" style="margin-right:auto;"></span>
+      <button class="btn ghost" id="importCancelBtn">Cancel</button>
+      <button class="btn" id="importConfirmBtn">Import selected rows</button>
+    </div>
+  </div>
+</div>
+
 <!-- xlsx-js-style: SheetJS fork that supports cell fills + number formats (needed for coloured, %-formatted export) -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 
@@ -172,6 +212,7 @@ let selectedScheme = null;
 let searchTimer = null;
 let detailCache = {};
 let schemes = [];
+let importPreviewRows = [];
 
 let listDirect = [];
 let listRegular = [];
@@ -251,9 +292,11 @@ const BENCH_FUNDS = {
   NIFTY_PSE:            { label:"Nifty PSE Index",             req:["niftypse"], exc:[], fb:"NIFTY500" },
 };
 
-function normName(s){ return s.toLowerCase().replace(/\s+/g," ").trim(); }
-function compact(s){ return s.toLowerCase().replace(/[^a-z0-9]/g,""); }
+function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
+function compact(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,""); }
 function hasWord(hay, w){ return new RegExp("(^|[^a-z])"+w+"([^a-z]|$)","i").test(hay); }
+function escapeHtml(v){ return String(v==null?"":v).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
+function uid(){ return (typeof crypto!=="undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2)); }
 
 function resolveBenchmarkKey(schemeName, category){
   const n = normName(schemeName);
@@ -286,34 +329,43 @@ function gatherCandidates(pat){
     if(!isIndex && !isETF) continue;
     const isDirect = c.includes("direct");
     const isGrowth = c.includes("growth");
-    let score = 0;
-    if(isIndex) score += 100;
-    if(isDirect) score += 40;
-    if(isGrowth) score += 20;
-    if(isETF && !isIndex) score += 10;
-    if(isIndex && !isGrowth) score -= 60;
-    scored.push({ s, score });
+    let tier = 3;
+    if(isIndex && isDirect && isGrowth) tier = 0;
+    else if(isIndex && isGrowth) tier = 1;
+    else if(isIndex) tier = 2;
+    scored.push({ s, tier, name:s.schemeName.length });
   }
-  scored.sort((a,b)=> b.score - a.score);
-  return scored.slice(0, 6).map(x=>x.s);
+  scored.sort((a,b)=> a.tier-b.tier || a.name-b.name || a.s.schemeName.localeCompare(b.s.schemeName));
+  if(!scored.length) return [];
+  const bestTier = scored[0].tier;
+  return scored.filter(x=>x.tier===bestTier).map(x=>x.s);
+}
+
+async function mapLimit(items, limit, worker){
+  const results = new Array(items.length);
+  let next = 0;
+  async function runner(){
+    while(true){
+      const i = next++;
+      if(i>=items.length) return;
+      try{ results[i] = await worker(items[i], i); }
+      catch(e){ results[i] = null; }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(limit,items.length)}, runner));
+  return results;
 }
 
 async function pickLongestHistory(cands, label){
-  let best = null, bestFirst = Infinity, bestLen = -1;
-  for(const s of cands){
-    try{
-      const d = await getDetail(s.schemeCode);
-      if(!d.navArr.length) continue;
-      const first = d.navArr[0].date.getTime();
-      const len = d.navArr.length;
-      if(first < bestFirst || (first === bestFirst && len > bestLen)){
-        bestFirst = first; bestLen = len;
-        best = { code:s.schemeCode, name:s.schemeName, label };
-      }
-    }catch(e){ /* skip unreachable candidate */ }
-  }
-  if(!best && cands.length){ best = { code:cands[0].schemeCode, name:cands[0].schemeName, label }; }
-  return best;
+  if(!cands.length) return null;
+  const checked = await mapLimit(cands, 5, async s=>{
+    const d = await getDetail(s.schemeCode);
+    if(!d.navArr.length) return null;
+    return { code:s.schemeCode, name:s.schemeName, label,
+             first:d.navArr[0].date.getTime(), len:d.navArr.length };
+  });
+  const valid = checked.filter(Boolean).sort((a,b)=>a.first-b.first || b.len-a.len || a.name.localeCompare(b.name));
+  return valid.length ? {code:valid[0].code, name:valid[0].name, label:valid[0].label} : null;
 }
 
 const benchFundCache = {};
@@ -341,9 +393,10 @@ async function resolveBenchmarkFund(key, approxIn){
 /* ---- load + dedupe scheme list ---- */
 async function loadSchemeList(){
   try{
-    const res = await fetch(`${API}/mf`);
-    const all = await res.json();
+    const all = await fetchJson(`${API}/mf`);
+    if(!Array.isArray(all)) throw new Error("Invalid scheme-list response");
     allSchemes = all;
+    listDirect = []; listRegular = [];
 
     const seenDirect = new Set();
     const seenRegular = new Set();
@@ -451,93 +504,168 @@ function updateAddState(){
 }
 ["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
 
-/* ---- detail fetch ---- */
+/* ---- detail fetch + validated NAV calculations ---- */
+async function fetchJson(url, attempts=3){
+  let lastErr = null;
+  for(let i=0;i<attempts;i++){
+    try{
+      const res = await fetch(url, {cache:"no-store"});
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      return await res.json();
+    }catch(e){
+      lastErr=e;
+      if(i<attempts-1) await new Promise(r=>setTimeout(r, 350*Math.pow(2,i)));
+    }
+  }
+  throw lastErr || new Error("Network request failed");
+}
+
 async function getDetail(code){
-  if(detailCache[code]) return detailCache[code];
-  const res = await fetch(`${API}/mf/${code}`);
-  const json = await res.json();
-  const arr = (json.data||[]).map(d=>{
-    const p = d.date.split("-");
-    return { date: new Date(+p[2], +p[1]-1, +p[0]), nav: parseFloat(d.nav) };
-  }).filter(x=>!isNaN(x.nav)).sort((a,b)=>a.date-b.date);
+  const key = String(code||"").trim();
+  if(!/^\d+$/.test(key)) throw new Error("Invalid scheme code: "+key);
+  if(detailCache[key]) return detailCache[key];
+  const json = await fetchJson(`${API}/mf/${encodeURIComponent(key)}`);
+  if(!json || !json.meta || !Array.isArray(json.data)) throw new Error("Invalid NAV response for code "+key);
+  const arr = json.data.map(d=>{
+    const m = String(d.date||"").match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if(!m) return null;
+    const dt = new Date(+m[3], +m[2]-1, +m[1]);
+    const nav = Number(d.nav);
+    return Number.isFinite(nav) && nav>0 ? {date:dt, nav} : null;
+  }).filter(Boolean).sort((a,b)=>a.date-b.date);
+  if(!arr.length) throw new Error("No usable NAV history for code "+key);
   const detail = {
-    navArr: arr,
-    category: (json.meta && json.meta.scheme_category) || "",
-    name: (json.meta && json.meta.scheme_name) || ""
+    code:key,
+    navArr:arr,
+    category:String(json.meta.scheme_category||""),
+    name:String(json.meta.scheme_name||"")
   };
-  detailCache[code] = detail;
+  detailCache[key]=detail;
   return detail;
 }
 
 function navOnOrBefore(navArr, date){
   let lo=0, hi=navArr.length-1, ans=null;
-  const t = date.getTime();
+  const t=date.getTime();
   while(lo<=hi){
     const mid=(lo+hi)>>1;
-    if(navArr[mid].date.getTime() <= t){ ans=navArr[mid]; lo=mid+1; }
-    else hi=mid-1;
+    if(navArr[mid].date.getTime()<=t){ans=navArr[mid];lo=mid+1;} else hi=mid-1;
   }
   return ans;
 }
 
-function addMonths(d,n){
-  const nd=new Date(d.getTime()); const day=nd.getDate();
-  nd.setDate(1); nd.setMonth(nd.getMonth()+n);
-  const last=new Date(nd.getFullYear(),nd.getMonth()+1,0).getDate();
-  nd.setDate(Math.min(day,last)); return nd;
-}
-function daysBetween(a,b){ return (b.getTime()-a.getTime())/86400000; }
-function parseInput(v){ const p=v.split("-"); return new Date(+p[0],+p[1]-1,+p[2]); }
-function maxDate(a,b){ return a.getTime()>=b.getTime()?a:b; }
-function minDate(a,b){ return a.getTime()<=b.getTime()?a:b; }
-
-function xirr(flows){
-  if(flows.length<2) return null;
-  if(!flows.some(f=>f.amount>0)||!flows.some(f=>f.amount<0)) return null;
-  const d0=flows[0].date;
-  const npv=r=>flows.reduce((s,f)=>s+f.amount/Math.pow(1+r,daysBetween(d0,f.date)/365),0);
-  const dnpv=r=>flows.reduce((s,f)=>{const t=daysBetween(d0,f.date)/365; return t?s-t*f.amount/Math.pow(1+r,t+1):s;},0);
-  let r=0.15, ok=false;
-  for(let i=0;i<100;i++){
-    const f=npv(r), df=dnpv(r);
-    if(Math.abs(df)<1e-9) break;
-    let nx=r-f/df; if(nx<=-0.999999) nx=-0.999999;
-    if(Math.abs(nx-r)<1e-8){ r=nx; ok=true; break; } r=nx;
+function navOnOrAfter(navArr, date, maxGapDays=7){
+  let lo=0, hi=navArr.length-1, ans=null;
+  const t=date.getTime();
+  while(lo<=hi){
+    const mid=(lo+hi)>>1;
+    if(navArr[mid].date.getTime()>=t){ans=navArr[mid];hi=mid-1;} else lo=mid+1;
   }
-  if(ok && isFinite(r)) return r;
-  let lo=-0.9999, hi=10, flo=npv(lo);
-  if((flo>0)===(npv(hi)>0)) return isFinite(r)?r:null;
-  for(let i=0;i<200;i++){ const m=(lo+hi)/2, fm=npv(m);
-    if(Math.abs(fm)<1e-6) return m;
-    if((fm>0)===(flo>0)){lo=m;flo=fm;} else hi=m; }
-  return (lo+hi)/2;
+  if(!ans) return null;
+  return daysBetween(date,ans.date)<=maxGapDays ? ans : null;
 }
 
-function scheduleDates(start, end){
+function addMonths(d,n){
+  const nd=new Date(d.getTime()), day=nd.getDate();
+  nd.setDate(1); nd.setMonth(nd.getMonth()+n);
+  nd.setDate(Math.min(day,new Date(nd.getFullYear(),nd.getMonth()+1,0).getDate()));
+  return nd;
+}
+function daysBetween(a,b){return (b.getTime()-a.getTime())/86400000;}
+function isoDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
+function parseInput(v){
+  const m=String(v||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return null;
+  const d=new Date(+m[1],+m[2]-1,+m[3]);
+  return d.getFullYear()==+m[1] && d.getMonth()==+m[2]-1 && d.getDate()==+m[3] ? d : null;
+}
+function minDate(a,b){return a.getTime()<=b.getTime()?a:b;}
+
+function normaliseFlows(flows){
+  const map=new Map();
+  for(const f of flows){
+    if(!f || !(f.date instanceof Date) || !Number.isFinite(f.amount)) continue;
+    const k=isoDate(f.date);
+    map.set(k,(map.get(k)||0)+f.amount);
+  }
+  return [...map.entries()].map(([k,amount])=>({date:parseInput(k),amount})).filter(f=>Math.abs(f.amount)>1e-9).sort((a,b)=>a.date-b.date);
+}
+
+function xirr(inputFlows){
+  const flows=normaliseFlows(inputFlows);
+  if(flows.length<2 || !flows.some(f=>f.amount>0) || !flows.some(f=>f.amount<0)) return null;
+  const d0=flows[0].date;
+  const npv=r=>{
+    if(r<=-1) return NaN;
+    return flows.reduce((s,f)=>s+f.amount/Math.pow(1+r,daysBetween(d0,f.date)/365),0);
+  };
+  const dnpv=r=>flows.reduce((s,f)=>{
+    const t=daysBetween(d0,f.date)/365;
+    return t ? s-t*f.amount/Math.pow(1+r,t+1) : s;
+  },0);
+
+  let r=.10;
+  for(let i=0;i<60;i++){
+    const f=npv(r), df=dnpv(r);
+    if(!Number.isFinite(f)||!Number.isFinite(df)||Math.abs(df)<1e-12) break;
+    const nr=r-f/df;
+    if(!Number.isFinite(nr)||nr<=-.999999||nr>1000) break;
+    if(Math.abs(nr-r)<1e-10 && Math.abs(npv(nr))<1e-5) return nr;
+    r=nr;
+  }
+
+  const grid=[];
+  for(let u=Math.log(.0001);u<=Math.log(1001);u+=.12) grid.push(Math.exp(u)-1);
+  let prev=grid[0], fp=npv(prev);
+  for(let i=1;i<grid.length;i++){
+    const cur=grid[i], fc=npv(cur);
+    if(Number.isFinite(fp)&&Number.isFinite(fc)){
+      if(Math.abs(fc)<1e-7) return cur;
+      if((fp>0)!==(fc>0)){
+        let lo=prev, hi=cur, flo=fp;
+        for(let j=0;j<180;j++){
+          const mid=(lo+hi)/2, fm=npv(mid);
+          if(Math.abs(fm)<1e-7 || Math.abs(hi-lo)<1e-12) return mid;
+          if((flo>0)===(fm>0)){lo=mid;flo=fm;} else hi=mid;
+        }
+        return (lo+hi)/2;
+      }
+    }
+    prev=cur; fp=fc;
+  }
+  return null;
+}
+
+function scheduleDates(start,end){
   const dates=[];
-  let d=new Date(start.getTime());
-  while(d.getTime() <= end.getTime()){ dates.push(new Date(d.getTime())); d=addMonths(d,1); }
+  for(let d=new Date(start.getTime());d<=end;d=addMonths(d,1)) dates.push(new Date(d.getTime()));
   return dates;
 }
 
-function runSIP(navArr, dates, amount, valueDate){
-  let units=0, invested=0, placed=0;
-  const flows=[];
-  for(const d of dates){
-    const n = navOnOrBefore(navArr, d);
-    if(n && n.nav>0){
-      units += amount / n.nav;
-      invested += amount;
-      placed++;
-      flows.push({date:new Date(d.getTime()), amount:-amount});
-    }
+function runSIP(navArr,dates,amount,valueDate){
+  const installments=[];
+  for(const scheduledDate of dates){
+    const n=navOnOrAfter(navArr,scheduledDate,7);
+    if(!n || n.date>valueDate) continue;
+    installments.push({scheduledDate:new Date(scheduledDate),tradeDate:new Date(n.date),nav:n.nav,amount,units:amount/n.nav});
   }
-  if(flows.length===0) return null;
-  const vn = navOnOrBefore(navArr, valueDate);
-  const currentValue = units * (vn ? vn.nav : 0);
-  const xirrFlows = flows.concat([{date:new Date(valueDate.getTime()), amount:currentValue}]);
-  return { invested, currentValue, units, placed, xirr: xirr(xirrFlows), flows,
-           firstDate: dates.length?dates[0]:null };
+  if(!installments.length) return null;
+  const valuation=valuationAt({installments},navArr,valueDate);
+  if(!valuation) return null;
+  const flows=installments.map(x=>({date:new Date(x.tradeDate),amount:-x.amount}));
+  const x=xirr(flows.concat([{date:new Date(valueDate),amount:valuation.currentValue}]));
+  return {invested:valuation.invested,currentValue:valuation.currentValue,units:valuation.units,
+          placed:installments.length,xirr:x,flows,installments,firstDate:installments[0].tradeDate};
+}
+
+function valuationAt(run,navArr,valueDate){
+  const vn=navOnOrBefore(navArr,valueDate);
+  if(!vn) return null;
+  const used=run.installments.filter(x=>x.tradeDate<=valueDate);
+  const units=used.reduce((s,x)=>s+x.units,0);
+  const invested=used.reduce((s,x)=>s+x.amount,0);
+  return {units,invested,currentValue:units*vn.nav,nav:vn.nav,date:vn.date,
+          flows:used.map(x=>({date:new Date(x.tradeDate),amount:-x.amount}))};
 }
 
 /* ============================================================
@@ -547,66 +675,54 @@ function runSIP(navArr, dates, amount, valueDate){
    returns the pushable scheme object (or throws on hard failure)
    ============================================================ */
 async function computeScheme(spec){
-  const detail = await getDetail(spec.code);
-  const fundNav = detail.navArr;
-  if(!fundNav.length) throw new Error("No NAV data for "+spec.name);
+  const detail=await getDetail(spec.code);
+  const fundNav=detail.navArr;
+  const start=parseInput(spec.startStr);
+  const endVal=spec.endStr?parseInput(spec.endStr):null;
+  const amount=Number(spec.amount);
+  if(!start) throw new Error("Invalid start date for "+spec.name);
+  if(spec.endStr && !endVal) throw new Error("Invalid end date for "+spec.name);
+  if(endVal && endVal<start) throw new Error("End date is before start date for "+spec.name);
+  if(!(amount>0)) throw new Error("Monthly SIP must be greater than zero for "+spec.name);
 
-  const start  = parseInput(spec.startStr);
-  const endVal = spec.endStr ? parseInput(spec.endStr) : null;
-  const amount = Number(spec.amount);
-  const category = spec.category || detail.category || "";
+  const officialName=detail.name||spec.name;
+  const category=spec.category||detail.category||"";
+  const fundLast=fundNav[fundNav.length-1].date;
+  const fundSipEnd=endVal&&endVal<fundLast?endVal:fundLast;
+  const fundDates=scheduleDates(start,fundSipEnd);
+  const fundFull=runSIP(fundNav,fundDates,amount,fundLast);
+  if(!fundFull) throw new Error("No valid SIP instalment could be placed for "+officialName);
 
-  const fundLast = fundNav[fundNav.length-1].date;
-  let fundSipEnd = fundLast;
-  if(endVal && endVal.getTime() < fundSipEnd.getTime()) fundSipEnd = endVal;
-  const fundDates = scheduleDates(start, fundSipEnd);
-  if(fundDates.length===0) throw new Error("Start date after latest NAV for "+spec.name);
-  const fundFull = runSIP(fundNav, fundDates, amount, fundLast);
-  if(!fundFull) throw new Error("Couldn't value SIP for "+spec.name);
-
-  const bk = resolveBenchmarkKey(spec.name, category);
-  const benchFund = await resolveBenchmarkFund(bk.key, bk.approx);
-
-  let benchNav = null, benchInfo = null;
+  const bk=resolveBenchmarkKey(officialName,category);
+  const benchFund=await resolveBenchmarkFund(bk.key,bk.approx);
+  let benchNav=null,benchInfo=null;
   if(benchFund){
-    try{
-      const bd = await getDetail(benchFund.code);
-      if(bd.navArr.length){ benchNav = bd.navArr; benchInfo = benchFund; }
-    }catch(e){}
+    try{const bd=await getDetail(benchFund.code);benchNav=bd.navArr;benchInfo=benchFund;}catch(e){}
   }
 
-  let fundCmp=null, benchCmp=null, cmpFirst=null, cmpCount=0, cmpValueDate=null;
-  if(benchNav){
-    cmpValueDate = minDate(fundLast, benchNav[benchNav.length-1].date);
-    let cmpEnd = cmpValueDate;
-    if(endVal && endVal.getTime() < cmpEnd.getTime()) cmpEnd = endVal;
-    const common = scheduleDates(start, cmpEnd).filter(d=>{
-      const a = navOnOrBefore(fundNav, d), b = navOnOrBefore(benchNav, d);
-      return a && a.nav>0 && b && b.nav>0;
-    });
+  let fundCmp=null,benchCmp=null,cmpFirst=null,cmpCount=0,cmpValueDate=null;
+  if(benchNav&&benchNav.length){
+    cmpValueDate=minDate(fundLast,benchNav[benchNav.length-1].date);
+    const cmpEnd=endVal&&endVal<cmpValueDate?endVal:cmpValueDate;
+    const common=scheduleDates(start,cmpEnd).filter(d=>navOnOrAfter(fundNav,d,7)&&navOnOrAfter(benchNav,d,7));
     if(common.length){
-      fundCmp  = runSIP(fundNav,  common, amount, cmpValueDate);
-      benchCmp = runSIP(benchNav, common, amount, cmpValueDate);
-      cmpFirst = common[0];
-      cmpCount = common.length;
+      fundCmp=runSIP(fundNav,common,amount,cmpValueDate);
+      benchCmp=runSIP(benchNav,common,amount,cmpValueDate);
+      if(fundCmp&&benchCmp){cmpFirst=common[0];cmpCount=common.length;}
+      else{fundCmp=null;benchCmp=null;}
     }
   }
 
   return {
-    name: spec.name,
-    code: spec.code,
-    category: category,
-    startStr: spec.startStr,
-    endStr: spec.endStr || "",
-    start, amount,
-    fundValueDate: fundLast,
-    cmpValueDate,
-    fund: fundFull,
-    fundCmp, benchCmp,
-    cmpFirst, cmpCount,
-    benchLabel: benchInfo ? benchInfo.label : null,
-    benchApprox: benchInfo ? benchInfo.approx : false,
-    cmpShorter: benchCmp ? (cmpCount < fundFull.placed) : false,
+    holdingId:spec.holdingId||uid(),
+    name:officialName,code:String(spec.code),category,
+    plan:spec.plan||detectPlanFromName(officialName)||"",
+    inputName:spec.inputName||spec.name||officialName,
+    sourceRow:spec.sourceRow||null,
+    startStr:spec.startStr,endStr:spec.endStr||"",start,amount,
+    fundValueDate:fundLast,cmpValueDate,fund:fundFull,fundCmp,benchCmp,cmpFirst,cmpCount,
+    benchLabel:benchInfo?benchInfo.label:null,benchApprox:benchInfo?benchInfo.approx:false,
+    cmpShorter:!!(benchCmp&&cmpCount<fundFull.placed),_fundNav:fundNav,_benchNav:benchNav
   };
 }
 
@@ -619,6 +735,7 @@ $("addBtn").addEventListener("click", async ()=>{
     const spec = {
       name: selectedScheme.schemeName,
       code: selectedScheme.schemeCode,
+      plan: getPlan(),
       startStr: $("startDate").value,
       endStr: $("endDate").value || "",
       amount: Number($("amount").value),
@@ -655,161 +772,99 @@ function perfBand(alpha){
 
 function schemeView(s){
   const f=s.fund;
-  const fxFull = f.xirr;
-  const gain = f.currentValue - f.invested;
-  const absR = f.invested>0 ? gain/f.invested : null;
-  const fxCmp = s.fundCmp ? s.fundCmp.xirr : null;
-  const bxCmp = s.benchCmp ? s.benchCmp.xirr : null;
-  const alpha = (fxCmp!=null && bxCmp!=null) ? fxCmp - bxCmp : null;
-  return { fxFull, gain, absR, fxCmp, bxCmp, alpha,
-           benchCurrent: s.benchCmp ? s.benchCmp.currentValue : null };
+  const fxFull=f.xirr;
+  const gain=f.currentValue-f.invested;
+  const absR=f.invested>0?gain/f.invested:null;
+  const fxCmp=s.fundCmp?s.fundCmp.xirr:null;
+  const bxCmp=s.benchCmp?s.benchCmp.xirr:null;
+  const alpha=(fxCmp!=null&&bxCmp!=null)?fxCmp-bxCmp:null;
+  return {fxFull,gain,absR,fxCmp,bxCmp,alpha};
 }
 
-/* ---- portfolio aggregation ---- */
 function portfolioMetrics(){
   if(!schemes.length) return null;
-  let invested=0, current=0;
+  const valueDate=schemes.reduce((d,s)=>!d||s.fundValueDate<d?s.fundValueDate:d,null);
+  let invested=0,current=0;
   const fundFlows=[];
-  let cmpFundCur=0, cmpBenchCur=0, anyBench=false;
-  const cmpFundFlows=[], cmpBenchFlows=[];
-  let valueDate = schemes[0].fundValueDate;
-  let cmpValueDate = schemes[0].fundValueDate;
-
-  schemes.forEach(s=>{
-    if(s.fundValueDate.getTime()>valueDate.getTime()) valueDate=s.fundValueDate;
-    if(s.cmpValueDate && s.cmpValueDate.getTime()>cmpValueDate.getTime()) cmpValueDate=s.cmpValueDate;
-  });
-
-  schemes.forEach(s=>{
-    invested += s.fund.invested;
-    current  += s.fund.currentValue;
-    s.fund.flows.forEach(f=>fundFlows.push({date:f.date, amount:f.amount}));
-    if(s.fundCmp && s.benchCmp){
-      anyBench=true;
-      cmpFundCur  += s.fundCmp.currentValue;
-      cmpBenchCur += s.benchCmp.currentValue;
-      s.fundCmp.flows.forEach(f=>cmpFundFlows.push({date:f.date, amount:f.amount}));
-      s.benchCmp.flows.forEach(f=>cmpBenchFlows.push({date:f.date, amount:f.amount}));
-    }
-  });
-
-  fundFlows.push({date:new Date(valueDate.getTime()), amount:current});
-  fundFlows.sort((a,b)=>a.date-b.date);
-  const fundX = xirr(fundFlows);
-
-  let benchX=null, cmpFundX=null, alpha=null;
-  if(anyBench){
-    cmpFundFlows.push({date:new Date(cmpValueDate.getTime()), amount:cmpFundCur});
-    cmpFundFlows.sort((a,b)=>a.date-b.date);
-    cmpFundX = xirr(cmpFundFlows);
-    cmpBenchFlows.push({date:new Date(cmpValueDate.getTime()), amount:cmpBenchCur});
-    cmpBenchFlows.sort((a,b)=>a.date-b.date);
-    benchX = xirr(cmpBenchFlows);
-    alpha = (cmpFundX!=null && benchX!=null) ? cmpFundX - benchX : null;
+  for(const s of schemes){
+    const v=valuationAt(s.fund,s._fundNav,valueDate);
+    if(!v) continue;
+    invested+=v.invested;current+=v.currentValue;fundFlows.push(...v.flows);
   }
+  const fundX=xirr(fundFlows.concat([{date:new Date(valueDate),amount:current}]));
 
-  return {
-    invested, current, gain: current-invested,
-    absReturn: invested>0 ? (current-invested)/invested : null,
-    xirr: fundX, benchXirr: benchX, benchCurrent: cmpBenchCur,
-    alpha, valueDate, anyBench
-  };
+  const comparable=schemes.filter(s=>s.fundCmp&&s.benchCmp&&s.cmpValueDate&&s._benchNav);
+  let benchX=null,cmpFundX=null,alpha=null,cmpValueDate=null,cmpFundCur=0,cmpBenchCur=0;
+  if(comparable.length){
+    cmpValueDate=comparable.reduce((d,s)=>!d||s.cmpValueDate<d?s.cmpValueDate:d,null);
+    const ff=[],bf=[];
+    for(const s of comparable){
+      const fv=valuationAt(s.fundCmp,s._fundNav,cmpValueDate);
+      const bv=valuationAt(s.benchCmp,s._benchNav,cmpValueDate);
+      if(!fv||!bv) continue;
+      cmpFundCur+=fv.currentValue;cmpBenchCur+=bv.currentValue;
+      ff.push(...fv.flows);bf.push(...bv.flows);
+    }
+    cmpFundX=xirr(ff.concat([{date:new Date(cmpValueDate),amount:cmpFundCur}]));
+    benchX=xirr(bf.concat([{date:new Date(cmpValueDate),amount:cmpBenchCur}]));
+    alpha=(cmpFundX!=null&&benchX!=null)?cmpFundX-benchX:null;
+  }
+  return {invested,current,gain:current-invested,absReturn:invested>0?(current-invested)/invested:null,
+          xirr:fundX,cmpFundXirr:cmpFundX,benchXirr:benchX,alpha,valueDate,cmpValueDate,
+          anyBench:comparable.length>0,comparableCount:comparable.length,cmpFundCurrent:cmpFundCur,benchCurrent:cmpBenchCur};
 }
 
 /* ---- render ---- */
 function render(){
-  const wrap = $("tableWrap");
-  if(schemes.length===0){
+  const wrap=$("tableWrap");
+  if(!schemes.length){
     wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
-    $("toolbar").style.display="none";
-    $("summaryCard").style.display="none";
-    $("foot").style.display="none";
-    return;
+    $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";return;
   }
   $("toolbar").style.display="flex";
-  const port = portfolioMetrics();
-  const alphaBand = perfBand(port.alpha);
-
+  const port=portfolioMetrics(),alphaBand=perfBand(port.alpha);
   $("summaryCard").style.display="block";
-  $("summaryGrid").innerHTML = `
-    <div class="stat"><div class="k">Schemes</div><div class="v">${schemes.length}</div></div>
+  $("summaryGrid").innerHTML=`
+    <div class="stat"><div class="k">Holdings</div><div class="v">${schemes.length}</div></div>
     <div class="stat"><div class="k">Total invested</div><div class="v">${inr(port.invested)}</div></div>
     <div class="stat"><div class="k">Current value</div><div class="v">${inr(port.current)}</div></div>
     <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>
     <div class="stat"><div class="k">Absolute return</div><div class="v ${port.absReturn>=0?'pos':'neg'}">${pct(port.absReturn)}</div></div>
     <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${port.xirr>=0?'pos':'neg'}">${pct(port.xirr)}</div></div>
+    <div class="stat"><div class="k">Comparable fund XIRR</div><div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div></div>
     <div class="stat"><div class="k">Benchmark XIRR</div><div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div></div>
-    <div class="stat"><div class="k">Portfolio alpha</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div></div>
-  `;
+    <div class="stat"><div class="k">Portfolio alpha</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div><div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
 
   let rows="";
   schemes.forEach((s,i)=>{
-    const v = schemeView(s);
-    const band = perfBand(v.alpha);
-    const f = s.fund, b = s.benchCmp;
-
-    let bmkLine = '<div class="bmk-line">Benchmark: unavailable</div>';
-    if(s.benchLabel && b){
-      const approx = s.benchApprox ? ' <span class="approx">(≈ approximate)</span>' : '';
-      bmkLine = '<div class="bmk-line">vs '+s.benchLabel+approx+'</div>';
-    } else if(s.benchLabel && !b){
-      bmkLine = '<div class="bmk-line">vs '+s.benchLabel+' <span class="approx">(no overlapping data)</span></div>';
-    }
-
-    let verdict = '';
-    if(v.alpha!=null){
-      verdict = '<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.</div>';
-    }
-
-    const curCell = inr(f.currentValue) + (b ? '<div class="sub2">'+inr(v.benchCurrent)+'</div>' : '');
-    const gainCell = '<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span>'
-                   + '<div class="sub2">'+pct(v.absR)+'</div>';
-    const xCell = '<span class="'+(v.fxFull>=0?'pos':'neg')+'" style="font-weight:600;">'+pct(v.fxFull)+'</span>'
-                + (b ? '<div class="sub2">'+pct(v.bxCmp)+'</div>' : '');
-    const alphaCell = (v.alpha!=null) ? '<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span>' : '—';
-
-    rows += `<tr>
-      <td><div class="fund-name">${s.name}</div>
-          <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.fundValueDate)}</div>
+    const v=schemeView(s),band=perfBand(v.alpha),f=s.fund,b=s.benchCmp;
+    let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
+    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+(s.benchApprox?' <span class="approx">(≈ approximate)</span>':'')+'</div>';}
+    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(no overlapping data)</span></div>';}
+    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.</div>';
+    const gainCell='<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span><div class="sub2">'+pct(v.absR)+'</div>';
+    const compCell=b?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'—';
+    rows+=`<tr>
+      <td><div class="fund-name">${escapeHtml(s.name)}</div>
+          <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''} · valued ${fmtDate(s.fundValueDate)}</div>
           ${bmkLine}${verdict}</td>
-      <td class="num">${inr(f.invested)}</td>
-      <td class="num">${curCell}</td>
-      <td class="num">${gainCell}</td>
-      <td class="num">${xCell}</td>
-      <td class="num">${alphaCell}</td>
-      <td class="num"><button class="btn small" data-i="${i}">Remove</button></td>
-    </tr>`;
+      <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
+      <td class="num"><span class="${v.fxFull>=0?'pos':'neg'}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
+      <td class="num">${compCell}</td>
+      <td class="num">${v.alpha!=null?'<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span>':'—'}</td>
+      <td class="num"><button class="btn small" data-i="${i}">Remove</button></td></tr>`;
   });
-
-  const pBand = perfBand(port.alpha);
-  rows += `<tr class="portfolio">
-    <td>PORTFOLIO (all schemes)<div class="fund-meta">valued ${fmtDate(port.valueDate)}</div></td>
-    <td class="num">${inr(port.invested)}</td>
-    <td class="num">${inr(port.current)}${port.anyBench?'<div class="sub2">'+inr(port.benchCurrent)+'</div>':''}</td>
+  const pBand=perfBand(port.alpha);
+  rows+=`<tr class="portfolio"><td>PORTFOLIO (all holdings)<div class="fund-meta">common valuation date ${fmtDate(port.valueDate)}</div></td>
+    <td class="num">${inr(port.invested)}</td><td class="num">${inr(port.current)}</td>
     <td class="num"><span class="${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
-    <td class="num"><span class="${port.xirr>=0?'pos':'neg'}" style="font-weight:600;">${pct(port.xirr)}</span>${port.anyBench?'<div class="sub2">'+pct(port.benchXirr)+'</div>':''}</td>
-    <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td>
-    <td></td>
-  </tr>`;
-
-  wrap.innerHTML = `<table><thead><tr>
-    <th>Scheme <span style="font-weight:400;text-transform:none;">(fund / benchmark)</span></th>
-    <th style="text-align:right;">Invested</th>
-    <th style="text-align:right;">Current</th>
-    <th style="text-align:right;">Gain / Abs %</th>
-    <th style="text-align:right;">XIRR</th>
-    <th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-
-  wrap.querySelectorAll("button[data-i]").forEach(b=>{
-    b.onclick=()=>{ schemes.splice(+b.dataset.i,1); saveActive(); render(); };
-  });
-
+    <td class="num"><span class="${port.xirr>=0?'pos':'neg'}" style="font-weight:600;">${pct(port.xirr)}</span></td>
+    <td class="num">${port.anyBench?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':'—'}</td>
+    <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
+  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span></th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
   $("foot").style.display="block";
-  $("foot").innerHTML =
-    "Benchmark = the matching Nifty <b>index fund</b> (Direct-Growth) with the longest NAV history, valued net of its expense ratio (not the pure TRI). "
-    + "Alpha is computed only over the months both the fund and the benchmark have NAV, so it's a like-for-like comparison. "
-    + "XIRR is money-weighted (annualised). Values use the latest published NAV (usually 1–2 days back; markets are closed on weekends). "
-    + "Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp vs benchmark.";
+  $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Portfolio XIRR uses one common valuation date across all holdings. Benchmark = matching Nifty index fund (Direct-Growth preferred) with the longest available NAV history, net of its expense ratio, not pure TRI. Alpha uses the like-for-like months available to both fund and proxy. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
 }
 
 /* ---- clear ---- */
@@ -827,19 +882,20 @@ $("clearBtn").addEventListener("click", ()=>{
    NAV/derived values are NOT stored — always recomputed live,
    which is exactly what makes "update to today's NAV" free.
    ============================================================ */
-const LS_KEY = "mf_sip_portfolios_v2";
-let store = { version:2, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
+const LS_KEY = "mf_sip_portfolios_v3";
+const OLD_LS_KEY = "mf_sip_portfolios_v2";
+let store = { version:3, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
 
 function loadStore(){
   try{
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(LS_KEY) || localStorage.getItem(OLD_LS_KEY);
     if(raw){
       const p = JSON.parse(raw);
       if(p && p.portfolios) store = p;
     }
   }catch(e){}
   if(!store.portfolios || Object.keys(store.portfolios).length===0){
-    store = { version:2, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
+    store = { version:3, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
   }
   if(!store.portfolios[store.active]){
     store.active = Object.keys(store.portfolios)[0];
@@ -850,7 +906,8 @@ function persistStore(){
 }
 function specsFromSchemes(){
   return schemes.map(s=>({
-    name:s.name, code:s.code, category:s.category,
+    holdingId:s.holdingId, name:s.name, inputName:s.inputName, sourceRow:s.sourceRow,
+    code:s.code, category:s.category, plan:s.plan,
     startStr:s.startStr, endStr:s.endStr||"", amount:s.amount
   }));
 }
@@ -945,6 +1002,13 @@ $("pfDeleteBtn").addEventListener("click", ()=>{
   hydrateActive();
 });
 
+$("eraseLocalBtn").addEventListener("click",()=>{
+  if(!confirm("Erase all portfolios saved by this tool in this browser?")) return;
+  try{localStorage.removeItem(LS_KEY);localStorage.removeItem(OLD_LS_KEY);}catch(e){}
+  store={version:3,active:"My Portfolio",portfolios:{"My Portfolio":[]}};
+  schemes=[];persistStore();refreshPfSelect();render();$("pmStatus").textContent="Browser data erased.";
+});
+
 /* ---- update to today's NAV ---- */
 $("updateNavBtn").addEventListener("click", ()=>{
   if(!listReady){ $("pmStatus").textContent="Still loading scheme list…"; return; }
@@ -955,160 +1019,158 @@ $("updateNavBtn").addEventListener("click", ()=>{
 });
 
 /* ============================================================
-   EXCEL IMPORT
-   Accepts a sheet with header row containing (case-insensitive):
-   Scheme | Plan | Start | End | Monthly
-   - Scheme is matched against the loaded list for the given Plan.
-   - If an exact scheme code is given in a "Code" column, that wins.
+   EXCEL IMPORT — row-level validation and preview
    ============================================================ */
-$("templateBtn").addEventListener("click", ()=>{
+$("templateBtn").addEventListener("click",()=>{
   try{
-    const rows = [["Scheme","Plan","Start","End","Monthly","Code"]];
-    if(schemes.length){
-      schemes.forEach(s=>{
-        rows.push([s.name, (s.name.toLowerCase().includes("direct")?"Direct":"Regular"),
-                   s.startStr, s.endStr||"", s.amount, s.code]);
-      });
-    } else {
-      rows.push(["HDFC Flexi Cap Fund - Direct Plan - Growth Option","Direct","2022-01-01","","5000",""]);
-    }
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [{wch:52},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10}];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Portfolio");
-    XLSX.writeFile(wb, "MF_Import_Template.xlsx");
-    $("pmStatus").textContent = "Template downloaded.";
-    setTimeout(()=>{ $("pmStatus").textContent=""; }, 2500);
-  }catch(e){ $("pmStatus").textContent = "Couldn't build template: "+e.message; }
+    const rows=[["Scheme","Plan","Start","End","Monthly","Code"]];
+    if(schemes.length) schemes.forEach(s=>rows.push([s.name,s.plan||detectPlanFromName(s.name)||"",s.startStr,s.endStr||"",s.amount,s.code]));
+    else rows.push(["HDFC Flexi Cap Fund - Direct Plan - Growth Option","Direct","2022-01-01","",5000,""]);
+    const ws=XLSX.utils.aoa_to_sheet(rows);ws["!cols"]=[{wch:52},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10}];
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Portfolio");XLSX.writeFile(wb,"MF_Import_Template.xlsx");
+    $("pmStatus").textContent="Template downloaded.";setTimeout(()=>$("pmStatus").textContent="",2500);
+  }catch(e){$("pmStatus").textContent="Couldn't build template: "+e.message;}
 });
 
-$("importBtn").addEventListener("click", ()=>{
-  if(!listReady){ $("pmStatus").textContent="Still loading scheme list… try again in a second."; return; }
-  $("importFile").click();
+$("importBtn").addEventListener("click",()=>{
+  if(!listReady){$("pmStatus").textContent="Still loading scheme list…";return;}$("importFile").click();
 });
-
-function normHeader(h){ return String(h||"").toLowerCase().replace(/[^a-z]/g,""); }
-
-// match a scheme name to a code within the correct plan list
-function matchSchemeCode(name, plan){
-  const list = (String(plan||"").toLowerCase().includes("regular")) ? listRegular : listDirect;
-  const target = normName(name);
-  // exact
-  let hit = list.find(s=> normName(s.schemeName)===target);
-  if(hit) return hit;
-  // all words present
-  const words = target.split(/\s+/).filter(Boolean);
-  hit = list.find(s=> words.every(w=> s.lower.includes(w)));
-  return hit || null;
+function normHeader(h){return String(h||"").toLowerCase().replace(/[^a-z]/g,"");}
+function normalisePlan(v){const n=normName(v);if(/\b(direct|dir)\b/.test(n))return "Direct";if(/\b(regular|reg)\b/.test(n))return "Regular";return "";}
+function detectPlanFromName(name){return normalisePlan(name);}
+function matchKey(name){
+  let n=normName(name).replace(/flexicap/g,"flexi cap").replace(/midcap/g,"mid cap").replace(/smallcap/g,"small cap").replace(/multicap/g,"multi cap");
+  n=n.replace(/\b(gr|growth|option|plan|fund|direct|dir|regular|reg|the)\b/g," ").replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
+  return n.replace(/\s/g,"");
 }
-
-$("importFile").addEventListener("change", function(){
-  const file = this.files && this.files[0];
-  this.value = "";
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = async (ev)=>{
-    try{
-      const data = new Uint8Array(ev.target.result);
-      const wb = XLSX.read(data, {type:"array"});
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:""});
-      if(!aoa.length){ $("pmStatus").textContent="Empty sheet."; return; }
-
-      // map headers
-      const hdr = aoa[0].map(normHeader);
-      const col = {};
-      hdr.forEach((h,i)=>{
-        if(h.includes("scheme")||h==="fund"||h==="name") col.scheme=i;
-        else if(h.includes("plan")) col.plan=i;
-        else if(h.includes("start")) col.start=i;
-        else if(h.includes("end")) col.end=i;
-        else if(h.includes("monthly")||h.includes("amount")||h.includes("sip")) col.amount=i;
-        else if(h.includes("code")) col.code=i;
-      });
-      if(col.scheme==null || col.start==null || col.amount==null){
-        $("pmStatus").textContent="Header must include Scheme, Start and Monthly columns.";
-        return;
-      }
-
-      const specs = [];
-      const skipped = [];
-      for(let r=1;r<aoa.length;r++){
-        const row = aoa[r];
-        const nm = String(row[col.scheme]||"").trim();
-        if(!nm) continue;
-        const plan = col.plan!=null ? String(row[col.plan]||"").trim() : "Direct";
-        const startStr = normDateCell(row[col.start]);
-        const endStr = col.end!=null ? normDateCell(row[col.end]) : "";
-        const amount = Number(String(row[col.amount]||"").replace(/[^0-9.]/g,""));
-        if(!startStr || !(amount>0)){ skipped.push(nm+" (bad date/amount)"); continue; }
-
-        let code = col.code!=null ? String(row[col.code]||"").trim() : "";
-        let finalName = nm;
-        if(!code){
-          const hit = matchSchemeCode(nm, plan);
-          if(!hit){ skipped.push(nm+" (no scheme match)"); continue; }
-          code = hit.schemeCode; finalName = hit.schemeName;
-        }
-        specs.push({ name:finalName, code, category:"", startStr, endStr, amount });
-      }
-
-      if(!specs.length){
-        $("pmStatus").textContent = "Nothing imported. "+(skipped.length?("Skipped: "+skipped.join("; ")):"");
-        return;
-      }
-
-      // add to CURRENT portfolio (append, de-dup by code+start)
-      const existing = new Set(schemes.map(s=>s.code+"|"+s.startStr));
-      $("pmStatus").textContent = "Importing "+specs.length+" scheme(s)…";
-      const failed = [];
-      for(const spec of specs){
-        if(existing.has(spec.code+"|"+spec.startStr)) continue;
-        try{
-          const sch = await computeScheme(spec);
-          schemes.push(sch);
-          existing.add(spec.code+"|"+spec.startStr);
-          render();
-        }catch(e){ failed.push(spec.name); }
-      }
-      saveActive();
-      render();
-      let msg = "Imported "+(specs.length-failed.length)+" scheme(s).";
-      if(skipped.length) msg += " Skipped "+skipped.length+" row(s).";
-      if(failed.length) msg += " Couldn't value: "+failed.join("; ")+".";
-      $("pmStatus").textContent = msg;
-    }catch(e){
-      $("pmStatus").textContent = "Import failed: "+e.message;
-    }
-  };
-  reader.readAsArrayBuffer(file);
-});
-
-// Accept dates as YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or Excel serials -> YYYY-MM-DD
-function normDateCell(v){
-  if(v==null) return "";
-  const s = String(v).trim();
-  if(!s) return "";
-  // ISO
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if(m) return m[1]+"-"+m[2]+"-"+m[3];
-  // DD-MM-YYYY or DD/MM/YYYY
-  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+function bigrams(s){const a=[];for(let i=0;i<s.length-1;i++)a.push(s.slice(i,i+2));return a;}
+function similarity(a,b){if(a===b)return 1;if(!a||!b)return 0;const aa=bigrams(a),bb=bigrams(b),m=new Map();bb.forEach(x=>m.set(x,(m.get(x)||0)+1));let hit=0;aa.forEach(x=>{if(m.get(x)>0){hit++;m.set(x,m.get(x)-1);}});return 2*hit/(aa.length+bb.length||1);}
+function listForPlan(plan){return plan==="Regular"?listRegular:listDirect;}
+function findSchemeMatch(name,plan){
+  const list=listForPlan(plan),key=matchKey(name);
+  const exact=list.filter(s=>matchKey(s.schemeName)===key);
+  if(exact.length===1)return {hit:exact[0],ambiguous:[]};
+  if(exact.length>1)return {hit:null,ambiguous:exact.slice(0,5)};
+  const ranked=list.map(s=>({s,score:similarity(key,matchKey(s.schemeName))})).sort((a,b)=>b.score-a.score);
+  if(ranked.length&&ranked[0].score>=.78&&(ranked.length===1||ranked[0].score-ranked[1].score>=.06))return {hit:ranked[0].s,ambiguous:[]};
+  return {hit:null,ambiguous:ranked.filter(x=>x.score>=.70).slice(0,5).map(x=>x.s)};
+}
+function parseDateParts(y,m,d){const dt=new Date(y,m-1,d);return dt.getFullYear()===y&&dt.getMonth()===m-1&&dt.getDate()===d?isoDate(dt):"";}
+function normaliseDateCell(v){
+  if(v==null||v==="")return {value:"",error:""};
+  if(v instanceof Date&&!isNaN(v))return {value:isoDate(v),error:""};
+  if(typeof v==="number"&&Number.isFinite(v)){
+    const p=XLSX.SSF.parse_date_code(v);return p?{value:parseDateParts(p.y,p.m,p.d),error:""}:{value:"",error:"invalid Excel date"};
+  }
+  const s=String(v).trim();let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if(m)return {value:parseDateParts(+m[1],+m[2],+m[3]),error:"invalid date"};
+  m=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
   if(m){
-    const dd=("0"+m[1]).slice(-2), mm=("0"+m[2]).slice(-2);
-    return m[3]+"-"+mm+"-"+dd;
+    const a=+m[1],b=+m[2],y=+m[3];
+    if(a>12)return {value:parseDateParts(y,b,a),error:"invalid date"};
+    if(b>12)return {value:parseDateParts(y,a,b),error:"invalid date"};
+    if(s.includes("-"))return {value:parseDateParts(y,b,a),error:"invalid date"};
+    return {value:"",error:"ambiguous date; use YYYY-MM-DD or DD-MM-YYYY"};
   }
-  // Excel serial
-  if(/^\d+(\.\d+)?$/.test(s)){
-    const serial = parseFloat(s);
-    const d = new Date(Math.round((serial-25569)*86400*1000));
-    if(!isNaN(d)) return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2);
-  }
-  // try Date parse as last resort
-  const d = new Date(s);
-  if(!isNaN(d)) return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2);
-  return "";
+  return {value:"",error:"unrecognised date"};
 }
+function amountCell(v){const n=typeof v==="number"?v:Number(String(v||"").replace(/[,₹\s]/g,""));return Number.isFinite(n)&&n>0?n:null;}
+function signature(spec){return [String(spec.code),spec.startStr,spec.endStr||"",Number(spec.amount).toFixed(2)].join("|");}
+
+async function resolveImportRow(row,rowNum,col){
+  const inputName=String(row[col.scheme]||"").trim();
+  const inputPlan=col.plan!=null?String(row[col.plan]||"").trim():"";
+  const start=normaliseDateCell(row[col.start]),end=col.end!=null?normaliseDateCell(row[col.end]):{value:"",error:""};
+  const amount=amountCell(row[col.amount]);
+  const base={rowNum,inputName,inputPlan,startStr:start.value,endStr:end.value,amount,importable:false,checked:false,statusClass:"bad",message:"",resolvedName:"",spec:null};
+  if(!inputName){base.message="Blank scheme";return base;}
+  if(!start.value){base.message="Start: "+(start.error||"required");return base;}
+  if(end.error){base.message="End: "+end.error;return base;}
+  if(end.value&&end.value<start.value){base.message="End date is before start date";return base;}
+  if(!amount){base.message="Monthly amount must be greater than zero";return base;}
+
+  const cellPlan=normalisePlan(inputPlan),namePlan=detectPlanFromName(inputName);
+  let effectivePlan=cellPlan||namePlan,warning="";
+  if(cellPlan&&namePlan&&cellPlan!==namePlan){effectivePlan=namePlan;warning=`Plan conflict: column says ${cellPlan}; scheme name says ${namePlan}. Resolved using the explicit scheme name.`;}
+  if(!effectivePlan){base.message="Plan is missing or invalid (use Direct or Regular)";return base;}
+
+  let code=col.code!=null?String(row[col.code]||"").trim():"",officialName="";
+  if(code){
+    if(!/^\d+$/.test(code)){base.message="Code must be numeric";return base;}
+    try{
+      const d=await getDetail(code);officialName=d.name||inputName;
+      const apiPlan=detectPlanFromName(officialName);
+      if(apiPlan&&apiPlan!==effectivePlan){warning+=(warning?" ":"")+`Code ${code} belongs to ${apiPlan}, not ${effectivePlan}; API scheme is used.`;effectivePlan=apiPlan;}
+    }catch(e){base.message="Code "+code+" failed validation: "+e.message;return base;}
+  }else{
+    const found=findSchemeMatch(inputName,effectivePlan);
+    if(!found.hit){base.message=found.ambiguous.length?"Ambiguous match: "+found.ambiguous.map(x=>x.schemeName).join(" | "):"No scheme match in "+effectivePlan+" Growth list";return base;}
+    code=String(found.hit.schemeCode);officialName=found.hit.schemeName;
+  }
+  base.resolvedName=officialName;base.importable=true;base.checked=true;base.statusClass=warning?"warn":"ok";base.message=warning||"Ready";
+  base.spec={holdingId:uid(),name:officialName,inputName,sourceRow:rowNum,code,category:"",plan:effectivePlan,startStr:start.value,endStr:end.value,amount};
+  return base;
+}
+
+function renderImportPreview(){
+  const body=$("importPreviewBody");body.innerHTML="";
+  importPreviewRows.forEach((r,i)=>{
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td><input type="checkbox" data-preview-i="${i}" ${r.checked?'checked':''} ${r.importable?'':'disabled'}></td>
+      <td class="num">${r.rowNum}</td><td>${escapeHtml(r.inputName)}</td><td>${escapeHtml(r.inputPlan||'—')}</td>
+      <td>${escapeHtml(r.resolvedName||'—')}</td><td class="mono">${escapeHtml(r.startStr||'—')}</td><td class="num">${r.amount?inr(r.amount):'—'}</td>
+      <td class="${r.statusClass}">${escapeHtml(r.message)}</td>`;body.appendChild(tr);
+  });
+  body.querySelectorAll("input[data-preview-i]").forEach(cb=>cb.onchange=()=>{importPreviewRows[+cb.dataset.previewI].checked=cb.checked;updatePreviewSummary();});
+  updatePreviewSummary();$("importModal").style.display="flex";
+}
+function updatePreviewSummary(){
+  const valid=importPreviewRows.filter(r=>r.importable).length,selected=importPreviewRows.filter(r=>r.importable&&r.checked).length,errors=importPreviewRows.length-valid;
+  $("importPreviewSummary").textContent=`${importPreviewRows.length} data row(s): ${valid} valid, ${errors} requiring correction, ${selected} selected for import.`;
+  $("importConfirmBtn").disabled=selected===0;
+}
+function closeImportModal(){$("importModal").style.display="none";$("importModalStatus").textContent="";}
+$("importCancelBtn").addEventListener("click",closeImportModal);
+$("importModal").addEventListener("click",e=>{if(e.target===$("importModal"))closeImportModal();});
+
+$("importConfirmBtn").addEventListener("click",async()=>{
+  const selected=importPreviewRows.filter(r=>r.importable&&r.checked);if(!selected.length)return;
+  $("importConfirmBtn").disabled=true;$("importCancelBtn").disabled=true;
+  let imported=0;const failed=[];
+  for(let i=0;i<selected.length;i++){
+    const r=selected[i];$("importModalStatus").textContent=`Importing ${i+1} of ${selected.length}: ${r.resolvedName}`;
+    try{schemes.push(await computeScheme(r.spec));imported++;render();}catch(e){failed.push(`row ${r.rowNum}: ${e.message}`);}
+  }
+  saveActive();render();$("importCancelBtn").disabled=false;closeImportModal();
+  $("pmStatus").textContent=`Imported ${imported} of ${selected.length} selected row(s).`+(failed.length?" Failed: "+failed.join("; "):"");
+});
+
+$("importFile").addEventListener("change",function(){
+  const file=this.files&&this.files[0];this.value="";if(!file)return;
+  const reader=new FileReader();reader.onload=async ev=>{
+    try{
+      const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array",cellDates:true});
+      const ws=wb.Sheets[wb.SheetNames[0]],aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});
+      if(!aoa.length){$("pmStatus").textContent="Empty sheet.";return;}
+      const hdr=aoa[0].map(normHeader),col={};
+      hdr.forEach((h,i)=>{if(h.includes("scheme")||h==="fund"||h==="name")col.scheme=i;else if(h.includes("plan"))col.plan=i;else if(h.includes("start"))col.start=i;else if(h.includes("end"))col.end=i;else if(h.includes("monthly")||h.includes("amount")||h.includes("sip"))col.amount=i;else if(h.includes("code"))col.code=i;});
+      if(col.scheme==null||col.start==null||col.amount==null){$("pmStatus").textContent="Header must include Scheme, Start and Monthly columns.";return;}
+      $("pmStatus").textContent="Validating Excel rows…";importPreviewRows=[];
+      for(let r=1;r<aoa.length;r++){
+        if(!aoa[r].some(v=>String(v||"").trim()!==""))continue;
+        importPreviewRows.push(await resolveImportRow(aoa[r],r+1,col));
+      }
+      const seen=new Map(),existing=new Set(schemes.map(s=>signature(s)));
+      importPreviewRows.forEach(r=>{
+        if(!r.importable)return;const sig=signature(r.spec);
+        if(seen.has(sig)){r.statusClass="warn";r.message+=(r.message==="Ready"?"":" ")+` Duplicate of Excel row ${seen.get(sig)}; it will remain a separate holding if selected.`;}
+        else seen.set(sig,r.rowNum);
+        if(existing.has(sig)){r.statusClass="warn";r.checked=false;r.message+=(r.message==="Ready"?"":" ")+" Identical holding already exists in this portfolio; unchecked to prevent accidental re-import.";}
+      });
+      $("pmStatus").textContent="";renderImportPreview();
+    }catch(e){$("pmStatus").textContent="Import validation failed: "+e.message;}
+  };reader.readAsArrayBuffer(file);
+});
 
 /* ============================================================
    EXCEL EXPORT  (simplified: clean table, no charts)
@@ -1145,115 +1207,35 @@ $("exportBtn").addEventListener("click", ()=>{
 });
 
 function exportExcel(){
-  const port = portfolioMetrics();
-  const genDate = fmtDate(new Date());
-  const wb = XLSX.utils.book_new();
-
-  /* ---- Sheet 1: Summary ---- */
-  const s1 = {};
-  s1["A1"] = styleCell("SIP Performance Report — Fund vs Benchmark", {bold:true});
-  s1["A1"].s.font.sz = 14;
-  s1["A2"] = styleCell("Portfolio: "+store.active+"   ·   Generated: "+genDate, {});
-  const kpis = [
-    ["Total schemes", schemes.length, null, false],
-    ["Total invested", Math.round(port.invested), FMT_INR, true],
-    ["Current value", Math.round(port.current), FMT_INR, true],
-    ["Gain / loss", Math.round(port.gain), FMT_INR, true],
-    ["Absolute return", port.absReturn, FMT_PCT, true],
-    ["Portfolio XIRR", port.xirr, FMT_PCT, true],
-    ["Benchmark XIRR", port.anyBench?port.benchXirr:null, FMT_PCT, true],
-    ["Portfolio alpha", port.alpha!=null?port.alpha*100:null, FMT_PP, true],
-    ["Valued on (latest NAV)", fmtDate(port.valueDate), null, false],
+  const port=portfolioMetrics(),genDate=fmtDate(new Date()),wb=XLSX.utils.book_new();
+  const s1={};s1["A1"]=styleCell("SIP Performance Report — Fund vs Benchmark",{bold:true});s1["A1"].s.font.sz=14;
+  s1["A2"]=styleCell("Portfolio: "+store.active+"   ·   Generated: "+genDate,{});
+  const kpis=[
+    ["Total holdings",schemes.length,null,false],["Total invested",Math.round(port.invested),FMT_INR,true],["Current value",Math.round(port.current),FMT_INR,true],
+    ["Gain / loss",Math.round(port.gain),FMT_INR,true],["Absolute return",port.absReturn,FMT_PCT,true],["Portfolio XIRR",port.xirr,FMT_PCT,true],
+    ["Comparable holdings",port.comparableCount,null,false],["Comparable fund XIRR",port.anyBench?port.cmpFundXirr:null,FMT_PCT,true],
+    ["Benchmark XIRR",port.anyBench?port.benchXirr:null,FMT_PCT,true],["Portfolio alpha",port.alpha!=null?port.alpha*100:null,FMT_PP,true],
+    ["Portfolio valuation date",fmtDate(port.valueDate),null,false],["Comparison valuation date",port.cmpValueDate?fmtDate(port.cmpValueDate):"N/A",null,false]
   ];
-  let r=4;
-  kpis.forEach(([k,v,fmt,isNum])=>{
-    s1["A"+r] = styleCell(k, {bold:true});
-    s1["B"+r] = styleCell(v==null?"N/A":v, {align:isNum?"right":"left", numFmt:fmt||undefined});
-    r++;
-  });
-  const pBand = perfBand(port.alpha);
-  if(port.alpha!=null){
-    s1["C11"] = styleCell(pBand.word, {fill:FILL[pBand.key], light:pBand.key!=="beat", align:"center", bold:true});
-  }
-  s1["!ref"]="A1:C"+(r+1);
-  s1["!cols"]=[{wch:24},{wch:20},{wch:20}];
-  XLSX.utils.book_append_sheet(wb, s1, "Summary");
+  let r=4,alphaRow=null;kpis.forEach(([k,v,fmt,isNum])=>{s1["A"+r]=styleCell(k,{bold:true});s1["B"+r]=styleCell(v==null?"N/A":v,{align:isNum?"right":"left",numFmt:fmt||undefined});if(k==="Portfolio alpha")alphaRow=r;r++;});
+  const pBand=perfBand(port.alpha);if(alphaRow&&port.alpha!=null)s1["C"+alphaRow]=styleCell(pBand.word,{fill:FILL[pBand.key],light:pBand.key!=="beat",align:"center",bold:true});
+  s1["!ref"]="A1:C"+(r+1);s1["!cols"]=[{wch:28},{wch:22},{wch:20}];XLSX.utils.book_append_sheet(wb,s1,"Summary");
 
-  /* ---- Sheet 2: Holdings (simplified) ---- */
-  const headers = ["Scheme","Benchmark","Invested","Current","Gain","Abs return",
-                   "Fund XIRR","Bench XIRR","Alpha","Verdict"];
-  const numFmtByCol = {2:FMT_INR,3:FMT_INR,4:FMT_INR,5:FMT_PCT,6:FMT_PCT,7:FMT_PCT,8:FMT_PP};
-  const rightCols = new Set([2,3,4,5,6,7,8]);
+  const headers=["Scheme","Plan","Benchmark","SIP start","SIP end","Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)","Fund XIRR (comparable)","Benchmark XIRR","Alpha","Verdict","Comparison from","Comparison to"];
+  const fmt={5:FMT_INR,6:FMT_INR,7:FMT_INR,8:FMT_INR,9:FMT_PCT,10:FMT_PCT,11:FMT_PCT,12:FMT_PCT,13:FMT_PP};
+  const right=new Set([5,6,7,8,9,10,11,12,13]),data=[];
+  schemes.forEach(s=>{const v=schemeView(s),band=perfBand(v.alpha);data.push({band,isPort:false,cells:[s.name,s.plan||"",s.benchLabel||"—",s.startStr,s.endStr||"",s.amount,Math.round(s.fund.invested),Math.round(s.fund.currentValue),Math.round(v.gain),v.absR,v.fxFull,v.fxCmp,v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word,s.cmpFirst?isoDate(s.cmpFirst):"",s.cmpValueDate?isoDate(s.cmpValueDate):""]});});
+  data.push({band:pBand,isPort:true,cells:["PORTFOLIO (all holdings)","","",isoDate(port.valueDate),"","",Math.round(port.invested),Math.round(port.current),Math.round(port.gain),port.absReturn,port.xirr,port.cmpFundXirr,port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word,"",port.cmpValueDate?isoDate(port.cmpValueDate):""]});
+  const ws={};headers.forEach((h,c)=>ws[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{fill:"17212B",light:true,bold:true,align:"center",border:true}));
+  data.forEach((row,ri)=>row.cells.forEach((val,c)=>{const opts={align:right.has(c)?"right":"left",border:true,bold:row.isPort};if(fmt[c])opts.numFmt=fmt[c];if(c===13||c===14){opts.fill=FILL[row.band.key];opts.light=row.band.key!=="beat";}else if(row.isPort){opts.fill="101923";opts.light=true;}ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);}));
+  ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});ws["!cols"]=[{wch:48},{wch:9},{wch:28},{wch:12},{wch:12},{wch:12},{wch:14},{wch:14},{wch:14},{wch:11},{wch:14},{wch:16},{wch:14},{wch:12},{wch:18},{wch:13},{wch:13}];ws["!freeze"]={xSplit:1,ySplit:1};XLSX.utils.book_append_sheet(wb,ws,"Holdings");
 
-  const dataRows = [];
-  schemes.forEach(s=>{
-    const v = schemeView(s);
-    const band = perfBand(v.alpha);
-    dataRows.push({ band, isPort:false, cells:[
-      s.name, s.benchLabel||"—",
-      Math.round(s.fund.invested), Math.round(s.fund.currentValue), Math.round(v.gain),
-      v.absR, v.fxFull, v.bxCmp, (v.alpha!=null?v.alpha*100:null), band.word
-    ]});
-  });
-  dataRows.push({ band:pBand, isPort:true, cells:[
-    "PORTFOLIO (all schemes)","",
-    Math.round(port.invested), Math.round(port.current), Math.round(port.gain),
-    port.absReturn, port.xirr, (port.anyBench?port.benchXirr:null),
-    (port.alpha!=null?port.alpha*100:null), pBand.word
-  ]});
-
-  const ws = {};
-  headers.forEach((h,c)=>{
-    ws[XLSX.utils.encode_cell({r:0,c})] = styleCell(h,
-      {fill:"17212B", light:true, bold:true, align:"center", border:true});
-  });
-  dataRows.forEach((row,ri)=>{
-    row.cells.forEach((val,c)=>{
-      const opts = { align: rightCols.has(c)?"right":"left", border:true, bold:row.isPort };
-      if(numFmtByCol[c]) opts.numFmt = numFmtByCol[c];
-      if(c===8 || c===9){ opts.fill = FILL[row.band.key]; opts.light = (row.band.key!=="beat"); }
-      else if(row.isPort){ opts.fill = "101923"; opts.light = true; }
-      ws[XLSX.utils.encode_cell({r:ri+1,c})] = styleCell(val, opts);
-    });
-  });
-  ws["!ref"] = "A1:"+XLSX.utils.encode_cell({r:dataRows.length, c:headers.length-1});
-  ws["!cols"] = [{wch:46},{wch:26},{wch:14},{wch:14},{wch:13},{wch:11},{wch:11},{wch:11},{wch:12},{wch:18}];
-  ws["!freeze"] = { xSplit:1, ySplit:1 };
-  XLSX.utils.book_append_sheet(wb, ws, "Holdings");
-
-  /* ---- Sheet 3: Legend ---- */
-  const legend = [
-    ["Colour band","Meaning","Alpha = Fund XIRR − Benchmark XIRR"],
-    ["Dark green","Strongly beating","≥ +3 pp per year"],
-    ["Green","Beating","0 to +3 pp per year"],
-    ["Red","Lagging","0 to −3 pp per year"],
-    ["Dark red","Strongly lagging","≤ −3 pp per year"],
-    ["",""],
-    ["Notes",""],
-    ["Benchmark = matching Nifty index fund (Direct-Growth, longest history), net of expenses — not pure TRI.",""],
-    ["Alpha uses only the months both fund and benchmark have NAV (like-for-like).",""],
-    ["XIRR is the annualised money-weighted return of dated cashflows.",""],
-    ["Values use the latest published NAV (usually 1–2 days back; weekends have no NAV).",""],
-    ["Generated "+genDate,""],
-  ];
-  const s3 = {};
-  const bandFills=["",FILL.strong_beat,FILL.beat,FILL.lag,FILL.strong_lag];
-  const bandLight=[false,true,false,false,true];
-  legend.forEach((row,ri)=>{
-    row.forEach((val,c)=>{
-      let opts={border:ri<=4};
-      if(ri===0){ opts.fill="17212B"; opts.light=true; opts.bold=true; }
-      else if(c===0 && ri>=1 && ri<=4){ opts.fill=bandFills[ri]; opts.light=bandLight[ri]; opts.bold=true; }
-      else if(ri===6 && c===0){ opts.bold=true; }
-      s3[XLSX.utils.encode_cell({r:ri,c})] = styleCell(val, opts);
-    });
-  });
-  s3["!ref"]="A1:C"+legend.length;
-  s3["!cols"]=[{wch:14},{wch:56},{wch:32}];
-  XLSX.utils.book_append_sheet(wb, s3, "Legend");
-
-  XLSX.writeFile(wb, "SIP_vs_Benchmark_"+store.active.replace(/[^a-z0-9]+/gi,"_")+"_"+new Date().toISOString().slice(0,10)+".xlsx");
+  const legend=[["Colour band","Meaning","Alpha = comparable Fund XIRR − Benchmark XIRR"],["Dark green","Strongly beating","≥ +3 pp per year"],["Green","Beating","0 to +3 pp per year"],["Red","Lagging","0 to −3 pp per year"],["Dark red","Strongly lagging","≤ −3 pp per year"],["",""],["Notes",""],["SIP purchase uses the first published NAV on or after the scheduled date, up to seven calendar days.",""],["Portfolio XIRR uses a single common valuation date across all holdings.",""],["Benchmark is a matching Nifty index fund proxy, net of expenses, not pure TRI.",""],["Alpha uses only comparable SIP months available to both fund and benchmark proxy.",""],["Generated "+genDate,""]];
+  const s3={},bandFills=["",FILL.strong_beat,FILL.beat,FILL.lag,FILL.strong_lag],bandLight=[false,true,false,false,true];legend.forEach((row,ri)=>row.forEach((val,c)=>{const opts={border:ri<=4};if(ri===0){opts.fill="17212B";opts.light=true;opts.bold=true;}else if(c===0&&ri>=1&&ri<=4){opts.fill=bandFills[ri];opts.light=bandLight[ri];opts.bold=true;}else if(ri===6&&c===0)opts.bold=true;s3[XLSX.utils.encode_cell({r:ri,c})]=styleCell(val,opts);}));
+  s3["!ref"]="A1:C"+legend.length;s3["!cols"]=[{wch:14},{wch:72},{wch:40}];XLSX.utils.book_append_sheet(wb,s3,"Legend");
+  XLSX.writeFile(wb,"SIP_vs_Benchmark_"+store.active.replace(/[^a-z0-9]+/gi,"_")+"_"+new Date().toISOString().slice(0,10)+".xlsx");
 }
+
 
 document.addEventListener("click", e=>{
   if(!e.target.closest(".search-wrap")) $("results").style.display="none";
