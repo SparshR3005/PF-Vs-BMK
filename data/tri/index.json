@@ -1,52 +1,156 @@
 {
-  "generated_utc": "2026-07-13T19:14:01Z",
+  "generated_utc": "2026-07-13T20:22:47Z",
   "indices": [
     {
+      "key": "NIFTY50",
       "index": "NIFTY 50",
-      "file": "NIFTY_50.json",
+      "file": "NIFTY50.json",
       "count": 6724,
+      "start": "1999-06-30",
       "end": "2026-07-13",
       "fresh": true
     },
     {
+      "key": "NIFTY100",
+      "index": "NIFTY 100",
+      "file": "NIFTY100.json",
+      "count": 5846,
+      "start": "2003-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY500",
       "index": "NIFTY 500",
-      "file": "NIFTY_500.json",
+      "file": "NIFTY500.json",
       "count": 6849,
+      "start": "1999-01-01",
       "end": "2026-07-13",
       "fresh": true
     },
     {
-      "index": "NIFTY NEXT 50",
-      "file": "NIFTY_NEXT_50.json",
-      "count": 5882,
-      "end": "2026-07-13",
-      "fresh": true
-    },
-    {
+      "key": "NIFTY_MIDCAP150",
       "index": "NIFTY MIDCAP 150",
-      "file": "NIFTY_MIDCAP_150.json",
+      "file": "NIFTY_MIDCAP150.json",
       "count": 5277,
+      "start": "2005-04-01",
       "end": "2026-07-13",
       "fresh": true
     },
     {
+      "key": "NIFTY_SMALLCAP250",
       "index": "NIFTY SMALLCAP 250",
-      "file": "NIFTY_SMALLCAP_250.json",
+      "file": "NIFTY_SMALLCAP250.json",
       "count": 5277,
+      "start": "2005-04-01",
       "end": "2026-07-13",
       "fresh": true
     },
     {
+      "key": "NIFTY_LARGEMIDCAP250",
+      "index": "NIFTY LARGEMIDCAP 250",
+      "file": "NIFTY_LARGEMIDCAP250.json",
+      "count": 5277,
+      "start": "2005-04-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_MULTICAP",
+      "index": "NIFTY500 MULTICAP 50:25:25",
+      "file": "NIFTY_MULTICAP.json",
+      "count": 5277,
+      "start": "2005-04-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_FINSERV_OR_BANK",
+      "index": "NIFTY FINANCIAL SERVICES",
+      "file": "NIFTY_FINSERV_OR_BANK.json",
+      "count": 5592,
+      "start": "2004-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_BANK",
+      "index": "NIFTY BANK",
+      "file": "NIFTY_BANK.json",
+      "count": 6596,
+      "start": "2000-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_IT",
+      "index": "NIFTY IT",
+      "file": "NIFTY_IT.json",
+      "count": 6725,
+      "start": "1999-06-30",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_PHARMA",
+      "index": "NIFTY PHARMA",
+      "file": "NIFTY_PHARMA.json",
+      "count": 6345,
+      "start": "2001-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_FMCG",
       "index": "NIFTY FMCG",
       "file": "NIFTY_FMCG.json",
       "count": 6849,
+      "start": "1999-01-01",
       "end": "2026-07-13",
       "fresh": true
     },
     {
-      "index": "NIFTY FINANCIAL SERVICES",
-      "file": "NIFTY_FINANCIAL_SERVICES.json",
+      "key": "NIFTY_CONSUMPTION",
+      "index": "NIFTY INDIA CONSUMPTION",
+      "file": "NIFTY_CONSUMPTION.json",
+      "count": 5086,
+      "start": "2006-01-02",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_INFRA",
+      "index": "NIFTY INFRASTRUCTURE",
+      "file": "NIFTY_INFRA.json",
       "count": 5592,
+      "start": "2004-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_AUTO",
+      "index": "NIFTY AUTO",
+      "file": "NIFTY_AUTO.json",
+      "count": 5592,
+      "start": "2004-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_ENERGY",
+      "index": "NIFTY ENERGY",
+      "file": "NIFTY_ENERGY.json",
+      "count": 6345,
+      "start": "2001-01-01",
+      "end": "2026-07-13",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_PSE",
+      "index": "NIFTY PSE",
+      "file": "NIFTY_PSE.json",
+      "count": 6595,
+      "start": "2000-01-03",
       "end": "2026-07-13",
       "fresh": true
     }
