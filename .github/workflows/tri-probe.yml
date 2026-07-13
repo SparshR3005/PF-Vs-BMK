@@ -10,18 +10,17 @@ jobs:
       - name: Probe niftyindices TRI endpoint
         run: |
           python3 - << 'PYEOF'
-          import json, urllib.request, urllib.error, socket
+          import json, gzip, zlib, urllib.request, urllib.error, socket
           from datetime import date
 
           ENDPOINT = "https://www.niftyindices.com/Backpage.aspx/getTotalReturnIndexString"
-          BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 tri-probe/0.1"
-          BAD_UA = "python-urllib/tri-probe"
+          UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 tri-probe/0.2"
 
           def build_payload(name, start, end):
               cinfo = "{'name':'%s','startDate':'%s','endDate':'%s','indexName':'%s'}" % (name, start, end, name)
               return json.dumps({"cinfo": cinfo}).encode("utf-8")
 
-          def fetch(name, start, end, ua, timeout):
+          def raw_fetch(name, start, end, timeout):
               req = urllib.request.Request(
                   ENDPOINT,
                   data=build_payload(name, start, end),
@@ -29,41 +28,52 @@ jobs:
                       "Content-Type": "application/json; charset=UTF-8",
                       "X-Requested-With": "XMLHttpRequest",
                       "Referer": "https://www.niftyindices.com/reports/historical-data",
-                      "User-Agent": ua,
+                      "User-Agent": UA,
+                      "Accept": "application/json, text/javascript, */*; q=0.01",
+                      "Accept-Encoding": "identity",
                   },
                   method="POST",
               )
-              with urllib.request.urlopen(req, timeout=timeout) as r:
-                  raw = r.read().decode("utf-8")
-              return json.loads(json.loads(raw)["d"])
+              try:
+                  r = urllib.request.urlopen(req, timeout=timeout)
+                  status, hdrs, body = r.status, r.getheaders(), r.read()
+              except urllib.error.HTTPError as e:
+                  status, hdrs, body = e.code, list(e.headers.items()), e.read()
+              h = {k.lower(): v for k, v in hdrs}
+              enc = h.get("content-encoding", "").lower()
+              if "gzip" in enc:
+                  body = gzip.decompress(body)
+              elif "deflate" in enc:
+                  body = zlib.decompress(body)
+              return status, h, body
 
           def main():
               today = date.today().strftime("%d-%b-%Y")
-              name = "NIFTY 500"
-              print("=" * 60)
-              print("TEST 1: browser User-Agent (this is the real test)")
               print("=" * 60)
               try:
-                  rows = fetch(name, "01-Jan-1999", today, BROWSER_UA, timeout=90)
-                  print("PASS: %d rows returned" % len(rows))
-                  print("  latest  : %s -> TRI %s" % (rows[0]["Date"], rows[0]["TotalReturnsIndex"]))
-                  print("  earliest: %s -> TRI %s" % (rows[-1]["Date"], rows[-1]["TotalReturnsIndex"]))
-                  print("  => Datacenter fetch WORKS. TRI path is viable from Actions.")
+                  status, h, body = raw_fetch("NIFTY 500", "01-Jan-2026", today, 60)
               except (urllib.error.URLError, socket.timeout) as e:
-                  print("FAIL/STALL with browser UA: %r" % e)
-                  print("  => Consistent with a genuine Akamai IP block; TRI path likely not viable.")
+                  print("NETWORK FAIL/STALL:", repr(e))
                   return
-
-              print()
-              print("=" * 60)
-              print("TEST 2: non-browser UA, 20s cap (demonstrates the UA trap)")
-              print("=" * 60)
+              print("HTTP", status)
+              for k in ("content-type", "content-encoding", "content-length", "server", "set-cookie"):
+                  if k in h:
+                      print("%s: %s" % (k, h[k]))
+              text = body.decode("utf-8", "replace")
+              print("body length:", len(text))
+              print("--- first 600 chars (repr) ---")
+              print(repr(text[:600]))
+              print("--- parse per doc ---")
               try:
-                  rows = fetch(name, "01-Jan-2026", today, BAD_UA, timeout=20)
-                  print("Unexpected: bad UA returned %d rows (UA trap may be gone)" % len(rows))
-              except (urllib.error.URLError, socket.timeout) as e:
-                  print("Timed out/failed as expected: %r" % e)
-                  print("  => The silent stall. If your old Action saw THIS, it was the UA, not the IP.")
+                  outer = json.loads(text)
+                  print("outer type:", type(outer).__name__)
+                  rows = json.loads(outer["d"]) if isinstance(outer, dict) and "d" in outer else None
+                  if rows is not None:
+                      print("PARSED OK:", len(rows), "rows; latest:", rows[0].get("Date"))
+                  else:
+                      print("no 'd' key; outer =", repr(outer)[:200])
+              except Exception as e:
+                  print("parse failed:", repr(e))
 
           main()
           PYEOF
