@@ -1216,34 +1216,205 @@ $("exportBtn").addEventListener("click", ()=>{
   }
 });
 
+/* ---- helpers for a cleaner export ---- */
+// Shorten a scheme name: drop plan words (already in Plan column) and
+// collapse "...Growth Option/Plan" to a trailing "Gr".
+function shortSchemeName(name){
+  let n = String(name||"");
+  // remove plan descriptors
+  n = n.replace(/\b(direct|regular)\s+plan\b/gi, " ")
+       .replace(/\b(direct|regular)\b/gi, " ")
+       .replace(/\bplan\b/gi, " ");
+  // collapse any growth wording to a single marker we re-add at the end
+  const hadGrowth = /growth/i.test(n);
+  n = n.replace(/\bgrowth\s+option\b/gi, " ")
+       .replace(/\bgrowth\b/gi, " ")
+       .replace(/\boption\b/gi, " ");
+  // tidy separators and spaces
+  n = n.replace(/[-–—]\s*$/g,"").replace(/\s*[-–—]\s*/g," - ")
+       .replace(/\s{2,}/g," ").replace(/\s*-\s*$/,"").trim();
+  if(hadGrowth) n = n + " Gr";
+  return n;
+}
+
+// Per-scheme data note: only flags a real discrepancy, otherwise blank.
+function schemeDataNote(s){
+  if(!s.benchLabel) return "No TRI benchmark available";
+  if(!s.benchCmp)   return "No overlapping TRI data";
+  if(s.benchApprox) return "Approx: fell back to a broader index";
+  if(s.cmpShorter){
+    const from = s.cmpFirst ? fmtDate(s.cmpFirst) : "later";
+    return "SIP predates TRI — compared from "+from;
+  }
+  return ""; // everything smooth
+}
+
 function exportExcel(){
   const port=portfolioMetrics(),genDate=fmtDate(new Date()),wb=XLSX.utils.book_new();
-  const s1={};s1["A1"]=styleCell("SIP Performance Report — Fund vs Benchmark",{bold:true});s1["A1"].s.font.sz=14;
-  s1["A2"]=styleCell("Portfolio: "+store.active+"   ·   Generated: "+genDate,{});
+  const anyEnd = schemes.some(s=>s.endStr);            // only show SIP-end column if used
+  const monthlyTotal = schemes.reduce((a,s)=>a+(Number(s.amount)||0),0);
+
+  /* ============ SUMMARY ============ */
+  const s1={};
+  s1["A1"]=styleCell("SIP Performance Report — Fund vs Nifty TRI",{bold:true});s1["A1"].s.font.sz=15;
+  s1["A2"]=styleCell("Portfolio: "+store.active+"   ·   Generated: "+genDate,{}); s1["A2"].s.font.color={rgb:"667788"};
   const kpis=[
-    ["Total holdings",schemes.length,null,false],["Total invested",Math.round(port.invested),FMT_INR,true],["Current value",Math.round(port.current),FMT_INR,true],
-    ["Gain / loss",Math.round(port.gain),FMT_INR,true],["Absolute return",port.absReturn,FMT_PCT,true],["Portfolio XIRR",port.xirr,FMT_PCT,true],
-    ["Comparable holdings",port.comparableCount,null,false],["Comparable fund XIRR",port.anyBench?port.cmpFundXirr:null,FMT_PCT,true],
-    ["Benchmark XIRR",port.anyBench?port.benchXirr:null,FMT_PCT,true],["Portfolio alpha",port.alpha!=null?port.alpha*100:null,FMT_PP,true],
-    ["Newest holding NAV date",fmtDate(port.valueDate),null,false],["Comparison NAV date",port.cmpValueDate?fmtDate(port.cmpValueDate):"N/A",null,false]
+    ["Total holdings",schemes.length,null,false],
+    ["Total invested",Math.round(port.invested),FMT_INR,true],
+    ["Current value",Math.round(port.current),FMT_INR,true],
+    ["Gain / loss",Math.round(port.gain),FMT_INR,true],
+    ["Absolute return",port.absReturn,FMT_PCT,true],
+    ["Portfolio XIRR",port.xirr,FMT_PCT,true],
+    ["Benchmark TRI XIRR",port.anyBench?port.benchXirr:null,FMT_PCT,true],
+    ["Portfolio alpha",port.alpha!=null?port.alpha*100:null,FMT_PP,true]
   ];
-  let r=4,alphaRow=null;kpis.forEach(([k,v,fmt,isNum])=>{s1["A"+r]=styleCell(k,{bold:true});s1["B"+r]=styleCell(v==null?"N/A":v,{align:isNum?"right":"left",numFmt:fmt||undefined});if(k==="Portfolio alpha")alphaRow=r;r++;});
-  const pBand=perfBand(port.alpha);if(alphaRow&&port.alpha!=null)s1["C"+alphaRow]=styleCell(pBand.word,{fill:FILL[pBand.key],light:pBand.key!=="beat",align:"center",bold:true});
-  s1["!ref"]="A1:C"+(r+1);s1["!cols"]=[{wch:28},{wch:22},{wch:20}];XLSX.utils.book_append_sheet(wb,s1,"Summary");
+  let r=4,alphaRow=null;
+  kpis.forEach(([k,v,fmt,isNum])=>{
+    s1["A"+r]=styleCell(k,{bold:true});
+    s1["B"+r]=styleCell(v==null?"N/A":v,{align:isNum?"right":"left",numFmt:fmt||undefined});
+    if(k==="Portfolio alpha")alphaRow=r; r++;
+  });
+  const pBand=perfBand(port.alpha);
+  if(alphaRow&&port.alpha!=null)s1["C"+alphaRow]=styleCell(pBand.word,{fill:FILL[pBand.key],light:pBand.key!=="beat",align:"center",bold:true});
 
-  const headers=["Scheme","Plan","Benchmark","SIP start","SIP end","Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)","Fund XIRR (comparable)","Benchmark XIRR","Alpha","Verdict","Comparison from","Comparison to"];
-  const fmt={5:FMT_INR,6:FMT_INR,7:FMT_INR,8:FMT_INR,9:FMT_PCT,10:FMT_PCT,11:FMT_PCT,12:FMT_PCT,13:FMT_PP};
-  const right=new Set([5,6,7,8,9,10,11,12,13]),data=[];
-  schemes.forEach(s=>{const v=schemeView(s),band=perfBand(v.alpha);data.push({band,isPort:false,cells:[s.name,s.plan||"",s.benchLabel||"—",s.startStr,s.endStr||"",s.amount,Math.round(s.fund.invested),Math.round(s.fund.currentValue),Math.round(v.gain),v.absR,v.fxFull,v.fxCmp,v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word,s.cmpFirst?isoDate(s.cmpFirst):"",s.cmpValueDate?isoDate(s.cmpValueDate):""]});});
-  data.push({band:pBand,isPort:true,cells:["PORTFOLIO (all holdings)","","",port.valueDate?isoDate(port.valueDate):"","","",Math.round(port.invested),Math.round(port.current),Math.round(port.gain),port.absReturn,port.xirr,port.cmpFundXirr,port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word,"",port.cmpValueDate?isoDate(port.cmpValueDate):""]});
-  const ws={};headers.forEach((h,c)=>ws[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{fill:"17212B",light:true,bold:true,align:"center",border:true}));
-  data.forEach((row,ri)=>row.cells.forEach((val,c)=>{const opts={align:right.has(c)?"right":"left",border:true,bold:row.isPort};if(fmt[c])opts.numFmt=fmt[c];if(c===13||c===14){opts.fill=FILL[row.band.key];opts.light=row.band.key!=="beat";}else if(row.isPort){opts.fill="101923";opts.light=true;}ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);}));
-  ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});ws["!cols"]=[{wch:48},{wch:9},{wch:28},{wch:12},{wch:12},{wch:12},{wch:14},{wch:14},{wch:14},{wch:11},{wch:14},{wch:16},{wch:14},{wch:12},{wch:18},{wch:13},{wch:13}];ws["!freeze"]={xSplit:1,ySplit:1};XLSX.utils.book_append_sheet(wb,ws,"Holdings");
+  /* --- Index counterfactual + insights block --- */
+  r+=1;
+  s1["A"+r]=styleCell("Insights",{bold:true}); s1["A"+r].s.font.sz=13; s1["A"+r].s.fill={patternType:"solid",fgColor:{rgb:"17212B"}}; s1["A"+r].s.font.color={rgb:"FFFFFF"};
+  s1["B"+r]=styleCell("",{fill:"17212B"}); s1["C"+r]=styleCell("",{fill:"17212B"});
+  r+=1;
 
-  const legend=[["Colour band","Meaning","Alpha = comparable Fund XIRR − Benchmark XIRR"],["Dark green","Strongly beating","≥ +3 pp per year"],["Green","Beating","0 to +3 pp per year"],["Red","Lagging","0 to −3 pp per year"],["Dark red","Strongly lagging","≤ −3 pp per year"],["",""],["Notes",""],["SIP purchase uses the first published NAV on or after the scheduled date, up to seven calendar days.",""],["Each holding is valued at its own latest NAV; portfolio XIRR combines every holding's cash-flows.",""],["Benchmark is the matching Nifty gross Total Return Index (TRI), including reinvested dividends.",""],["Alpha uses only the SIP months where both the fund and its TRI have data (TRI inception may shorten the window).",""],["Generated "+genDate,""]];
-  const s3={},bandFills=["",FILL.strong_beat,FILL.beat,FILL.lag,FILL.strong_lag],bandLight=[false,true,false,false,true];legend.forEach((row,ri)=>row.forEach((val,c)=>{const opts={border:ri<=4};if(ri===0){opts.fill="17212B";opts.light=true;opts.bold=true;}else if(c===0&&ri>=1&&ri<=4){opts.fill=bandFills[ri];opts.light=bandLight[ri];opts.bold=true;}else if(ri===6&&c===0)opts.bold=true;s3[XLSX.utils.encode_cell({r:ri,c})]=styleCell(val,opts);}));
-  s3["!ref"]="A1:C"+legend.length;s3["!cols"]=[{wch:14},{wch:72},{wch:40}];XLSX.utils.book_append_sheet(wb,s3,"Legend");
+  const insights=buildInsights(port);
+  insights.forEach(line=>{
+    s1["A"+r]=styleCell(line,{}); s1["A"+r].s.alignment.wrapText=true;
+    r++;
+  });
+
+  const lastCol="C";
+  s1["!ref"]="A1:"+lastCol+(r+1);
+  s1["!cols"]=[{wch:30},{wch:20},{wch:22}];
+  s1["!merges"]=insights.map((_,i)=>({s:{r:(4+kpis.length+1)+i,c:0},e:{r:(4+kpis.length+1)+i,c:2}}));
+  XLSX.utils.book_append_sheet(wb,s1,"Summary");
+
+  /* ============ HOLDINGS ============ */
+  // Build headers conditionally (drop SIP end if unused; replace comparison cols with one Note).
+  const headers=["Scheme","Plan","Benchmark (TRI)","SIP start"];
+  if(anyEnd) headers.push("SIP end");
+  headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR","Benchmark XIRR","Alpha","Verdict","Note");
+
+  // Column index bookkeeping (depends on whether SIP end is present)
+  const idx={}; headers.forEach((h,i)=>idx[h]=i);
+  const inrCols=new Set([idx["Monthly SIP"],idx["Invested"],idx["Current"],idx["Gain"]]);
+  const pctCols=new Set([idx["Abs return"],idx["Fund XIRR"],idx["Benchmark XIRR"]]);
+  const ppCols =new Set([idx["Alpha"]]);
+  const rightCols=new Set([...inrCols,...pctCols,...ppCols]);
+
+  const data=[];
+  schemes.forEach(s=>{
+    const v=schemeView(s),band=perfBand(v.alpha);
+    const cells=[shortSchemeName(s.name),s.plan||"",s.benchLabel||"—",s.startStr];
+    if(anyEnd) cells.push(s.endStr||"");
+    cells.push(s.amount,Math.round(s.fund.invested),Math.round(s.fund.currentValue),Math.round(v.gain),
+               v.absR,v.fxFull,v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word,schemeDataNote(s));
+    data.push({band,isPort:false,cells});
+  });
+  // Portfolio row: no stray SIP-start date; DO total the Monthly SIP.
+  const pcells=["PORTFOLIO (all holdings)","","",""];
+  if(anyEnd) pcells.push("");
+  pcells.push(monthlyTotal,Math.round(port.invested),Math.round(port.current),Math.round(port.gain),
+              port.absReturn,port.xirr,port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word,"");
+  data.push({band:pBand,isPort:true,cells:pcells});
+
+  const ws={};
+  headers.forEach((h,c)=>ws[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{fill:"17212B",light:true,bold:true,align:"center",border:true}));
+  data.forEach((row,ri)=>row.cells.forEach((val,c)=>{
+    const opts={align:rightCols.has(c)?"right":"left",border:true,bold:row.isPort};
+    if(inrCols.has(c))opts.numFmt=FMT_INR;
+    else if(pctCols.has(c))opts.numFmt=FMT_PCT;
+    else if(ppCols.has(c))opts.numFmt=FMT_PP;
+    if(c===idx["Alpha"]||c===idx["Verdict"]){opts.fill=FILL[row.band.key];opts.light=row.band.key!=="beat";}
+    else if(row.isPort){opts.fill="101923";opts.light=true;}
+    ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);
+  }));
+  ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});
+  const colw=[{wch:42},{wch:9},{wch:26},{wch:12}];
+  if(anyEnd) colw.push({wch:12});
+  colw.push({wch:12},{wch:14},{wch:14},{wch:14},{wch:11},{wch:12},{wch:14},{wch:12},{wch:18},{wch:34});
+  ws["!cols"]=colw; ws["!freeze"]={xSplit:1,ySplit:1};
+  XLSX.utils.book_append_sheet(wb,ws,"Holdings");
+
+  /* ============ LEGEND ============ */
+  const legend=[
+    ["Colour band","Meaning","Alpha = Fund XIRR − Benchmark TRI XIRR"],
+    ["Dark green","Strongly beating","≥ +3 pp per year"],
+    ["Green","Beating","0 to +3 pp per year"],
+    ["Red","Lagging","0 to −3 pp per year"],
+    ["Dark red","Strongly lagging","≤ −3 pp per year"],
+    ["",""],
+    ["Notes",""],
+    ["SIP purchase uses the first published NAV on or after the scheduled date, up to seven calendar days.",""],
+    ["Each holding is valued at its own latest NAV; portfolio XIRR combines every holding's cash-flows.",""],
+    ["Benchmark is the matching Nifty gross Total Return Index (TRI), including reinvested dividends.",""],
+    ["Alpha uses only the SIP months where both the fund and its TRI have data. The 'Note' column flags any holding whose SIP began before its TRI history.",""],
+    ["Generated "+genDate,""]
+  ];
+  const s3={},bandFills=["",FILL.strong_beat,FILL.beat,FILL.lag,FILL.strong_lag],bandLight=[false,true,false,false,true];
+  legend.forEach((row,ri)=>row.forEach((val,c)=>{
+    const opts={border:ri<=4};
+    if(ri===0){opts.fill="17212B";opts.light=true;opts.bold=true;}
+    else if(c===0&&ri>=1&&ri<=4){opts.fill=bandFills[ri];opts.light=bandLight[ri];opts.bold=true;}
+    else if(ri===6&&c===0)opts.bold=true;
+    s3[XLSX.utils.encode_cell({r:ri,c})]=styleCell(val,opts);
+  }));
+  s3["!ref"]="A1:C"+legend.length;s3["!cols"]=[{wch:14},{wch:74},{wch:40}];
+  XLSX.utils.book_append_sheet(wb,s3,"Legend");
+
   XLSX.writeFile(wb,"SIP_vs_Benchmark_"+store.active.replace(/[^a-z0-9]+/gi,"_")+"_"+new Date().toISOString().slice(0,10)+".xlsx");
+}
+
+/* ---- portfolio insight lines (plain, data-driven) ---- */
+function buildInsights(port){
+  const lines=[];
+  // 1) Index counterfactual: what the TRI would have returned on the same cash-flows.
+  if(port.anyBench && Number.isFinite(port.cmpFundCurrent) && Number.isFinite(port.benchCurrent)){
+    const diff = port.cmpFundCurrent - port.benchCurrent; // + = funds ahead, - = index ahead
+    const abs = Math.abs(Math.round(diff));
+    if(diff < 0){
+      lines.push("Had the same SIP amounts gone into the benchmark index (TRI) instead of your funds, "
+        +"the comparable holdings would be worth about "+inr(abs)+" MORE. "
+        +"Your active fund selection cost roughly "+inr(abs)+" over this window.");
+    }else if(diff > 0){
+      lines.push("Your funds are worth about "+inr(abs)+" MORE than the same SIP amounts invested directly "
+        +"in the benchmark index (TRI) would be — your fund selection added value over this window.");
+    }else{
+      lines.push("Your funds and the benchmark index (TRI) delivered almost identical outcomes over this window.");
+    }
+  }
+  // 2) Overall verdict line.
+  if(port.alpha!=null){
+    const pp=(port.alpha*100);
+    lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI benchmark by "
+      +Math.abs(pp).toFixed(2)+" pp per year (portfolio XIRR "+pct(port.xirr)+" vs benchmark "+pct(port.benchXirr)+").");
+  }
+  // 3) Best and worst holdings by alpha.
+  const withAlpha=schemes.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
+  if(withAlpha.length){
+    const best=withAlpha[0], worst=withAlpha[withAlpha.length-1];
+    lines.push("Best performer vs its TRI: "+shortSchemeName(best.s.name)+" ("+pp(best.a)+" p.a.). "
+      +"Weakest: "+shortSchemeName(worst.s.name)+" ("+pp(worst.a)+" p.a.).");
+    const beating=withAlpha.filter(x=>x.a>=0).length;
+    lines.push(beating+" of "+withAlpha.length+" comparable holdings beat their benchmark; "
+      +(withAlpha.length-beating)+" lagged.");
+  }
+  // 4) Concentration hint if many holdings share one benchmark.
+  const byBench={};
+  schemes.forEach(s=>{ if(s.benchLabel) byBench[s.benchLabel]=(byBench[s.benchLabel]||0)+1; });
+  const topBench=Object.entries(byBench).sort((a,b)=>b[1]-a[1])[0];
+  if(topBench && topBench[1]>=Math.ceil(schemes.length/2) && schemes.length>=4){
+    lines.push("Concentration note: "+topBench[1]+" of "+schemes.length+" holdings map to "+topBench[0]
+      +", so much of the portfolio moves with that single index.");
+  }
+  lines.push("This is an information tool, not investment advice. Past performance does not predict future returns.");
+  return lines;
 }
 
 
