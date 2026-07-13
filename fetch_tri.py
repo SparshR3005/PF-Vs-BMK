@@ -30,15 +30,33 @@ NAV_TIMEOUT_MS = 45000
 # Canonical index names. MUST match niftyindices' internal spelling exactly, or the
 # endpoint returns [] (empty). Verify against:
 # https://www.niftyindices.com/BenchmarkCodes/Nifty_Indices_Benchmark_Codes.pdf
-INDICES = [
-    "NIFTY 50",
-    "NIFTY 500",
-    "NIFTY NEXT 50",
-    "NIFTY MIDCAP 150",
-    "NIFTY SMALLCAP 250",
-    "NIFTY FMCG",
-    "NIFTY FINANCIAL SERVICES",
-]
+#
+# Each entry maps a FRONT-END KEY (the key index.html's resolver produces) to:
+#   name : the exact canonical NSE name to send to the endpoint
+#   file : the output filename index.html will fetch (data/tri/<file>)
+#
+# The `file` is normally slug(name), but is stated explicitly so the front-end
+# and fetcher never drift. If any index logs "EMPTY result", its `name` spelling
+# is wrong -- fix it against the benchmark-codes PDF above and re-run.
+INDEX_MAP = {
+    "NIFTY50":              {"name": "NIFTY 50",                   "file": "NIFTY50.json"},
+    "NIFTY100":             {"name": "NIFTY 100",                  "file": "NIFTY100.json"},
+    "NIFTY500":             {"name": "NIFTY 500",                  "file": "NIFTY500.json"},
+    "NIFTY_MIDCAP150":      {"name": "NIFTY MIDCAP 150",           "file": "NIFTY_MIDCAP150.json"},
+    "NIFTY_SMALLCAP250":    {"name": "NIFTY SMALLCAP 250",         "file": "NIFTY_SMALLCAP250.json"},
+    "NIFTY_LARGEMIDCAP250": {"name": "NIFTY LARGEMIDCAP 250",      "file": "NIFTY_LARGEMIDCAP250.json"},
+    "NIFTY_MULTICAP":       {"name": "NIFTY500 MULTICAP 50:25:25", "file": "NIFTY_MULTICAP.json"},
+    "NIFTY_FINSERV_OR_BANK":{"name": "NIFTY FINANCIAL SERVICES",   "file": "NIFTY_FINSERV_OR_BANK.json"},
+    "NIFTY_BANK":           {"name": "NIFTY BANK",                 "file": "NIFTY_BANK.json"},
+    "NIFTY_IT":             {"name": "NIFTY IT",                   "file": "NIFTY_IT.json"},
+    "NIFTY_PHARMA":         {"name": "NIFTY PHARMA",               "file": "NIFTY_PHARMA.json"},
+    "NIFTY_FMCG":           {"name": "NIFTY FMCG",                 "file": "NIFTY_FMCG.json"},
+    "NIFTY_CONSUMPTION":    {"name": "NIFTY INDIA CONSUMPTION",    "file": "NIFTY_CONSUMPTION.json"},
+    "NIFTY_INFRA":          {"name": "NIFTY INFRASTRUCTURE",       "file": "NIFTY_INFRA.json"},
+    "NIFTY_AUTO":           {"name": "NIFTY AUTO",                 "file": "NIFTY_AUTO.json"},
+    "NIFTY_ENERGY":         {"name": "NIFTY ENERGY",               "file": "NIFTY_ENERGY.json"},
+    "NIFTY_PSE":            {"name": "NIFTY PSE",                  "file": "NIFTY_PSE.json"},
+}
 
 # In-page fetch: runs in the real renderer, inherits cookies + fingerprint.
 # Body arrives as text/html but is JSON; caller parses the text directly.
@@ -148,7 +166,7 @@ def fetch_index(page, context, name: str, end: str):
     return None
 
 
-def rows_to_doc(name: str, rows: list) -> dict:
+def rows_to_doc(key: str, name: str, rows: list) -> dict:
     series = {}
     for r in rows:
         try:
@@ -158,6 +176,7 @@ def rows_to_doc(name: str, rows: list) -> dict:
     ordered = dict(sorted(series.items()))
     keys = list(ordered.keys())
     return {
+        "key": key,
         "index": name,
         "source": "niftyindices.com getTotalReturnIndexString",
         "fetched_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -198,21 +217,25 @@ def main():
         page = context.new_page()
         prime(page, reload=False)
 
-        for i, name in enumerate(INDICES):
-            print("[%d/%d] %s" % (i + 1, len(INDICES), name))
+        items = list(INDEX_MAP.items())
+        for i, (key, meta) in enumerate(items):
+            name = meta["name"]
+            fname = meta["file"]
+            print("[%d/%d] %s (%s)" % (i + 1, len(items), name, key))
             rows = fetch_index(page, context, name, end)
             if not rows:
                 failures.append(name)
                 continue
-            doc = rows_to_doc(name, rows)
+            doc = rows_to_doc(key, name, rows)
             fresh = is_fresh(doc)
-            fpath = OUT_DIR / ("%s.json" % slug(name))
+            fpath = OUT_DIR / fname
             fpath.write_text(json.dumps(doc, separators=(",", ":")))
-            print("    -> %s  rows=%d  end=%s  fresh=%s"
-                  % (fpath, doc["count"], doc["end"], fresh))
+            print("    -> %s  rows=%d  start=%s  end=%s  fresh=%s"
+                  % (fpath, doc["count"], doc["start"], doc["end"], fresh))
             manifest["indices"].append({
-                "index": name, "file": "%s.json" % slug(name),
-                "count": doc["count"], "end": doc["end"], "fresh": fresh,
+                "key": key, "index": name, "file": fname,
+                "count": doc["count"], "start": doc["start"],
+                "end": doc["end"], "fresh": fresh,
             })
             if not fresh:
                 failures.append("%s(stale:%s)" % (name, doc["end"]))
