@@ -8,7 +8,6 @@
   :root{
     --bg:#0f1720; --card:#17212b; --line:#2a3a49; --text:#e6edf3;
     --muted:#9fb0c0; --accent:#2f9e6f; --accent2:#c9a227; --danger:#c85a54;
-    /* performance colour scale */
     --darkgreen:#1e7d46; --green:#3ec27a; --red:#e07a72; --darkred:#b23b34;
   }
   *{box-sizing:border-box;}
@@ -61,7 +60,6 @@
   .bmk-line .approx{color:var(--muted);}
   .sub2{color:var(--muted);font-size:11px;margin-top:1px;}
   .verdict{font-size:11px;margin-top:4px;font-weight:600;}
-  /* performance chips */
   .chip{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;color:#fff;}
   .c-darkgreen{background:var(--darkgreen);} .c-green{background:var(--green);color:#062a15;}
   .c-red{background:var(--red);color:#2a0806;} .c-darkred{background:var(--darkred);}
@@ -131,27 +129,27 @@
   </div>
 </div>
 
-<!-- SheetJS for client-side Excel export with cell styling (community build with styles) -->
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<!-- xlsx-js-style: SheetJS fork that supports cell fills + number formats (needed for coloured, %-formatted export) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 
 <script>
 "use strict";
 const API = "https://api.mfapi.in";
-let selectedScheme = null;   // {schemeCode, schemeName}
+let selectedScheme = null;
 let searchTimer = null;
-let detailCache = {};        // schemeCode -> {navArr, category, name}
-const schemes = [];          // added schemes with computed metrics
+let detailCache = {};
+const schemes = [];
 
 let listDirect = [];
 let listRegular = [];
-let allSchemes = [];         // raw full list {schemeCode, schemeName}
+let allSchemes = [];
 let listReady = false;
 
 const $ = id => document.getElementById(id);
 function getPlan(){ return document.querySelector('input[name=plan]:checked').value; }
 
 /* ============================================================
-   BENCHMARK CONFIG (unchanged mapping logic)
+   BENCHMARK CONFIG
    ============================================================ */
 const FLEXI_OVERRIDES = [
   { name: "parag parikh flexi cap", key: "NIFTY500" },
@@ -242,33 +240,10 @@ function resolveBenchmarkKey(schemeName, category){
   return { key:FALLBACK_KEY, approx:!cleanEquity };
 }
 
-const benchFundCache = {};
-function resolveBenchmarkFund(key, approxIn){
-  let approx = !!approxIn;
-  let guard = 0;
-  while(key && guard++ < 6){
-    if(benchFundCache[key] !== undefined){
-      const cached = benchFundCache[key];
-      if(cached) return { ...cached, approx };
-    } else {
-      const pat = BENCH_FUNDS[key];
-      if(!pat){ benchFundCache[key] = null; }
-      else{
-        const found = pickIndexFund(pat);
-        benchFundCache[key] = found ? { code:found.schemeCode, name:found.schemeName, label:pat.label } : null;
-        if(benchFundCache[key]) return { ...benchFundCache[key], approx };
-      }
-    }
-    const pat = BENCH_FUNDS[key];
-    key = pat ? pat.fb : null;
-    approx = true;
-  }
-  return null;
-}
-
-function pickIndexFund(pat){
+// gather candidate index funds/ETFs for a benchmark pattern, ranked by suitability
+function gatherCandidates(pat){
   const income = ["idcw","dividend","reinvest","payout","bonus"];
-  let best = null, bestScore = -1;
+  const scored = [];
   for(const s of allSchemes){
     const c = compact(s.schemeName);
     if(!pat.req.every(r => c.includes(r))) continue;
@@ -285,11 +260,52 @@ function pickIndexFund(pat){
     if(isGrowth) score += 20;
     if(isETF && !isIndex) score += 10;
     if(isIndex && !isGrowth) score -= 60;
-    const codeNum = Number(s.schemeCode) || 999999;
-    const total = score * 1e7 + (9999999 - codeNum);
-    if(total > bestScore){ bestScore = total; best = s; }
+    scored.push({ s, score });
   }
+  scored.sort((a,b)=> b.score - a.score);
+  return scored.slice(0, 6).map(x=>x.s);
+}
+
+// among the top candidates, fetch NAV and pick the one with the LONGEST history
+// (earliest first NAV) so the benchmark covers as much of the SIP as possible.
+async function pickLongestHistory(cands, label){
+  let best = null, bestFirst = Infinity, bestLen = -1;
+  for(const s of cands){
+    try{
+      const d = await getDetail(s.schemeCode);
+      if(!d.navArr.length) continue;
+      const first = d.navArr[0].date.getTime();
+      const len = d.navArr.length;
+      if(first < bestFirst || (first === bestFirst && len > bestLen)){
+        bestFirst = first; bestLen = len;
+        best = { code:s.schemeCode, name:s.schemeName, label };
+      }
+    }catch(e){ /* skip unreachable candidate */ }
+  }
+  if(!best && cands.length){ best = { code:cands[0].schemeCode, name:cands[0].schemeName, label }; }
   return best;
+}
+
+const benchFundCache = {};   // key -> {code,name,label} | null   (resolved once, reused)
+async function resolveBenchmarkFund(key, approxIn){
+  let approx = !!approxIn;
+  let guard = 0;
+  while(key && guard++ < 6){
+    if(!(key in benchFundCache)){
+      const pat = BENCH_FUNDS[key];
+      if(!pat){ benchFundCache[key] = null; }
+      else{
+        const cands = gatherCandidates(pat);
+        benchFundCache[key] = await pickLongestHistory(cands, pat.label);
+      }
+    }
+    const cached = benchFundCache[key];
+    if(cached) return { ...cached, approx };
+    const pat = BENCH_FUNDS[key];
+    key = pat ? pat.fb : null;
+    approx = true;
+  }
+  return null;
 }
 
 /* ---- load + dedupe scheme list ---- */
@@ -299,7 +315,6 @@ async function loadSchemeList(){
     const all = await res.json();
     allSchemes = all;
 
-    // dedupe holders keyed by normalised scheme name (collapses duplicate codes)
     const seenDirect = new Set();
     const seenRegular = new Set();
 
@@ -319,11 +334,10 @@ async function loadSchemeList(){
                           n.includes("duration");
       if(isNonEquity) return;
 
-      const key = normName(s.schemeName);        // dedupe key
+      const key = normName(s.schemeName);
       const entry = { schemeCode: s.schemeCode, schemeName: s.schemeName, lower: n };
       const hasDirect  = n.includes("direct");
       const hasRegular = n.includes("regular");
-
       if(hasDirect){
         if(!seenDirect.has(key)){ seenDirect.add(key); listDirect.push(entry); }
       } else if(hasRegular || (!hasDirect && !hasRegular)){
@@ -340,7 +354,7 @@ async function loadSchemeList(){
   }
 }
 
-/* ---- search (dedupe at display too, in case of stray dupes) ---- */
+/* ---- search ---- */
 $("search").addEventListener("input", function(){
   const q = this.value.trim().toLowerCase();
   selectedScheme = null;
@@ -363,7 +377,7 @@ function runSearch(q){
   for(const s of list){
     if(!words.every(w => s.lower.includes(w))) continue;
     const key = normName(s.schemeName);
-    if(seen.has(key)) continue;      // extra safety dedupe
+    if(seen.has(key)) continue;
     seen.add(key);
     matches.push(s);
   }
@@ -467,8 +481,15 @@ function xirr(flows){
   return (lo+hi)/2;
 }
 
-// run a SIP over a fixed set of installment dates; also returns the flow list
-// so the portfolio can be aggregated from the union of all fund flows.
+// build monthly installment dates from start to end (inclusive)
+function scheduleDates(start, end){
+  const dates=[];
+  let d=new Date(start.getTime());
+  while(d.getTime() <= end.getTime()){ dates.push(new Date(d.getTime())); d=addMonths(d,1); }
+  return dates;
+}
+
+// run a SIP over a fixed set of installment dates against one NAV series
 function runSIP(navArr, dates, amount, valueDate){
   let units=0, invested=0, placed=0;
   const flows=[];
@@ -484,22 +505,19 @@ function runSIP(navArr, dates, amount, valueDate){
   if(flows.length===0) return null;
   const vn = navOnOrBefore(navArr, valueDate);
   const currentValue = units * (vn ? vn.nav : 0);
-  const redemption = {date:new Date(valueDate.getTime()), amount:currentValue};
-  const xirrFlows = flows.concat([redemption]);
-  return { invested, currentValue, units, placed, xirr: xirr(xirrFlows), flows, redemption };
+  const xirrFlows = flows.concat([{date:new Date(valueDate.getTime()), amount:currentValue}]);
+  return { invested, currentValue, units, placed, xirr: xirr(xirrFlows), flows,
+           firstDate: dates.length?dates[0]:null };
 }
 
 /* ============================================================
    ADD SCHEME
-   Invested-value fix:
-   - The installment SCHEDULE is driven purely by the user's
-     start/end dates (identical for fund and its benchmark).
-   - We no longer shove the whole start forward to the latest
-     NAV history. If a given month has no NAV yet, that single
-     installment is skipped for that series only, and we report
-     how many of the scheduled months were actually placed.
-   - Fund and benchmark are valued on a COMMON valuation date and
-     use the SAME schedule, so their invested totals match.
+   - FUND metrics use your real full schedule (start -> latest fund NAV),
+     so invested = SIP x (months with NAV). Same date+amount => same invested.
+   - COMPARISON (alpha) uses ONLY the months where BOTH the fund and its
+     benchmark have NAV, valued on a common date, so the alpha is apples-to-apples.
+   - Valuation is at the LATEST AVAILABLE NAV (markets are shut on weekends and
+     the newest NAV is published with a lag, so this is usually a day or two back).
    ============================================================ */
 $("addBtn").addEventListener("click", async ()=>{
   if(!selectedScheme) return;
@@ -510,63 +528,64 @@ $("addBtn").addEventListener("click", async ()=>{
     const fundNav = detail.navArr;
     if(!fundNav.length){ $("status").textContent="No NAV data for this scheme."; return; }
 
-    const start = parseInput($("startDate").value);
+    const start  = parseInput($("startDate").value);
     const endVal = $("endDate").value ? parseInput($("endDate").value) : null;
     const amount = Number($("amount").value);
 
+    // ---- fund full-period metrics ----
+    const fundLast = fundNav[fundNav.length-1].date;
+    let fundSipEnd = fundLast;
+    if(endVal && endVal.getTime() < fundSipEnd.getTime()) fundSipEnd = endVal;
+    const fundDates = scheduleDates(start, fundSipEnd);
+    if(fundDates.length===0){ $("status").textContent="Start date is after the latest available NAV. Pick an earlier date."; updateAddState(); return; }
+    const fundFull = runSIP(fundNav, fundDates, amount, fundLast);
+    if(!fundFull){ $("status").textContent="Couldn't value this SIP (no NAV in range). Try a different start date."; updateAddState(); return; }
+
+    // ---- benchmark ----
     $("status").textContent = "Matching benchmark…";
     const bk = resolveBenchmarkKey(selectedScheme.schemeName, detail.category);
-    const benchFund = resolveBenchmarkFund(bk.key, bk.approx);
+    const benchFund = await resolveBenchmarkFund(bk.key, bk.approx);
 
     let benchNav = null, benchInfo = null;
     if(benchFund){
       try{
         const bd = await getDetail(benchFund.code);
         if(bd.navArr.length){ benchNav = bd.navArr; benchInfo = benchFund; }
-      }catch(e){ /* fall through */ }
+      }catch(e){ /* fall through to fund-only */ }
     }
 
-    // common valuation date = latest date both series can be valued on
-    const fundLast = fundNav[fundNav.length-1].date;
-    const valueDate = benchNav ? minDate(fundLast, benchNav[benchNav.length-1].date) : fundLast;
-
-    // SCHEDULE: user start -> min(user end, valueDate). Independent of NAV history start.
-    let sipEnd = valueDate;
-    if(endVal && endVal.getTime() < sipEnd.getTime()) sipEnd = endVal;
-
-    const dates=[];
-    let d = new Date(start.getTime());
-    while(d.getTime() <= sipEnd.getTime()){ dates.push(new Date(d.getTime())); d = addMonths(d,1); }
-    if(dates.length===0){ $("status").textContent="Start date is after the latest available NAV. Pick an earlier date."; updateAddState(); return; }
-
-    const scheduled = dates.length;
-
-    const fundRes = runSIP(fundNav, dates, amount, valueDate);
-    if(!fundRes){ $("status").textContent="Couldn't value this SIP. Try a different start date."; updateAddState(); return; }
-
-    let benchRes = null;
-    if(benchNav){ benchRes = runSIP(benchNav, dates, amount, valueDate); }
-
-    // NAV-history truncation flags (per series) — for a note only, invested is now
-    // simply amount * placed for each series.
-    const fundHistStart = fundNav[0].date;
-    const benchHistStart = benchNav ? benchNav[0].date : null;
-    const fundTrunc = start.getTime() < fundHistStart.getTime();
-    const benchTrunc = benchNav ? (start.getTime() < benchHistStart.getTime()) : false;
+    let fundCmp=null, benchCmp=null, cmpFirst=null, cmpCount=0, cmpValueDate=null;
+    if(benchNav){
+      cmpValueDate = minDate(fundLast, benchNav[benchNav.length-1].date);
+      let cmpEnd = cmpValueDate;
+      if(endVal && endVal.getTime() < cmpEnd.getTime()) cmpEnd = endVal;
+      // months where BOTH series have a NAV
+      const common = scheduleDates(start, cmpEnd).filter(d=>{
+        const a = navOnOrBefore(fundNav, d), b = navOnOrBefore(benchNav, d);
+        return a && a.nav>0 && b && b.nav>0;
+      });
+      if(common.length){
+        fundCmp  = runSIP(fundNav,  common, amount, cmpValueDate);
+        benchCmp = runSIP(benchNav, common, amount, cmpValueDate);
+        cmpFirst = common[0];
+        cmpCount = common.length;
+      }
+    }
 
     schemes.push({
       name: selectedScheme.schemeName,
       code: selectedScheme.schemeCode,
       category: detail.category || "",
       startStr: $("startDate").value,
-      start, valueDate, amount,
-      scheduled,
-      fundTrunc, benchTrunc,
-      fundHistStart, benchHistStart,
-      fund: fundRes,
-      bench: benchRes,
+      start, amount,
+      fundValueDate: fundLast,
+      cmpValueDate,
+      fund: fundFull,
+      fundCmp, benchCmp,
+      cmpFirst, cmpCount,
       benchLabel: benchInfo ? benchInfo.label : null,
       benchApprox: benchInfo ? benchInfo.approx : false,
+      cmpShorter: benchCmp ? (cmpCount < fundFull.placed) : false,
     });
 
     selectedScheme=null; $("search").value=""; $("selected").textContent="";
@@ -586,37 +605,53 @@ function pct(n){ return n==null?"N/A":(n*100).toFixed(2)+"%"; }
 function pp(n){ return (n>=0?"+":"")+(n*100).toFixed(2)+" pp"; }
 function fmtDate(d){ return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); }
 
-// classify alpha (fund xirr - bench xirr, in fraction) into a 4-band scale
 function perfBand(alpha){
   if(alpha==null) return {cls:"c-flat", word:"No benchmark", key:"na"};
-  const a = alpha*100; // pp
+  const a = alpha*100;
   if(a >= 3)  return {cls:"c-darkgreen", word:"Strongly beating", key:"strong_beat"};
   if(a >= 0)  return {cls:"c-green",     word:"Beating",          key:"beat"};
   if(a > -3)  return {cls:"c-red",       word:"Lagging",          key:"lag"};
   return              {cls:"c-darkred",  word:"Strongly lagging", key:"strong_lag"};
 }
 
+// per-scheme derived numbers for display/export
+function schemeView(s){
+  const f=s.fund;
+  const fxFull = f.xirr;
+  const gain = f.currentValue - f.invested;
+  const absR = f.invested>0 ? gain/f.invested : null;
+  const fxCmp = s.fundCmp ? s.fundCmp.xirr : null;
+  const bxCmp = s.benchCmp ? s.benchCmp.xirr : null;
+  const alpha = (fxCmp!=null && bxCmp!=null) ? fxCmp - bxCmp : null;
+  return { fxFull, gain, absR, fxCmp, bxCmp, alpha,
+           benchCurrent: s.benchCmp ? s.benchCmp.currentValue : null };
+}
+
 /* ---- portfolio aggregation ---- */
-// Build a combined cashflow: union of every fund's contribution flows +
-// a single redemption equal to the sum of all current values on the common
-// (latest) valuation date. Same for the benchmark side.
 function portfolioMetrics(){
   if(!schemes.length) return null;
-  let invested=0, current=0, benchCurrent=0, benchInvested=0;
-  let anyBench=false;
-  const fundFlows=[]; const benchFlows=[];
-  let valueDate = schemes[0].valueDate;
-  schemes.forEach(s=>{ if(s.valueDate.getTime()>valueDate.getTime()) valueDate=s.valueDate; });
+  let invested=0, current=0;
+  const fundFlows=[];
+  let cmpFundCur=0, cmpBenchCur=0, anyBench=false;
+  const cmpFundFlows=[], cmpBenchFlows=[];
+  let valueDate = schemes[0].fundValueDate;
+  let cmpValueDate = schemes[0].fundValueDate;
+
+  schemes.forEach(s=>{
+    if(s.fundValueDate.getTime()>valueDate.getTime()) valueDate=s.fundValueDate;
+    if(s.cmpValueDate && s.cmpValueDate.getTime()>cmpValueDate.getTime()) cmpValueDate=s.cmpValueDate;
+  });
 
   schemes.forEach(s=>{
     invested += s.fund.invested;
     current  += s.fund.currentValue;
     s.fund.flows.forEach(f=>fundFlows.push({date:f.date, amount:f.amount}));
-    if(s.bench){
+    if(s.fundCmp && s.benchCmp){
       anyBench=true;
-      benchInvested += s.bench.invested;
-      benchCurrent  += s.bench.currentValue;
-      s.bench.flows.forEach(f=>benchFlows.push({date:f.date, amount:f.amount}));
+      cmpFundCur  += s.fundCmp.currentValue;
+      cmpBenchCur += s.benchCmp.currentValue;
+      s.fundCmp.flows.forEach(f=>cmpFundFlows.push({date:f.date, amount:f.amount}));
+      s.benchCmp.flows.forEach(f=>cmpBenchFlows.push({date:f.date, amount:f.amount}));
     }
   });
 
@@ -624,20 +659,22 @@ function portfolioMetrics(){
   fundFlows.sort((a,b)=>a.date-b.date);
   const fundX = xirr(fundFlows);
 
-  let benchX=null;
+  let benchX=null, cmpFundX=null, alpha=null;
   if(anyBench){
-    benchFlows.push({date:new Date(valueDate.getTime()), amount:benchCurrent});
-    benchFlows.sort((a,b)=>a.date-b.date);
-    benchX = xirr(benchFlows);
+    cmpFundFlows.push({date:new Date(cmpValueDate.getTime()), amount:cmpFundCur});
+    cmpFundFlows.sort((a,b)=>a.date-b.date);
+    cmpFundX = xirr(cmpFundFlows);
+    cmpBenchFlows.push({date:new Date(cmpValueDate.getTime()), amount:cmpBenchCur});
+    cmpBenchFlows.sort((a,b)=>a.date-b.date);
+    benchX = xirr(cmpBenchFlows);
+    alpha = (cmpFundX!=null && benchX!=null) ? cmpFundX - benchX : null;
   }
 
   return {
     invested, current, gain: current-invested,
     absReturn: invested>0 ? (current-invested)/invested : null,
-    xirr: fundX,
-    benchInvested, benchCurrent, benchXirr: benchX,
-    alpha: (fundX!=null && benchX!=null) ? fundX-benchX : null,
-    valueDate, anyBench
+    xirr: fundX, benchXirr: benchX, benchCurrent: cmpBenchCur,
+    alpha, valueDate, anyBench
   };
 }
 
@@ -652,11 +689,9 @@ function render(){
     return;
   }
   $("toolbar").style.display="flex";
-
   const port = portfolioMetrics();
-
-  // summary cards
   const alphaBand = perfBand(port.alpha);
+
   $("summaryCard").style.display="block";
   $("summaryGrid").innerHTML = `
     <div class="stat"><div class="k">Schemes</div><div class="v">${schemes.length}</div></div>
@@ -671,47 +706,40 @@ function render(){
 
   let rows="";
   schemes.forEach((s,i)=>{
-    const f = s.fund, b = s.bench;
-    const fx = f.xirr;
-    const alpha = (b && b.xirr!=null && fx!=null) ? fx-b.xirr : null;
-    const band = perfBand(alpha);
-    const gain = f.currentValue - f.invested;
-    const absR = f.invested>0 ? gain/f.invested : null;
+    const v = schemeView(s);
+    const band = perfBand(v.alpha);
+    const f = s.fund, b = s.benchCmp;
 
     let bmkLine = '<div class="bmk-line">Benchmark: unavailable</div>';
     if(s.benchLabel && b){
       const approx = s.benchApprox ? ' <span class="approx">(≈ approximate)</span>' : '';
       let note = '';
-      if(s.benchTrunc || s.fundTrunc){
-        const dt = maxDate(s.fundTrunc?s.fundHistStart:s.start, s.benchTrunc?s.benchHistStart:s.start);
-        note = ' <span class="approx">· some early months skipped (history starts '+fmtDate(dt)+')</span>';
+      if(s.cmpShorter && s.cmpFirst){
+        note = ' <span class="approx">· compared over '+s.cmpCount+' common months (from '+fmtDate(s.cmpFirst)+')</span>';
       }
       bmkLine = '<div class="bmk-line">vs '+s.benchLabel+approx+note+'</div>';
     } else if(s.benchLabel && !b){
-      bmkLine = '<div class="bmk-line">vs '+s.benchLabel+' <span class="approx">(no data)</span></div>';
+      bmkLine = '<div class="bmk-line">vs '+s.benchLabel+' <span class="approx">(no overlapping data)</span></div>';
     }
 
     let verdict = '';
-    if(alpha!=null){
-      verdict = '<div class="verdict '+(alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(alpha*100).toFixed(2)+' pp p.a.</div>';
+    if(v.alpha!=null){
+      verdict = '<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.</div>';
     }
 
-    const placedNote = (f.placed < s.scheduled)
-      ? '<div class="fund-meta">'+f.placed+' of '+s.scheduled+' scheduled installments placed</div>' : '';
+    const placedNote = (f.placed < fundScheduled(s))
+      ? '<div class="fund-meta">'+f.placed+' installments placed (fund NAV starts later than your start date)</div>' : '';
 
-    const curCell = inr(f.currentValue) + (b ? '<div class="sub2">'+inr(b.currentValue)+'</div>' : '');
-    const gainCell = '<span class="'+(gain>=0?'pos':'neg')+'">'+(gain>=0?'+':'')+inr(gain)+'</span>'
-                   + '<div class="sub2">'+pct(absR)+'</div>';
-    const xCell = '<span class="'+(fx>=0?'pos':'neg')+'" style="font-weight:600;">'+pct(fx)+'</span>'
-                + (b ? '<div class="sub2">'+pct(b.xirr)+'</div>' : '');
-    let alphaCell = '—';
-    if(alpha!=null){
-      alphaCell = '<span class="chip '+band.cls+'">'+pp(alpha)+'</span>';
-    }
+    const curCell = inr(f.currentValue) + (b ? '<div class="sub2">'+inr(v.benchCurrent)+'</div>' : '');
+    const gainCell = '<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span>'
+                   + '<div class="sub2">'+pct(v.absR)+'</div>';
+    const xCell = '<span class="'+(v.fxFull>=0?'pos':'neg')+'" style="font-weight:600;">'+pct(v.fxFull)+'</span>'
+                + (b ? '<div class="sub2">'+pct(v.bxCmp)+'</div>' : '');
+    const alphaCell = (v.alpha!=null) ? '<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span>' : '—';
 
     rows += `<tr>
       <td><div class="fund-name">${s.name}</div>
-          <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.valueDate)}</div>
+          <div class="fund-meta">SIP ${inr(s.amount)}/mo from ${s.startStr} · valued ${fmtDate(s.fundValueDate)}</div>
           ${placedNote}${bmkLine}${verdict}</td>
       <td class="num">${inr(f.invested)}</td>
       <td class="num">${curCell}</td>
@@ -722,7 +750,6 @@ function render(){
     </tr>`;
   });
 
-  // portfolio total row
   const pBand = perfBand(port.alpha);
   rows += `<tr class="portfolio">
     <td>PORTFOLIO (all schemes)<div class="fund-meta">valued ${fmtDate(port.valueDate)}</div></td>
@@ -746,13 +773,16 @@ function render(){
     b.onclick=()=>{ schemes.splice(+b.dataset.i,1); render(); };
   });
 
-  // footer note
   $("foot").style.display="block";
   $("foot").innerHTML =
-    "Benchmarks use the matching Nifty <b>index fund's</b> Direct-Growth NAV (post-expense), not the pure TRI, "
-    + "so benchmark returns are already net of a small tracking cost. XIRR is money-weighted (annualised). "
-    + "Colour bands: dark green ≥ +3 pp, green 0 to +3 pp, red 0 to −3 pp, dark red ≤ −3 pp vs benchmark. "
-    + "Report generated " + fmtDate(new Date()) + ".";
+    "Benchmark = the matching Nifty <b>index fund</b> (Direct-Growth) with the longest NAV history, valued net of its expense ratio (not the pure TRI). "
+    + "Alpha is computed only over the months both the fund and the benchmark have NAV, so it's a like-for-like comparison. "
+    + "XIRR is money-weighted (annualised). Values use the latest published NAV (usually 1–2 days back; markets are closed on weekends). "
+    + "Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp vs benchmark.";
+}
+
+function fundScheduled(s){
+  return scheduleDates(s.start, s.fundValueDate).length;
 }
 
 /* ---- clear ---- */
@@ -762,11 +792,31 @@ $("clearBtn").addEventListener("click", ()=>{
 });
 
 /* ============================================================
-   EXCEL EXPORT  (SheetJS, client-side, with cell colouring)
+   EXCEL EXPORT  (xlsx-js-style: colours + %-formats supported)
+   Percentages are stored as fractions with a "0.00%" number format,
+   so Excel shows 17.90% (not 0.179).
    ============================================================ */
+const FILL = {
+  strong_beat:"1E7D46", beat:"3EC27A", lag:"E07A72", strong_lag:"B23B34", na:"4B5B6A",
+};
+const FMT_INR = '"₹"#,##,##0';
+const FMT_PCT = '0.00%';
+const FMT_PP  = '"+"0.00" pp";"-"0.00" pp";0.00" pp"';
+
+function styleCell(v, {fill=null, light=false, bold=false, align="left", numFmt=null, border=false}={}){
+  const s = { font:{ name:"Arial", sz:11, color:{rgb: light?"FFFFFF":"1A1A1A"}, bold:!!bold },
+              alignment:{ horizontal:align, vertical:"center", wrapText:false } };
+  if(fill) s.fill = { patternType:"solid", fgColor:{rgb:fill} };
+  if(numFmt) s.numFmt = numFmt;
+  if(border) s.border = { top:{style:"thin",color:{rgb:"CCCCCC"}}, bottom:{style:"thin",color:{rgb:"CCCCCC"}},
+                          left:{style:"thin",color:{rgb:"CCCCCC"}}, right:{style:"thin",color:{rgb:"CCCCCC"}} };
+  return { v: (v==null?"":v), t: (typeof v==="number"?"n":"s"), s };
+}
+
 $("exportBtn").addEventListener("click", ()=>{
-  if(!schemes.length){ return; }
+  if(!schemes.length) return;
   try{
+    if(typeof XLSX==="undefined" || !XLSX.writeFile) throw new Error("Excel library not loaded (check your connection).");
     exportExcel();
     $("exportStatus").textContent = "Downloaded.";
     setTimeout(()=>{ $("exportStatus").textContent=""; }, 2500);
@@ -775,173 +825,121 @@ $("exportBtn").addEventListener("click", ()=>{
   }
 });
 
-// fill colours for the 4-band scale (ARGB, no leading #)
-const FILL = {
-  strong_beat: "1E7D46",  // dark green
-  beat:        "3EC27A",  // green
-  lag:         "E07A72",  // red
-  strong_lag:  "B23B34",  // dark red
-  na:          "4B5B6A",  // grey
-};
-function styleCell(v, fill, opts={}){
-  const c = { v, s:{ font:{ name:"Arial", sz:11, color:{rgb: opts.light?"FFFFFF":"1A1A1A"} },
-                     alignment:{ horizontal: opts.align||"left", vertical:"center" } } };
-  if(fill) c.s.fill = { patternType:"solid", fgColor:{rgb:fill} };
-  if(opts.bold) c.s.font.bold = true;
-  if(opts.numFmt) c.s.numFmt = opts.numFmt;
-  if(opts.border){ c.s.border = { top:{style:"thin",color:{rgb:"BBBBBB"}}, bottom:{style:"thin",color:{rgb:"BBBBBB"}}, left:{style:"thin",color:{rgb:"BBBBBB"}}, right:{style:"thin",color:{rgb:"BBBBBB"}} }; }
-  return c;
-}
-
 function exportExcel(){
   const port = portfolioMetrics();
   const genDate = fmtDate(new Date());
   const wb = XLSX.utils.book_new();
 
-  /* ---------- Sheet 1: Summary ---------- */
+  /* ---- Sheet 1: Summary ---- */
   const s1 = {};
-  const put = (addr, cell)=>{ s1[addr]=cell; };
-  put("A1", styleCell("SIP Performance Report — Fund vs Benchmark", null, {bold:true}));
+  s1["A1"] = styleCell("SIP Performance Report — Fund vs Benchmark", {bold:true});
   s1["A1"].s.font.sz = 14;
-  put("A2", styleCell("Generated: "+genDate, null, {}));
-
-  // portfolio KPIs
+  s1["A2"] = styleCell("Generated: "+genDate, {});
   const kpis = [
-    ["Total schemes", schemes.length, null],
-    ["Total invested (₹)", Math.round(port.invested), "#,##0"],
-    ["Current value (₹)", Math.round(port.current), "#,##0"],
-    ["Gain / loss (₹)", Math.round(port.gain), "#,##0"],
-    ["Absolute return", port.absReturn, "0.00%"],
-    ["Portfolio XIRR", port.xirr, "0.00%"],
-    ["Benchmark XIRR", port.anyBench?port.benchXirr:null, "0.00%"],
-    ["Portfolio alpha (pp p.a.)", port.alpha!=null?port.alpha*100:null, "0.00"],
-    ["Valued on", fmtDate(port.valueDate), null],
+    ["Total schemes", schemes.length, null, false],
+    ["Total invested", Math.round(port.invested), FMT_INR, true],
+    ["Current value", Math.round(port.current), FMT_INR, true],
+    ["Gain / loss", Math.round(port.gain), FMT_INR, true],
+    ["Absolute return", port.absReturn, FMT_PCT, true],
+    ["Portfolio XIRR", port.xirr, FMT_PCT, true],
+    ["Benchmark XIRR", port.anyBench?port.benchXirr:null, FMT_PCT, true],
+    ["Portfolio alpha", port.alpha!=null?port.alpha*100:null, FMT_PP, true],
+    ["Valued on (latest NAV)", fmtDate(port.valueDate), null, false],
   ];
-  let r = 4;
-  kpis.forEach(([k,v,fmt])=>{
-    put("A"+r, styleCell(k, null, {bold:true}));
-    const isNum = typeof v === "number";
-    put("B"+r, styleCell(v==null?"N/A":v, null, {align:isNum?"right":"left", numFmt:fmt||undefined}));
+  let r=4;
+  kpis.forEach(([k,v,fmt,isNum])=>{
+    s1["A"+r] = styleCell(k, {bold:true});
+    s1["B"+r] = styleCell(v==null?"N/A":v, {align:isNum?"right":"left", numFmt:fmt||undefined});
     r++;
   });
-
-  // portfolio alpha colour cell
   const pBand = perfBand(port.alpha);
   if(port.alpha!=null){
-    put("C"+(4+7), styleCell(pBand.word, FILL[pBand.key], {light:pBand.key!=="beat", align:"center", bold:true}));
+    s1["C11"] = styleCell(pBand.word, {fill:FILL[pBand.key], light:pBand.key!=="beat", align:"center", bold:true});
   }
-
-  s1["!ref"] = "A1:C"+(r+1);
-  s1["!cols"] = [{wch:26},{wch:20},{wch:18}];
+  s1["!ref"]="A1:C"+(r+1);
+  s1["!cols"]=[{wch:24},{wch:20},{wch:20}];
   XLSX.utils.book_append_sheet(wb, s1, "Summary");
 
-  /* ---------- Sheet 2: Holdings ---------- */
-  const headers = ["Scheme","Category","Plan-implied","Benchmark","Approx?","SIP/mo (₹)",
-    "Start","Valued","Installments placed","Invested (₹)","Current (₹)","Gain (₹)",
-    "Abs return","Fund XIRR","Bench XIRR","Alpha (pp)","Verdict"];
-  const aoa = [];
-  const rowMeta = []; // remember band per data row for colouring
+  /* ---- Sheet 2: Holdings ---- */
+  const headers = ["Scheme","Category","Plan","Benchmark","Approx?","SIP/mo","Start","Valued",
+    "Installments","Invested","Current","Gain","Abs return","Fund XIRR","Bench XIRR","Alpha","Verdict"];
+  const numFmtByCol = {5:FMT_INR,9:FMT_INR,10:FMT_INR,11:FMT_INR,12:FMT_PCT,13:FMT_PCT,14:FMT_PCT,15:FMT_PP};
+  const rightCols = new Set([5,8,9,10,11,12,13,14,15]);
 
+  const dataRows = [];
   schemes.forEach(s=>{
-    const f=s.fund, b=s.bench;
-    const fx=f.xirr;
-    const alpha = (b && b.xirr!=null && fx!=null)? fx-b.xirr : null;
-    const band = perfBand(alpha);
-    const gain = f.currentValue - f.invested;
-    const absR = f.invested>0 ? gain/f.invested : null;
-    aoa.push([
-      s.name, s.category || "", (s.name.toLowerCase().includes("direct")?"Direct":"Regular"),
+    const v = schemeView(s);
+    const band = perfBand(v.alpha);
+    dataRows.push({ band, isPort:false, cells:[
+      s.name, s.category||"", (s.name.toLowerCase().includes("direct")?"Direct":"Regular"),
       s.benchLabel||"—", s.benchApprox?"Yes":"No",
-      s.amount, s.startStr, fmtDate(s.valueDate),
-      f.placed+" / "+s.scheduled,
-      Math.round(f.invested), Math.round(f.currentValue), Math.round(gain),
-      absR, fx, (b?b.xirr:null), (alpha!=null?alpha*100:null), band.word
-    ]);
-    rowMeta.push(band);
+      s.amount, s.startStr, fmtDate(s.fundValueDate),
+      (s.benchCmp? (s.cmpCount+" common"):(s.fund.placed+"")),
+      Math.round(s.fund.invested), Math.round(s.fund.currentValue), Math.round(v.gain),
+      v.absR, v.fxFull, v.bxCmp, (v.alpha!=null?v.alpha*100:null), band.word
+    ]});
   });
-
-  // portfolio row
-  aoa.push([
-    "PORTFOLIO (all schemes)","","","","", "", "", fmtDate(port.valueDate), "",
+  dataRows.push({ band:pBand, isPort:true, cells:[
+    "PORTFOLIO (all schemes)","","","","","","",fmtDate(port.valueDate),"",
     Math.round(port.invested), Math.round(port.current), Math.round(port.gain),
     port.absReturn, port.xirr, (port.anyBench?port.benchXirr:null),
     (port.alpha!=null?port.alpha*100:null), pBand.word
-  ]);
-  rowMeta.push(pBand);
+  ]});
 
-  const s2 = XLSX.utils.aoa_to_sheet([headers, ...aoa]);
-
-  // style header
-  headers.forEach((h,ci)=>{
-    const addr = XLSX.utils.encode_cell({r:0,c:ci});
-    s2[addr].s = { font:{name:"Arial",sz:11,bold:true,color:{rgb:"FFFFFF"}},
-                   fill:{patternType:"solid",fgColor:{rgb:"17212B"}},
-                   alignment:{horizontal:"center",vertical:"center",wrapText:true},
-                   border:{bottom:{style:"medium",color:{rgb:"2A3A49"}}} };
+  const ws = {};
+  headers.forEach((h,c)=>{
+    ws[XLSX.utils.encode_cell({r:0,c})] = styleCell(h,
+      {fill:"17212B", light:true, bold:true, align:"center", border:true});
   });
-
-  const numFmtByCol = {5:"#,##0",9:"#,##0",10:"#,##0",11:"#,##0",12:"0.00%",13:"0.00%",14:"0.00%",15:"0.00"};
-  const rightCols = new Set([5,8,9,10,11,12,13,14,15]);
-
-  aoa.forEach((row,ri)=>{
-    const band = rowMeta[ri];
-    const isPortfolio = ri === aoa.length-1;
-    row.forEach((val,ci)=>{
-      const addr = XLSX.utils.encode_cell({r:ri+1,c:ci});
-      if(!s2[addr]) return;
-      const opts = { align: rightCols.has(ci)?"right":"left", border:true };
-      if(numFmtByCol[ci]) opts.numFmt = numFmtByCol[ci];
-      if(isPortfolio) opts.bold = true;
-      // colour the Alpha (15) and Verdict (16) cells by band; also tint scheme name lightly
-      let fill = null, light=false;
-      if(ci===15 || ci===16){ fill = FILL[band.key]; light = (band.key!=="beat"); }
-      else if(isPortfolio){ fill = "101923"; light=true; }
-      s2[addr].s = styleCell(val==null?"":val, fill, {...opts, light}).s;
+  dataRows.forEach((row,ri)=>{
+    row.cells.forEach((val,c)=>{
+      const opts = { align: rightCols.has(c)?"right":"left", border:true, bold:row.isPort };
+      if(numFmtByCol[c]) opts.numFmt = numFmtByCol[c];
+      if(c===15 || c===16){ opts.fill = FILL[row.band.key]; opts.light = (row.band.key!=="beat"); }
+      else if(row.isPort){ opts.fill = "101923"; opts.light = true; }
+      ws[XLSX.utils.encode_cell({r:ri+1,c})] = styleCell(val, opts);
     });
   });
+  ws["!ref"] = "A1:"+XLSX.utils.encode_cell({r:dataRows.length, c:headers.length-1});
+  ws["!cols"] = [{wch:42},{wch:22},{wch:9},{wch:24},{wch:8},{wch:10},{wch:12},{wch:13},
+                 {wch:13},{wch:14},{wch:14},{wch:13},{wch:11},{wch:11},{wch:11},{wch:12},{wch:18}];
+  ws["!freeze"] = { xSplit:1, ySplit:1 };
+  XLSX.utils.book_append_sheet(wb, ws, "Holdings");
 
-  s2["!cols"] = [{wch:42},{wch:20},{wch:12},{wch:24},{wch:8},{wch:12},{wch:12},{wch:13},
-                 {wch:18},{wch:14},{wch:14},{wch:13},{wch:11},{wch:11},{wch:11},{wch:11},{wch:18}];
-  s2["!freeze"] = { xSplit:1, ySplit:1 };
-  XLSX.utils.book_append_sheet(wb, s2, "Holdings");
-
-  /* ---------- Sheet 3: Legend ---------- */
+  /* ---- Sheet 3: Legend ---- */
   const legend = [
-    ["Colour band","Meaning","Alpha (fund XIRR − benchmark XIRR)"],
-    ["Dark green","Strongly beating benchmark","≥ +3 pp per year"],
-    ["Green","Beating benchmark","0 to +3 pp per year"],
-    ["Red","Lagging benchmark","0 to −3 pp per year"],
-    ["Dark red","Strongly lagging benchmark","≤ −3 pp per year"],
+    ["Colour band","Meaning","Alpha = Fund XIRR − Benchmark XIRR"],
+    ["Dark green","Strongly beating","≥ +3 pp per year"],
+    ["Green","Beating","0 to +3 pp per year"],
+    ["Red","Lagging","0 to −3 pp per year"],
+    ["Dark red","Strongly lagging","≤ −3 pp per year"],
     ["",""],
     ["Notes",""],
-    ["Benchmark = matching Nifty index fund (Direct-Growth) NAV, net of tracking cost — not pure TRI.",""],
-    ["XIRR is money-weighted (annualised IRR of dated cashflows).",""],
-    ["Absolute return = (Current − Invested) / Invested (not annualised).",""],
-    ["Some early installments may be skipped if NAV history starts after your SIP start date.",""],
+    ["Benchmark = matching Nifty index fund (Direct-Growth, longest history), net of expenses — not pure TRI.",""],
+    ["Alpha uses only the months both fund and benchmark have NAV (like-for-like).",""],
+    ["XIRR is the annualised money-weighted return of dated cashflows.",""],
+    ["Values use the latest published NAV (usually 1–2 days back; weekends have no NAV).",""],
     ["Generated "+genDate,""],
   ];
-  const s3 = XLSX.utils.aoa_to_sheet(legend);
-  const bandFills = ["", FILL.strong_beat, FILL.beat, FILL.lag, FILL.strong_lag];
-  const bandLight = [false,true,false,false,true];
+  const s3 = {};
+  const bandFills=["",FILL.strong_beat,FILL.beat,FILL.lag,FILL.strong_lag];
+  const bandLight=[false,true,false,false,true];
   legend.forEach((row,ri)=>{
-    row.forEach((val,ci)=>{
-      const addr = XLSX.utils.encode_cell({r:ri,c:ci});
-      if(!s3[addr]) return;
-      let fill=null, light=false, bold=false;
-      if(ri===0){ fill="17212B"; light=true; bold=true; }
-      else if(ci===0 && ri>=1 && ri<=4){ fill=bandFills[ri]; light=bandLight[ri]; bold=true; }
-      else if(ri===6 && ci===0){ bold=true; }
-      s3[addr].s = styleCell(val, fill, {light, bold, border:ri<=4}).s;
+    row.forEach((val,c)=>{
+      let opts={border:ri<=4};
+      if(ri===0){ opts.fill="17212B"; opts.light=true; opts.bold=true; }
+      else if(c===0 && ri>=1 && ri<=4){ opts.fill=bandFills[ri]; opts.light=bandLight[ri]; opts.bold=true; }
+      else if(ri===6 && c===0){ opts.bold=true; }
+      s3[XLSX.utils.encode_cell({r:ri,c})] = styleCell(val, opts);
     });
   });
-  s3["!cols"] = [{wch:14},{wch:52},{wch:30}];
+  s3["!ref"]="A1:C"+legend.length;
+  s3["!cols"]=[{wch:14},{wch:56},{wch:32}];
   XLSX.utils.book_append_sheet(wb, s3, "Legend");
 
-  const fname = "SIP_vs_Benchmark_"+new Date().toISOString().slice(0,10)+".xlsx";
-  XLSX.writeFile(wb, fname);
+  XLSX.writeFile(wb, "SIP_vs_Benchmark_"+new Date().toISOString().slice(0,10)+".xlsx");
 }
 
-/* close dropdown on outside click */
 document.addEventListener("click", e=>{
   if(!e.target.closest(".search-wrap")) $("results").style.display="none";
 });
