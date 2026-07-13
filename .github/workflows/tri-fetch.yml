@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install -y xvfb
 
       - name: Fetch TRI (headful under xvfb)
-        run: xvfb-run -a python fetch_tri.py
+        run: xvfb-run -a python fetch__tri_debug.py
 
       - name: Commit updated data
         run: |
