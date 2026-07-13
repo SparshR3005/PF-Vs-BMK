@@ -1,0 +1,69 @@
+name: TRI probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe niftyindices TRI endpoint
+        run: |
+          python3 - << 'PYEOF'
+          import json, urllib.request, urllib.error, socket
+          from datetime import date
+
+          ENDPOINT = "https://www.niftyindices.com/Backpage.aspx/getTotalReturnIndexString"
+          BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 tri-probe/0.1"
+          BAD_UA = "python-urllib/tri-probe"
+
+          def build_payload(name, start, end):
+              cinfo = "{'name':'%s','startDate':'%s','endDate':'%s','indexName':'%s'}" % (name, start, end, name)
+              return json.dumps({"cinfo": cinfo}).encode("utf-8")
+
+          def fetch(name, start, end, ua, timeout):
+              req = urllib.request.Request(
+                  ENDPOINT,
+                  data=build_payload(name, start, end),
+                  headers={
+                      "Content-Type": "application/json; charset=UTF-8",
+                      "X-Requested-With": "XMLHttpRequest",
+                      "Referer": "https://www.niftyindices.com/reports/historical-data",
+                      "User-Agent": ua,
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  raw = r.read().decode("utf-8")
+              return json.loads(json.loads(raw)["d"])
+
+          def main():
+              today = date.today().strftime("%d-%b-%Y")
+              name = "NIFTY 500"
+              print("=" * 60)
+              print("TEST 1: browser User-Agent (this is the real test)")
+              print("=" * 60)
+              try:
+                  rows = fetch(name, "01-Jan-1999", today, BROWSER_UA, timeout=90)
+                  print("PASS: %d rows returned" % len(rows))
+                  print("  latest  : %s -> TRI %s" % (rows[0]["Date"], rows[0]["TotalReturnsIndex"]))
+                  print("  earliest: %s -> TRI %s" % (rows[-1]["Date"], rows[-1]["TotalReturnsIndex"]))
+                  print("  => Datacenter fetch WORKS. TRI path is viable from Actions.")
+              except (urllib.error.URLError, socket.timeout) as e:
+                  print("FAIL/STALL with browser UA: %r" % e)
+                  print("  => Consistent with a genuine Akamai IP block; TRI path likely not viable.")
+                  return
+
+              print()
+              print("=" * 60)
+              print("TEST 2: non-browser UA, 20s cap (demonstrates the UA trap)")
+              print("=" * 60)
+              try:
+                  rows = fetch(name, "01-Jan-2026", today, BAD_UA, timeout=20)
+                  print("Unexpected: bad UA returned %d rows (UA trap may be gone)" % len(rows))
+              except (urllib.error.URLError, socket.timeout) as e:
+                  print("Timed out/failed as expected: %r" % e)
+                  print("  => The silent stall. If your old Action saw THIS, it was the UA, not the IP.")
+
+          main()
+          PYEOF
