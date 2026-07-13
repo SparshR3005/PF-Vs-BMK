@@ -118,7 +118,7 @@
     </div>
     <div class="divider"></div>
     <div class="pm-bar">
-      <button class="btn blue" id="updateNavBtn">↻ Update to today's NAV</button>
+      <button class="btn blue" id="updateNavBtn" style="display:none;">↻ Refresh</button>
       <button class="btn ghost" id="importBtn">⤒ Import from Excel</button>
       <button class="btn ghost" id="templateBtn">⤓ Download import template</button>
       <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.xls">
@@ -273,23 +273,23 @@ const CATEGORY_DEFAULTS = [
 ];
 const FALLBACK_KEY = "NIFTY500";
 const BENCH_FUNDS = {
-  NIFTY50:              { label:"Nifty 50 Index",              req:["nifty50"], exc:["500","100","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY500" },
-  NIFTY100:             { label:"Nifty 100 Index",             req:["nifty100"], exc:["500","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY50" },
-  NIFTY500:             { label:"Nifty 500 Index",             req:["nifty500"], exc:["multicap","502525","value","equal","quality","momentum","low","alpha","esg"], fb:null },
-  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 Index",      req:["midcap150"], exc:["quality","momentum","select","largemidcap"], fb:"NIFTY500" },
-  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 Index",    req:["smallcap250"], exc:["quality","momentum","largemidcap"], fb:"NIFTY500" },
-  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 Index", req:["largemidcap250"], exc:[], fb:"NIFTY500" },
-  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 Index", req:["multicap","502525"], exc:[], fb:"NIFTY500" },
-  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services Index", req:["financialservices"], exc:["exbank","2530"], fb:"NIFTY_BANK" },
-  NIFTY_BANK:           { label:"Nifty Bank Index",            req:["niftybank"], exc:["private","psu"], fb:"NIFTY500" },
-  NIFTY_IT:             { label:"Nifty IT Index",              req:["niftyit"], exc:[], fb:"NIFTY500" },
-  NIFTY_PHARMA:         { label:"Nifty Pharma Index",          req:["pharma"], exc:[], fb:"NIFTY500" },
-  NIFTY_FMCG:           { label:"Nifty FMCG Index",            req:["fmcg"], exc:[], fb:"NIFTY_CONSUMPTION" },
-  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption Index", req:["consumption"], exc:[], fb:"NIFTY500" },
-  NIFTY_INFRA:          { label:"Nifty Infrastructure Index",  req:["infrastructure"], exc:[], fb:"NIFTY500" },
-  NIFTY_AUTO:           { label:"Nifty Auto Index",            req:["niftyauto"], exc:[], fb:"NIFTY500" },
-  NIFTY_ENERGY:         { label:"Nifty Energy Index",          req:["energy"], exc:["renewable"], fb:"NIFTY500" },
-  NIFTY_PSE:            { label:"Nifty PSE Index",             req:["niftypse"], exc:[], fb:"NIFTY500" },
+  NIFTY50:              { label:"Nifty 50 TRI",              req:["nifty50"], exc:["500","100","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY500" },
+  NIFTY100:             { label:"Nifty 100 TRI",             req:["nifty100"], exc:["500","next","midcap","smallcap","150","250","equal","value","quality","low","alpha","momentum","esg","multicap"], fb:"NIFTY50" },
+  NIFTY500:             { label:"Nifty 500 TRI",             req:["nifty500"], exc:["multicap","502525","value","equal","quality","momentum","low","alpha","esg"], fb:null },
+  NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 TRI",      req:["midcap150"], exc:["quality","momentum","select","largemidcap"], fb:"NIFTY500" },
+  NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 TRI",    req:["smallcap250"], exc:["quality","momentum","largemidcap"], fb:"NIFTY500" },
+  NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 TRI", req:["largemidcap250"], exc:[], fb:"NIFTY500" },
+  NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 TRI", req:["multicap","502525"], exc:[], fb:"NIFTY500" },
+  NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services TRI", req:["financialservices"], exc:["exbank","2530"], fb:"NIFTY_BANK" },
+  NIFTY_BANK:           { label:"Nifty Bank TRI",            req:["niftybank"], exc:["private","psu"], fb:"NIFTY500" },
+  NIFTY_IT:             { label:"Nifty IT TRI",              req:["niftyit"], exc:[], fb:"NIFTY500" },
+  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",          req:["pharma"], exc:[], fb:"NIFTY500" },
+  NIFTY_FMCG:           { label:"Nifty FMCG TRI",            req:["fmcg"], exc:[], fb:"NIFTY_CONSUMPTION" },
+  NIFTY_CONSUMPTION:    { label:"Nifty India Consumption TRI", req:["consumption"], exc:[], fb:"NIFTY500" },
+  NIFTY_INFRA:          { label:"Nifty Infrastructure TRI",  req:["infrastructure"], exc:[], fb:"NIFTY500" },
+  NIFTY_AUTO:           { label:"Nifty Auto TRI",            req:["niftyauto"], exc:[], fb:"NIFTY500" },
+  NIFTY_ENERGY:         { label:"Nifty Energy TRI",          req:["energy"], exc:["renewable"], fb:"NIFTY500" },
+  NIFTY_PSE:            { label:"Nifty PSE TRI",             req:["niftypse"], exc:[], fb:"NIFTY500" },
 };
 
 function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
@@ -316,76 +316,62 @@ function resolveBenchmarkKey(schemeName, category){
   return { key:FALLBACK_KEY, approx:!cleanEquity };
 }
 
-function gatherCandidates(pat){
-  const income = ["idcw","dividend","reinvest","payout","bonus"];
-  const scored = [];
-  for(const s of allSchemes){
-    const c = compact(s.schemeName);
-    if(!pat.req.every(r => c.includes(r))) continue;
-    if(pat.exc.some(e => c.includes(e))) continue;
-    if(income.some(i => c.includes(i))) continue;
-    const isIndex = c.includes("index");
-    const isETF   = c.includes("etf");
-    if(!isIndex && !isETF) continue;
-    const isDirect = c.includes("direct");
-    const isGrowth = c.includes("growth");
-    let tier = 3;
-    if(isIndex && isDirect && isGrowth) tier = 0;
-    else if(isIndex && isGrowth) tier = 1;
-    else if(isIndex) tier = 2;
-    scored.push({ s, tier, name:s.schemeName.length });
+/* ============================================================
+   BENCHMARK = REAL NIFTY TRI  (Total Return Index)
+   TRI series are pre-fetched nightly by fetch_tri.py and committed
+   as data/tri/<KEY>.json. We load them here and treat each TRI series
+   exactly like a NAV array, so all the SIP/XIRR machinery reuses it.
+
+   File shape (from fetch_tri.py):
+     { key, index, source, count, start, end, series:{ "YYYY-MM-DD": value, ... } }
+
+   The front-end resolver may fall back one step (e.g. a sector with no
+   TRI file -> NIFTY500) via BENCH_FUNDS[key].fb, so a missing file
+   degrades gracefully rather than breaking the holding.
+   ============================================================ */
+const TRI_DIR = "data/tri";              // relative to index.html on the same site
+const triCache = {};                      // key -> {label, navArr:[{date,nav}]} | null
+
+// Turn a TRI JSON series into the same {date, nav} sorted array the SIP code expects.
+function triSeriesToNavArr(series){
+  const arr = [];
+  for(const [iso, val] of Object.entries(series||{})){
+    const d = parseInput(iso);
+    const nav = Number(val);
+    if(d && Number.isFinite(nav) && nav>0) arr.push({date:d, nav});
   }
-  scored.sort((a,b)=> a.tier-b.tier || a.name-b.name || a.s.schemeName.localeCompare(b.s.schemeName));
-  if(!scored.length) return [];
-  const bestTier = scored[0].tier;
-  return scored.filter(x=>x.tier===bestTier).map(x=>x.s);
+  arr.sort((a,b)=>a.date-b.date);
+  return arr;
 }
 
-async function mapLimit(items, limit, worker){
-  const results = new Array(items.length);
-  let next = 0;
-  async function runner(){
-    while(true){
-      const i = next++;
-      if(i>=items.length) return;
-      try{ results[i] = await worker(items[i], i); }
-      catch(e){ results[i] = null; }
-    }
+async function loadTriFile(key){
+  if(key in triCache) return triCache[key];
+  try{
+    const res = await fetch(`${TRI_DIR}/${encodeURIComponent(key)}.json`, {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const json = await res.json();
+    const navArr = triSeriesToNavArr(json.series);
+    if(!navArr.length) throw new Error("empty TRI series");
+    const label = (BENCH_FUNDS[key] && BENCH_FUNDS[key].label) || json.index || key;
+    triCache[key] = { key, label, navArr };
+  }catch(e){
+    triCache[key] = null;               // remember the miss so we don't refetch each time
   }
-  await Promise.all(Array.from({length:Math.min(limit,items.length)}, runner));
-  return results;
+  return triCache[key];
 }
 
-async function pickLongestHistory(cands, label){
-  if(!cands.length) return null;
-  const checked = await mapLimit(cands, 5, async s=>{
-    const d = await getDetail(s.schemeCode);
-    if(!d.navArr.length) return null;
-    return { code:s.schemeCode, name:s.schemeName, label,
-             first:d.navArr[0].date.getTime(), len:d.navArr.length };
-  });
-  const valid = checked.filter(Boolean).sort((a,b)=>a.first-b.first || b.len-a.len || a.name.localeCompare(b.name));
-  return valid.length ? {code:valid[0].code, name:valid[0].name, label:valid[0].label} : null;
-}
-
-const benchFundCache = {};
-async function resolveBenchmarkFund(key, approxIn){
+// Resolve a benchmark key to a loaded TRI series, following .fb fallbacks
+// (e.g. a sector index with no TRI file -> its broad-market fallback).
+// approx becomes true whenever we had to fall back from the ideal match.
+async function resolveBenchmarkTri(key, approxIn){
   let approx = !!approxIn;
   let guard = 0;
   while(key && guard++ < 6){
-    if(!(key in benchFundCache)){
-      const pat = BENCH_FUNDS[key];
-      if(!pat){ benchFundCache[key] = null; }
-      else{
-        const cands = gatherCandidates(pat);
-        benchFundCache[key] = await pickLongestHistory(cands, pat.label);
-      }
-    }
-    const cached = benchFundCache[key];
-    if(cached) return { ...cached, approx };
+    const tri = await loadTriFile(key);
+    if(tri) return { key, label:tri.label, navArr:tri.navArr, approx };
     const pat = BENCH_FUNDS[key];
     key = pat ? pat.fb : null;
-    approx = true;
+    approx = true;                       // any fallback is an approximation of the ideal benchmark
   }
   return null;
 }
@@ -694,12 +680,14 @@ async function computeScheme(spec){
   if(!fundFull) throw new Error("No valid SIP instalment could be placed for "+officialName);
 
   const bk=resolveBenchmarkKey(officialName,category);
-  const benchFund=await resolveBenchmarkFund(bk.key,bk.approx);
-  let benchNav=null,benchInfo=null;
-  if(benchFund){
-    try{const bd=await getDetail(benchFund.code);benchNav=bd.navArr;benchInfo=benchFund;}catch(e){}
-  }
+  const benchTri=await resolveBenchmarkTri(bk.key,bk.approx);
+  const benchNav=benchTri?benchTri.navArr:null;   // TRI series behaves like a NAV array
+  const benchInfo=benchTri;
 
+  // Alpha is measured only over the window where BOTH the fund and its TRI
+  // have data. Because TRI inception dates differ by index, the benchmark's
+  // first date may be after the SIP start; in that case cmpFirst/cmpValueDate
+  // reflect the shorter overlapping window and cmpShorter flags it in the UI.
   let fundCmp=null,benchCmp=null,cmpFirst=null,cmpCount=0,cmpValueDate=null;
   if(benchNav&&benchNav.length){
     cmpValueDate=minDate(fundLast,benchNav[benchNav.length-1].date);
@@ -877,7 +865,7 @@ function render(){
   wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span></th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
   $("foot").style.display="block";
-  $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows, so the portfolio totals equal the sum of the rows. Benchmark = matching Nifty index fund (Direct-Growth preferred) with the longest available NAV history, net of its expense ratio, not pure TRI. Alpha uses the like-for-like months available to both fund and proxy. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
+  $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows, so the portfolio totals equal the sum of the rows. Benchmark = the matching Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends — the same standard mutual funds are benchmarked against. TRI values are refreshed automatically each market day. Because index TRI inception dates differ, alpha is measured only over the months where both the fund and its TRI have data; a shorter window is flagged per holding. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
 }
 
 /* ---- clear ---- */
@@ -1023,14 +1011,19 @@ $("eraseLocalBtn").addEventListener("click",()=>{
   schemes=[];persistStore();refreshPfSelect();render();$("pmStatus").textContent="Browser data erased.";
 });
 
-/* ---- update to today's NAV ---- */
-$("updateNavBtn").addEventListener("click", ()=>{
-  if(!listReady){ $("pmStatus").textContent="Still loading scheme list…"; return; }
-  detailCache = {};                 // force refetch of NAV
-  for(const k in benchFundCache) delete benchFundCache[k];
-  $("pmStatus").textContent = "Refreshing NAV…";
-  hydrateActive();
-});
+/* ---- refresh (fund NAV + TRI). Button hidden by default since the nightly
+   job keeps TRI current and fund NAV is refetched on load; kept for safety
+   if the page is left open across days. ---- */
+const updateNavBtnEl = $("updateNavBtn");
+if(updateNavBtnEl){
+  updateNavBtnEl.addEventListener("click", ()=>{
+    if(!listReady){ $("pmStatus").textContent="Still loading scheme list…"; return; }
+    detailCache = {};                          // force refetch of fund NAV
+    for(const k in triCache) delete triCache[k]; // force reload of TRI files
+    $("pmStatus").textContent = "Refreshing…";
+    hydrateActive();
+  });
+}
 
 /* ============================================================
    EXCEL IMPORT — row-level validation and preview
@@ -1247,7 +1240,7 @@ function exportExcel(){
   data.forEach((row,ri)=>row.cells.forEach((val,c)=>{const opts={align:right.has(c)?"right":"left",border:true,bold:row.isPort};if(fmt[c])opts.numFmt=fmt[c];if(c===13||c===14){opts.fill=FILL[row.band.key];opts.light=row.band.key!=="beat";}else if(row.isPort){opts.fill="101923";opts.light=true;}ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);}));
   ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});ws["!cols"]=[{wch:48},{wch:9},{wch:28},{wch:12},{wch:12},{wch:12},{wch:14},{wch:14},{wch:14},{wch:11},{wch:14},{wch:16},{wch:14},{wch:12},{wch:18},{wch:13},{wch:13}];ws["!freeze"]={xSplit:1,ySplit:1};XLSX.utils.book_append_sheet(wb,ws,"Holdings");
 
-  const legend=[["Colour band","Meaning","Alpha = comparable Fund XIRR − Benchmark XIRR"],["Dark green","Strongly beating","≥ +3 pp per year"],["Green","Beating","0 to +3 pp per year"],["Red","Lagging","0 to −3 pp per year"],["Dark red","Strongly lagging","≤ −3 pp per year"],["",""],["Notes",""],["SIP purchase uses the first published NAV on or after the scheduled date, up to seven calendar days.",""],["Each holding is valued at its own latest NAV; portfolio XIRR combines every holding's cash-flows.",""],["Benchmark is a matching Nifty index fund proxy, net of expenses, not pure TRI.",""],["Alpha uses only comparable SIP months available to both fund and benchmark proxy.",""],["Generated "+genDate,""]];
+  const legend=[["Colour band","Meaning","Alpha = comparable Fund XIRR − Benchmark XIRR"],["Dark green","Strongly beating","≥ +3 pp per year"],["Green","Beating","0 to +3 pp per year"],["Red","Lagging","0 to −3 pp per year"],["Dark red","Strongly lagging","≤ −3 pp per year"],["",""],["Notes",""],["SIP purchase uses the first published NAV on or after the scheduled date, up to seven calendar days.",""],["Each holding is valued at its own latest NAV; portfolio XIRR combines every holding's cash-flows.",""],["Benchmark is the matching Nifty gross Total Return Index (TRI), including reinvested dividends.",""],["Alpha uses only the SIP months where both the fund and its TRI have data (TRI inception may shorten the window).",""],["Generated "+genDate,""]];
   const s3={},bandFills=["",FILL.strong_beat,FILL.beat,FILL.lag,FILL.strong_lag],bandLight=[false,true,false,false,true];legend.forEach((row,ri)=>row.forEach((val,c)=>{const opts={border:ri<=4};if(ri===0){opts.fill="17212B";opts.light=true;opts.bold=true;}else if(c===0&&ri>=1&&ri<=4){opts.fill=bandFills[ri];opts.light=bandLight[ri];opts.bold=true;}else if(ri===6&&c===0)opts.bold=true;s3[XLSX.utils.encode_cell({r:ri,c})]=styleCell(val,opts);}));
   s3["!ref"]="A1:C"+legend.length;s3["!cols"]=[{wch:14},{wch:72},{wch:40}];XLSX.utils.book_append_sheet(wb,s3,"Legend");
   XLSX.writeFile(wb,"SIP_vs_Benchmark_"+store.active.replace(/[^a-z0-9]+/gi,"_")+"_"+new Date().toISOString().slice(0,10)+".xlsx");
