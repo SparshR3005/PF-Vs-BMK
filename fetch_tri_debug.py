@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot diagnostic: what does Akamai actually give us from a GH runner?"""
+"""Diagnostic v2: catch the 302, reveal redirect target + hidden form tokens."""
 import json
 from datetime import date
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -11,7 +11,7 @@ JS_FETCH = r"""
 async ([url, payload]) => {
   try {
     const r = await fetch(url, {
-      method: "POST", credentials: "include",
+      method: "POST", credentials: "include", redirect: "manual",
       headers: {
         "Content-Type": "application/json; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest",
@@ -20,8 +20,9 @@ async ([url, payload]) => {
       body: payload,
     });
     const text = await r.text();
-    return { status: r.status, ct: r.headers.get("content-type") || "", text };
-  } catch (e) { return { status: -1, ct: "", text: "FETCH_ERROR: " + String(e) }; }
+    return { status: r.status, type: r.type, ct: r.headers.get("content-type") || "",
+             loc: r.headers.get("location") || "", text: text };
+  } catch (e) { return { status: -1, type: "err", ct: "", loc: "", text: String(e) }; }
 }
 """
 
@@ -45,38 +46,34 @@ def main():
         )
         page = context.new_page()
 
-        def on_resp(r):
-            try:
-                if r.status >= 400 or r.request.method == "POST":
-                    print("  RESP %s %s %s" % (r.status, r.request.method, r.url[:110]))
-            except Exception:
-                pass
-        page.on("response", on_resp)
-
-        resp = page.goto(PAGE, wait_until="domcontentloaded", timeout=45000)
-        print("NAV status:", resp.status if resp else None, "| final url:", page.url)
+        page.goto(PAGE, wait_until="domcontentloaded", timeout=45000)
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
         except PWTimeout:
-            print("(networkidle timed out)")
-
-        for x, y in ((120, 160), (400, 300), (650, 480), (300, 620)):
+            pass
+        for x, y in ((120, 160), (400, 300), (650, 480)):
             page.mouse.move(x, y); page.wait_for_timeout(150)
-        page.mouse.wheel(0, 800)
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(3000)
 
         print("TITLE:", page.title())
-        print("COOKIES present:")
-        cookies = context.cookies()
-        if not cookies:
-            print("   (none)")
-        for c in cookies:
-            print("   %-14s domain=%s httpOnly=%s" % (c["name"], c.get("domain"), c.get("httpOnly")))
+        print("COOKIES:", [c["name"] for c in context.cookies()])
 
-        print("Attempting in-page fetch regardless of cookies...")
+        # Any hidden inputs / tokens on the page?
+        tokens = page.evaluate("""() => {
+            const out = {};
+            document.querySelectorAll("input[type=hidden]").forEach(i => {
+                out[i.name || i.id || "?"] = (i.value || "").slice(0, 40);
+            });
+            return out;
+        }""")
+        print("HIDDEN INPUTS:", json.dumps(tokens, indent=2))
+
+        print("\n--- in-page fetch, redirect=manual ---")
         res = page.evaluate(JS_FETCH, [ENDPOINT, payload])
-        print("FETCH status:", res.get("status"), "| ct:", res.get("ct"))
-        print("FETCH body[:300]:", repr((res.get("text") or "")[:300]))
+        print("status:", res.get("status"), "| type:", res.get("type"),
+              "| ct:", res.get("ct"))
+        print("location:", res.get("loc"))
+        print("body[:300]:", repr((res.get("text") or "")[:300]))
 
         browser.close()
 
