@@ -521,7 +521,7 @@ document.querySelectorAll('input[name=plan]').forEach(r=>{
 });
 
 function updateAddState(){
-  const ok = selectedScheme && $("startDate").value && Number($("amount").value) > 0;
+  const ok = !hydrationInProgress && selectedScheme && $("startDate").value && Number($("amount").value) > 0;
   $("addBtn").disabled = !ok;
 }
 ["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
@@ -760,7 +760,7 @@ async function computeScheme(spec){
 
 /* ---- ADD SCHEME (manual) ---- */
 $("addBtn").addEventListener("click", async ()=>{
-  if(!selectedScheme) return;
+  if(hydrationInProgress || !selectedScheme) return;
   $("addBtn").disabled = true;
   $("status").textContent = "Fetching NAV history…";
   try{
@@ -971,29 +971,55 @@ function refreshPfSelect(){
   });
 }
 
-// recompute every spec in the active portfolio against live NAV
+// Recompute every spec in the active portfolio against live NAV.
+// Results are built locally and published only if this is still the newest load.
+let hydrationGeneration = 0;
+let hydrationInProgress = false;
+
+function setHydrationState(active){
+  hydrationInProgress = active;
+  $("importBtn").disabled = active;
+  updateAddState();
+}
+
 async function hydrateActive(){
-  const specs = store.portfolios[store.active] || [];
+  const generation = ++hydrationGeneration;
+  const portfolioName = store.active;
+  const specs = (store.portfolios[portfolioName] || []).map(spec=>({...spec}));
   schemes = [];
   render();
-  if(!specs.length) return;
+
+  if(!specs.length){
+    setHydrationState(false);
+    $("pmStatus").textContent = "";
+    return;
+  }
+
+  setHydrationState(true);
   $("pmStatus").textContent = "Loading "+specs.length+" scheme(s)…";
+  const loaded = [];
   const failed = [];
+
   for(const spec of specs){
     try{
-      const sch = await computeScheme(spec);
-      schemes.push(sch);
-      render();
-    }catch(e){ failed.push(spec.name); }
+      loaded.push(await computeScheme(spec));
+    }catch(e){
+      failed.push(spec.name);
+    }
+    if(generation!==hydrationGeneration || store.active!==portfolioName) return;
   }
-  // Keep the original saved specs intact (a transient network failure on one
-  // holding must not silently drop it from storage).
-  store.portfolios[store.active] = specs;
-  persistStore();
+
+  schemes = loaded;
+  render();
+  setHydrationState(false);
   $("pmStatus").textContent = failed.length
     ? ("Loaded. Couldn't value: "+failed.join("; "))
     : "Loaded.";
-  setTimeout(()=>{ if($("pmStatus").textContent.startsWith("Loaded")) $("pmStatus").textContent=""; }, 4000);
+  setTimeout(()=>{
+    if(generation===hydrationGeneration && $("pmStatus").textContent.startsWith("Loaded")){
+      $("pmStatus").textContent="";
+    }
+  }, 4000);
 }
 
 let listReadyPending = true;
@@ -1005,7 +1031,6 @@ function afterListReady(){
 
 /* ---- portfolio manager buttons ---- */
 $("pfSelect").addEventListener("change", function(){
-  saveActive();
   store.active = this.value;
   persistStore();
   hydrateActive();
@@ -1014,31 +1039,30 @@ $("pfNewBtn").addEventListener("click", ()=>{
   const name = (prompt("Name for the new portfolio:","")||"").trim();
   if(!name) return;
   if(store.portfolios[name]){ alert("A portfolio with that name already exists."); return; }
-  saveActive();
   store.portfolios[name] = [];
   store.active = name;
   persistStore();
   refreshPfSelect();
-  schemes = []; render();
+  hydrateActive();
 });
 $("pfRenameBtn").addEventListener("click", ()=>{
   const cur = store.active;
   const name = (prompt("Rename portfolio:", cur)||"").trim();
   if(!name || name===cur) return;
   if(store.portfolios[name]){ alert("A portfolio with that name already exists."); return; }
-  saveActive();
   store.portfolios[name] = store.portfolios[cur];
   delete store.portfolios[cur];
   store.active = name;
   persistStore();
   refreshPfSelect();
+  hydrateActive();
 });
 $("pfDeleteBtn").addEventListener("click", ()=>{
   const cur = store.active;
   if(Object.keys(store.portfolios).length===1){
     if(!confirm("This is your only portfolio. Delete all its schemes?")) return;
     store.portfolios[cur] = [];
-    persistStore(); schemes=[]; render(); return;
+    persistStore(); hydrateActive(); return;
   }
   if(!confirm('Delete portfolio "'+cur+'"? This cannot be undone.')) return;
   delete store.portfolios[cur];
@@ -1052,7 +1076,7 @@ $("eraseLocalBtn").addEventListener("click",()=>{
   if(!confirm("Erase all portfolios saved by this tool in this browser?")) return;
   try{localStorage.removeItem(LS_KEY);localStorage.removeItem(OLD_LS_KEY);}catch(e){}
   store={version:3,active:"My Portfolio",portfolios:{"My Portfolio":[]}};
-  schemes=[];persistStore();refreshPfSelect();render();$("pmStatus").textContent="Browser data erased.";
+  persistStore();refreshPfSelect();hydrateActive();$("pmStatus").textContent="Browser data erased.";
 });
 
 /* ---- refresh (fund NAV + TRI). Button hidden by default since the nightly
@@ -1085,6 +1109,7 @@ $("templateBtn").addEventListener("click",()=>{
 });
 
 $("importBtn").addEventListener("click",()=>{
+  if(hydrationInProgress){$("pmStatus").textContent="Portfolio is still loading…";return;}
   if(!listReady){$("pmStatus").textContent="Still loading scheme list…";return;}
   if(typeof XLSX==="undefined"){$("pmStatus").textContent="Excel library not loaded (check your connection).";return;}
   $("importFile").click();
@@ -1110,20 +1135,25 @@ function findSchemeMatch(name,plan){
   return {hit:null,ambiguous:ranked.filter(x=>x.score>=.70).slice(0,5).map(x=>x.s)};
 }
 function parseDateParts(y,m,d){const dt=new Date(y,m-1,d);return dt.getFullYear()===y&&dt.getMonth()===m-1&&dt.getDate()===d?isoDate(dt):"";}
+function dateCellFromParts(y,m,d,error="invalid date"){
+  const value=parseDateParts(y,m,d);
+  return value?{value,error:""}:{value:"",error};
+}
 function normaliseDateCell(v){
   if(v==null||v==="")return {value:"",error:""};
   if(v instanceof Date&&!isNaN(v))return {value:isoDate(v),error:""};
   if(typeof v==="number"&&Number.isFinite(v)){
-    const p=XLSX.SSF.parse_date_code(v);return p?{value:parseDateParts(p.y,p.m,p.d),error:""}:{value:"",error:"invalid Excel date"};
+    const p=XLSX.SSF.parse_date_code(v);
+    return p?dateCellFromParts(p.y,p.m,p.d,"invalid Excel date"):{value:"",error:"invalid Excel date"};
   }
   const s=String(v).trim();let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if(m)return {value:parseDateParts(+m[1],+m[2],+m[3]),error:"invalid date"};
+  if(m)return dateCellFromParts(+m[1],+m[2],+m[3]);
   m=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
   if(m){
     const a=+m[1],b=+m[2],y=+m[3];
-    if(a>12)return {value:parseDateParts(y,b,a),error:"invalid date"};
-    if(b>12)return {value:parseDateParts(y,a,b),error:"invalid date"};
-    if(s.includes("-"))return {value:parseDateParts(y,b,a),error:"invalid date"};
+    if(a>12)return dateCellFromParts(y,b,a);
+    if(b>12)return dateCellFromParts(y,a,b);
+    if(s.includes("-"))return dateCellFromParts(y,b,a);
     return {value:"",error:"ambiguous date; use YYYY-MM-DD or DD-MM-YYYY"};
   }
   return {value:"",error:"unrecognised date"};
@@ -1229,7 +1259,7 @@ $("importFile").addEventListener("change",function(){
 /* ============================================================
    EXCEL EXPORT  (simplified: clean table, no charts)
    Columns: Scheme, Invested, Current, Gain, Abs return,
-            Fund XIRR, Bench XIRR, Alpha, Verdict
+            full/comparable Fund XIRR, Bench XIRR, Alpha, Verdict
    ============================================================ */
 const FILL = {
   strong_beat:"1E7D46", beat:"3EC27A", lag:"E07A72", strong_lag:"B23B34", na:"4B5B6A",
@@ -1350,8 +1380,8 @@ function exportExcel(){
     {label:"TOTAL INVESTED", val:Math.round(port.invested), fmt:FMT_INR, tone:"neutral"},
     {label:"CURRENT VALUE",  val:Math.round(port.current),  fmt:FMT_INR, tone:"neutral"},
     {label:"GAIN / LOSS",    val:Math.round(port.gain),     fmt:FMT_INR, tone:port.gain>=0?"good":"bad"},
-    {label:"PORTFOLIO XIRR", val:port.xirr,                 fmt:FMT_PCT, tone:"neutral"},
-    {label:"BENCHMARK TRI XIRR", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
+    {label:"PORTFOLIO XIRR (FULL)", val:port.xirr,                 fmt:FMT_PCT, tone:"neutral"},
+    {label:"BENCHMARK TRI XIRR (COMPARABLE)", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
     {label:"PORTFOLIO ALPHA (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
        tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
   ];
@@ -1424,12 +1454,12 @@ function exportExcel(){
      ============================================================ */
   const headers=["Scheme","Plan","Benchmark (TRI)","SIP start"];
   if(anyEnd) headers.push("SIP end");
-  headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR","Benchmark XIRR","Alpha","Verdict");
+  headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)","Fund XIRR (comparable)","Benchmark XIRR","Alpha","Verdict");
   if(anyFlag) headers.push("Data window");
 
   const idx={}; headers.forEach((h,i)=>idx[h]=i);
   const inrCols=new Set([idx["Monthly SIP"],idx["Invested"],idx["Current"],idx["Gain"]]);
-  const pctCols=new Set([idx["Abs return"],idx["Fund XIRR"],idx["Benchmark XIRR"]]);
+  const pctCols=new Set([idx["Abs return"],idx["Fund XIRR (full)"],idx["Fund XIRR (comparable)"],idx["Benchmark XIRR"]]);
   const ppCols =new Set([idx["Alpha"]]);
   const rightCols=new Set([...inrCols,...pctCols,...ppCols]);
   const centerCols=new Set([idx["Plan"],idx["SIP start"], anyEnd?idx["SIP end"]:-1]);
@@ -1440,14 +1470,14 @@ function exportExcel(){
     const cells=[shortSchemeName(s.name),s.plan||"",s.benchLabel||"—",s.startStr];
     if(anyEnd) cells.push(s.endStr||"");
     cells.push(s.amount,Math.round(s.fund.invested),Math.round(s.fund.currentValue),Math.round(v.gain),
-               v.absR,v.fxFull,v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word);
+               v.absR,v.fxFull,v.fxCmp,v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word);
     if(anyFlag) cells.push(triWindowFlag(s));
     data.push({band,isPort:false,cells});
   });
   const pcells=["PORTFOLIO (all holdings)","","",""];
   if(anyEnd) pcells.push("");
   pcells.push(monthlyTotal,Math.round(port.invested),Math.round(port.current),Math.round(port.gain),
-              port.absReturn,port.xirr,port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word);
+              port.absReturn,port.xirr,port.cmpFundXirr,port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word);
   if(anyFlag) pcells.push("");
   data.push({band:pBand,isPort:true,cells:pcells});
 
@@ -1478,7 +1508,7 @@ function exportExcel(){
   ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});
   const colw=[{wch:40},{wch:9},{wch:24},{wch:12}];
   if(anyEnd) colw.push({wch:12});
-  colw.push({wch:13},{wch:14},{wch:14},{wch:13},{wch:11},{wch:12},{wch:15},{wch:12},{wch:17});
+  colw.push({wch:13},{wch:14},{wch:14},{wch:13},{wch:11},{wch:14},{wch:18},{wch:15},{wch:12},{wch:17});
   if(anyFlag) colw.push({wch:32});
   ws["!cols"]=colw; ws["!freeze"]={xSplit:1,ySplit:1}; ws["!rows"]=rowsH;
   ws["!pageSetup"]={ orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0 };
@@ -1557,7 +1587,7 @@ function buildInsights(port){
   if(port.alpha!=null){
     const pp=(port.alpha*100);
     lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI benchmark by "
-      +Math.abs(pp).toFixed(2)+" pp per year (portfolio XIRR "+pct(port.xirr)+" vs benchmark "+pct(port.benchXirr)+").");
+      +Math.abs(pp).toFixed(2)+" pp per year (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
   // 3) Best and worst holdings by alpha.
   const withAlpha=schemes.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
