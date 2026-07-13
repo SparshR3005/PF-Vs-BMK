@@ -7,73 +7,92 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe niftyindices TRI endpoint
+      - name: Probe niftyindices TRI endpoint (cookie bootstrap)
         run: |
           python3 - << 'PYEOF'
-          import json, gzip, zlib, urllib.request, urllib.error, socket
+          import json, gzip, zlib, urllib.request, urllib.error, socket, http.cookiejar
           from datetime import date
 
+          PAGE = "https://www.niftyindices.com/reports/historical-data"
           ENDPOINT = "https://www.niftyindices.com/Backpage.aspx/getTotalReturnIndexString"
-          UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 tri-probe/0.2"
+          UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
+
+          jar = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
           def build_payload(name, start, end):
               cinfo = "{'name':'%s','startDate':'%s','endDate':'%s','indexName':'%s'}" % (name, start, end, name)
               return json.dumps({"cinfo": cinfo}).encode("utf-8")
 
-          def raw_fetch(name, start, end, timeout):
-              req = urllib.request.Request(
-                  ENDPOINT,
-                  data=build_payload(name, start, end),
-                  headers={
-                      "Content-Type": "application/json; charset=UTF-8",
-                      "X-Requested-With": "XMLHttpRequest",
-                      "Referer": "https://www.niftyindices.com/reports/historical-data",
-                      "User-Agent": UA,
-                      "Accept": "application/json, text/javascript, */*; q=0.01",
-                      "Accept-Encoding": "identity",
-                  },
-                  method="POST",
-              )
+          def decode(resp_body, h):
+              enc = h.get("content-encoding", "").lower()
+              if "gzip" in enc:
+                  return gzip.decompress(resp_body)
+              if "deflate" in enc:
+                  return zlib.decompress(resp_body)
+              return resp_body
+
+          def do(req, timeout, label):
               try:
-                  r = urllib.request.urlopen(req, timeout=timeout)
+                  r = opener.open(req, timeout=timeout)
                   status, hdrs, body = r.status, r.getheaders(), r.read()
               except urllib.error.HTTPError as e:
                   status, hdrs, body = e.code, list(e.headers.items()), e.read()
               h = {k.lower(): v for k, v in hdrs}
-              enc = h.get("content-encoding", "").lower()
-              if "gzip" in enc:
-                  body = gzip.decompress(body)
-              elif "deflate" in enc:
-                  body = zlib.decompress(body)
+              body = decode(body, h)
+              print("[%s] HTTP %s  content-type=%s  len=%d" % (label, status, h.get("content-type", "?"), len(body)))
               return status, h, body
 
           def main():
               today = date.today().strftime("%d-%b-%Y")
               print("=" * 60)
+              print("STEP 1: GET page to seed cookies")
+              gget = urllib.request.Request(PAGE, headers={
+                  "User-Agent": UA,
+                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                  "Accept-Language": "en-US,en;q=0.9",
+                  "Accept-Encoding": "identity",
+                  "Upgrade-Insecure-Requests": "1",
+              })
               try:
-                  status, h, body = raw_fetch("NIFTY 500", "01-Jan-2026", today, 60)
+                  do(gget, 25, "GET")
               except (urllib.error.URLError, socket.timeout) as e:
-                  print("NETWORK FAIL/STALL:", repr(e))
+                  print("  GET failed/stalled:", repr(e), "(continuing to POST anyway)")
+              got = sorted(c.name for c in jar)
+              print("  cookies now:", got if got else "(none)")
+
+              print("STEP 2: POST the API with cookies attached")
+              post = urllib.request.Request(ENDPOINT, data=build_payload("NIFTY 500", "01-Jan-2026", today), headers={
+                  "Content-Type": "application/json; charset=UTF-8",
+                  "X-Requested-With": "XMLHttpRequest",
+                  "Referer": PAGE,
+                  "Origin": "https://www.niftyindices.com",
+                  "User-Agent": UA,
+                  "Accept": "application/json, text/javascript, */*; q=0.01",
+                  "Accept-Language": "en-US,en;q=0.9",
+                  "Accept-Encoding": "identity",
+                  "Sec-Fetch-Site": "same-origin",
+                  "Sec-Fetch-Mode": "cors",
+                  "Sec-Fetch-Dest": "empty",
+              }, method="POST")
+              try:
+                  status, h, body = do(post, 60, "POST")
+              except (urllib.error.URLError, socket.timeout) as e:
+                  print("  POST failed/stalled:", repr(e))
                   return
-              print("HTTP", status)
-              for k in ("content-type", "content-encoding", "content-length", "server", "set-cookie"):
-                  if k in h:
-                      print("%s: %s" % (k, h[k]))
               text = body.decode("utf-8", "replace")
-              print("body length:", len(text))
-              print("--- first 600 chars (repr) ---")
-              print(repr(text[:600]))
-              print("--- parse per doc ---")
+              print("--- POST first 300 chars (repr) ---")
+              print(repr(text[:300]))
               try:
                   outer = json.loads(text)
-                  print("outer type:", type(outer).__name__)
                   rows = json.loads(outer["d"]) if isinstance(outer, dict) and "d" in outer else None
                   if rows is not None:
                       print("PARSED OK:", len(rows), "rows; latest:", rows[0].get("Date"))
                   else:
-                      print("no 'd' key; outer =", repr(outer)[:200])
+                      print("JSON but no 'd':", repr(outer)[:150])
               except Exception as e:
-                  print("parse failed:", repr(e))
+                  print("still HTML/challenge; parse failed:", repr(e))
 
           main()
           PYEOF
