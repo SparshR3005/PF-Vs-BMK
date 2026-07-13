@@ -804,7 +804,6 @@ function exportExcel(){
   put("A1", styleCell("SIP Performance Report — Fund vs Benchmark", null, {bold:true}));
   s1["A1"].s.font.sz = 14;
   put("A2", styleCell("Generated: "+genDate, null, {}));
-  put("A2").s = s1["A2"].s; // noop safe
 
   // portfolio KPIs
   const kpis = [
