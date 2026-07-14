@@ -1769,12 +1769,12 @@ const RPT = {
 function styleCell(v, o={}){
   const {
     fill=null, light=false, bold=false, align="left", numFmt=null,
-    border=false, wrap=false, color=null, sz=null, italic=false,
+    border=false, wrap=false, shrink=false, color=null, sz=null, italic=false,
     top=false, bottom=false, valign="center", indent=0
   } = o;
   const s = {
     font:{ name:"Calibri", sz: sz||11, color:{rgb: color || (light?"FFFFFF":RPT.ink)}, bold:!!bold, italic:!!italic },
-    alignment:{ horizontal:align, vertical:valign, wrapText:!!wrap, indent:indent||0 }
+    alignment:{ horizontal:align, vertical:valign, wrapText:!!wrap, shrinkToFit:!!shrink, indent:indent||0 }
   };
   if(fill) s.fill = { patternType:"solid", fgColor:{rgb:fill} };
   if(numFmt) s.numFmt = numFmt;
@@ -1983,7 +1983,9 @@ function exportExcel(){
     row.cells.forEach((val,c)=>{
       const opts={ border:false, bottom:RPT.line,
         align: rightCols.has(c)?"right" : centerCols.has(c)?"center" : "left",
-        bold: row.isPort, valign:"center" };
+        bold: row.isPort, valign:"center",
+        sz: c===idx["Scheme"] ? 11 : 10.5,
+        shrink: rightCols.has(c) };
       if(inrCols.has(c))opts.numFmt=FMT_INR;
       else if(pctCols.has(c))opts.numFmt=FMT_PCT;
       else if(ppCols.has(c))opts.numFmt=FMT_PP;
@@ -1995,18 +1997,29 @@ function exportExcel(){
       if(anyFlag && c===idx["Data window"]){ opts.wrap=true; opts.color=RPT.sub; opts.sz=9.5; opts.align="left"; }
       ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);
     });
-    rowsH[ri+1]={hpt: row.isPort?24 : (anyFlag?30:20)};
+    // Keep wrapped scheme/benchmark/verdict text readable. The earlier
+    // compact layout widened the viewport but left body rows at one-line
+    // height, so long scheme names appeared clipped.
+    const wrappedLineCount = (value, charsPerLine) =>
+      Math.max(1, Math.ceil(String(value==null?"":value).length / charsPerLine));
+    const textLines = Math.max(
+      wrappedLineCount(row.cells[idx["Scheme"]], 31),
+      wrappedLineCount(row.cells[idx["Benchmark (TRI)"]], 20),
+      wrappedLineCount(row.cells[idx["Verdict"]], 15),
+      anyFlag ? wrappedLineCount(row.cells[idx["Data window"]], 20) : 1
+    );
+    rowsH[ri+1]={hpt: row.isPort ? 25 : Math.min(44, Math.max(23, 5 + textLines*13))};
   });
   ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});
-  // Widths are deliberately moderate so all core columns through Verdict fit
-  // in the normal worksheet view. Text-heavy cells wrap instead of forcing
-  // oversized columns.
-  const colw=[{wch:22},{wch:5.5},{wch:13},{wch:8.5}];
-  if(anyEnd) colw.push({wch:8.5});
-  colw.push({wch:9},{wch:9.5},{wch:9.5},{wch:9},{wch:8},{wch:9.5});
-  if(showComparableFundXirr) colw.push({wch:10.5});
-  colw.push({wch:9.5},{wch:7},{wch:9.5});
-  if(anyFlag) colw.push({wch:17});
+  // Use the available normal-view width instead of over-compressing the table.
+  // Currency/date columns are wide enough for their formatted values, while
+  // long text columns still wrap to keep Verdict visible without side-scrolling.
+  const colw=[{wch:30},{wch:6.5},{wch:17},{wch:11}];
+  if(anyEnd) colw.push({wch:11});
+  colw.push({wch:11.5},{wch:13},{wch:13},{wch:13},{wch:9.5},{wch:11});
+  if(showComparableFundXirr) colw.push({wch:12.5});
+  colw.push({wch:11},{wch:8.5},{wch:12});
+  if(anyFlag) colw.push({wch:16.5});
   ws["!cols"]=colw; ws["!freeze"]={xSplit:1,ySplit:1}; ws["!rows"]=rowsH;
   ws["!views"]=[{zoomScale:85,zoomScaleNormal:100}];
   ws["!pageSetup"]={ orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0 };
