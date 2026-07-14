@@ -1802,23 +1802,20 @@ $("exportBtn").addEventListener("click", ()=>{
 });
 
 /* ---- helpers for a cleaner export ---- */
-// Shorten a scheme name: drop plan words (already in Plan column) and
-// collapse "...Growth Option/Plan" to a trailing "Gr".
+// Shorten a scheme name for Excel: Plan is already shown separately, and
+// the trailing "Fund / Gr" option text adds width without adding information.
+// Only trailing option text is removed so a genuine name such as
+// "Nippon India Growth Mid Cap" keeps the word "Growth".
 function shortSchemeName(name){
-  let n = String(name||"");
-  // remove plan descriptors
+  let n = String(name||"").trim();
   n = n.replace(/\b(direct|regular)\s+plan\b/gi, " ")
-       .replace(/\b(direct|regular)\b/gi, " ")
-       .replace(/\bplan\b/gi, " ");
-  // collapse any growth wording to a single marker we re-add at the end
-  const hadGrowth = /growth/i.test(n);
-  n = n.replace(/\bgrowth\s+option\b/gi, " ")
-       .replace(/\bgrowth\b/gi, " ")
-       .replace(/\boption\b/gi, " ");
-  // tidy separators and spaces
-  n = n.replace(/[-–—]\s*$/g,"").replace(/\s*[-–—]\s*/g," - ")
-       .replace(/\s{2,}/g," ").replace(/\s*-\s*$/,"").trim();
-  if(hadGrowth) n = n + " Gr";
+       .replace(/(?:\s*[-–—]\s*)+(?:reg(?:ular)?\s*)?(?:gr|growth(?:\s+option|\s+plan)?)\s*$/i, " ")
+       .replace(/\s+(?:gr|growth\s+option|growth\s+plan)\s*$/i, " ")
+       .replace(/(?:\s*[-–—]\s*)+$/g, "")
+       .replace(/\s+fund\s*$/i, " ")
+       .replace(/(?:\s*[-–—]\s*)+$/g, "")
+       .replace(/\s{2,}/g, " ")
+       .trim();
   return n;
 }
 
@@ -1994,19 +1991,24 @@ function exportExcel(){
       if(c===idx["Alpha"]||c===idx["Verdict"]){ opts.fill=FILL[row.band.key]; opts.light=row.band.key!=="beat"; }
       else if(row.isPort){ opts.fill=RPT.portRow; opts.light=true; }
       else { opts.fill=zebra; }
+      if(c===idx["Scheme"] || c===idx["Benchmark (TRI)"] || c===idx["Verdict"]) opts.wrap=true;
       if(anyFlag && c===idx["Data window"]){ opts.wrap=true; opts.color=RPT.sub; opts.sz=9.5; opts.align="left"; }
       ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);
     });
     rowsH[ri+1]={hpt: row.isPort?24 : (anyFlag?30:20)};
   });
   ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});
-  const colw=[{wch:35},{wch:8},{wch:20},{wch:10.5}];
-  if(anyEnd) colw.push({wch:10.5});
-  colw.push({wch:11.5},{wch:12.5},{wch:12.5},{wch:11.5},{wch:9.5},{wch:12.5});
-  if(showComparableFundXirr) colw.push({wch:15});
-  colw.push({wch:13},{wch:9.5},{wch:14});
-  if(anyFlag) colw.push({wch:26});
+  // Widths are deliberately moderate so all core columns through Verdict fit
+  // in the normal worksheet view. Text-heavy cells wrap instead of forcing
+  // oversized columns.
+  const colw=[{wch:22},{wch:5.5},{wch:13},{wch:8.5}];
+  if(anyEnd) colw.push({wch:8.5});
+  colw.push({wch:9},{wch:9.5},{wch:9.5},{wch:9},{wch:8},{wch:9.5});
+  if(showComparableFundXirr) colw.push({wch:10.5});
+  colw.push({wch:9.5},{wch:7},{wch:9.5});
+  if(anyFlag) colw.push({wch:17});
   ws["!cols"]=colw; ws["!freeze"]={xSplit:1,ySplit:1}; ws["!rows"]=rowsH;
+  ws["!views"]=[{zoomScale:85,zoomScaleNormal:100}];
   ws["!pageSetup"]={ orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0 };
   ws["!margins"]={ left:0.3, right:0.3, top:0.4, bottom:0.4, header:0.2, footer:0.2 };
   XLSX.utils.book_append_sheet(wb,ws,"Holdings");
