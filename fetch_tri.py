@@ -10,11 +10,13 @@ Responses come back as content-type text/html but the body is JSON -> parse the 
 regardless of content-type.
 """
 import json
+import math
 import re
 import sys
 import time
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -23,9 +25,20 @@ ENDPOINT = "https://www.niftyindices.com/BackPage/getTotalReturnIndexString"
 OUT_DIR = Path("data/tri")
 START_DATE = "01-Jan-1999"          # DD-MMM-YYYY, endpoint format
 MIN_ROWS = 200                       # a real series has thousands; guards against []/wall
-MAX_STALE_DAYS = 14
+MAX_STALE_DAYS = 7
 PER_INDEX_ATTEMPTS = 4
 NAV_TIMEOUT_MS = 45000
+
+# Soft completeness gate: the run fails (and commits nothing) only if one of these
+# broad-market indices is missing/invalid — they are the fallbacks every equity
+# holding relies on, so a bad core fetch must never overwrite good committed data.
+# Sector indices (IT, Pharma, FMCG, ...) may fail without aborting the run: they
+# keep their last-good file and are flagged stale in the manifest, which the UI
+# surfaces via its per-benchmark staleness banner.
+REQUIRED_KEYS = {
+    "NIFTY500", "NIFTY100", "NIFTY_MIDCAP150", "NIFTY_SMALLCAP250",
+    "NIFTY_LARGEMIDCAP250", "NIFTY_MULTICAP",
+}
 
 # Canonical index names. MUST match niftyindices' internal spelling exactly, or the
 # endpoint returns [] (empty). Verify against:
@@ -105,7 +118,12 @@ def parse_rows(res: dict):
         elif t.startswith("{"):
             outer = json.loads(t)
             d = outer.get("d")
-            rows = json.loads(d) if isinstance(d, str) else None
+            if isinstance(d, str):
+                rows = json.loads(d)
+            elif isinstance(d, list):
+                rows = d
+            else:
+                rows = None
         else:
             return None
     except Exception:
@@ -113,8 +131,14 @@ def parse_rows(res: dict):
     return rows if isinstance(rows, list) else None
 
 
-def to_iso(d: str) -> str:
-    return datetime.strptime(d.strip(), "%d %b %Y").strftime("%Y-%m-%d")
+def to_iso(value: str) -> str:
+    text = str(value).strip()
+    for date_format in ("%d %b %Y", "%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, date_format).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported date format: {text!r}")
 
 
 def prime(page, reload: bool):
@@ -168,89 +192,174 @@ def fetch_index(page, context, name: str, end: str):
 
 def rows_to_doc(key: str, name: str, rows: list) -> dict:
     series = {}
-    for r in rows:
+    for row in rows:
         try:
-            series[to_iso(r["Date"])] = float(r["TotalReturnsIndex"])
-        except (KeyError, ValueError):
+            iso_date = to_iso(row["Date"])
+            tri_value = float(row["TotalReturnsIndex"])
+            if math.isfinite(tri_value) and tri_value > 0:
+                series[iso_date] = tri_value
+        except (KeyError, TypeError, ValueError):
             continue
+
     ordered = dict(sorted(series.items()))
-    keys = list(ordered.keys())
+    dates = list(ordered)
     return {
         "key": key,
         "index": name,
         "source": "niftyindices.com getTotalReturnIndexString",
         "fetched_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "count": len(ordered),
-        "start": keys[0] if keys else None,
-        "end": keys[-1] if keys else None,
+        "start": dates[0] if dates else None,
+        "end": dates[-1] if dates else None,
         "series": ordered,
     }
+
+
+def today_ist():
+    return datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
 
 def is_fresh(doc: dict) -> bool:
     if not doc.get("end"):
         return False
     latest = datetime.strptime(doc["end"], "%Y-%m-%d").date()
-    return (date.today() - latest).days <= MAX_STALE_DAYS
+    age_days = (today_ist() - latest).days
+    return 0 <= age_days <= MAX_STALE_DAYS
+
+
+def write_json_atomic(path: Path, payload: dict, *, pretty: bool = False) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    text = json.dumps(
+        payload,
+        indent=2 if pretty else None,
+        separators=None if pretty else (",", ":"),
+        allow_nan=False,
+    )
+    temp_path.write_text(text, encoding="utf-8")
+    temp_path.replace(path)
+
+
+def read_existing_end(path: Path):
+    """Return (count, start, end) of an already-committed TRI file, or (0, None, None)."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return doc.get("count", 0), doc.get("start"), doc.get("end")
+    except Exception:
+        return 0, None, None
 
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    end = date.today().strftime("%d-%b-%Y")
-    manifest = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "indices": []}
-    failures = []
+    end = today_ist().strftime("%d-%b-%Y")
+    failures = []          # human-readable reason per index that didn't pass
+    staged = {}            # key -> (filename, doc) validated THIS run
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                  "--disable-dev-shm-usage"],
-        )
-        context = browser.new_context(
-            locale="en-IN", timezone_id="Asia/Kolkata",
-            viewport={"width": 1366, "height": 900},
-        )
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = context.new_page()
-        prime(page, reload=False)
+    with sync_playwright() as playwright:
+        browser = None
+        context = None
+        try:
+            browser = playwright.chromium.launch(
+                headless=False,
+                args=[
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            context = browser.new_context(
+                locale="en-IN",
+                timezone_id="Asia/Kolkata",
+                viewport={"width": 1366, "height": 900},
+            )
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page = context.new_page()
+            prime(page, reload=False)
 
-        items = list(INDEX_MAP.items())
-        for i, (key, meta) in enumerate(items):
-            name = meta["name"]
-            fname = meta["file"]
-            print("[%d/%d] %s (%s)" % (i + 1, len(items), name, key))
-            rows = fetch_index(page, context, name, end)
-            if not rows:
-                failures.append(name)
-                continue
-            doc = rows_to_doc(key, name, rows)
-            fresh = is_fresh(doc)
-            fpath = OUT_DIR / fname
-            fpath.write_text(json.dumps(doc, separators=(",", ":")))
-            print("    -> %s  rows=%d  start=%s  end=%s  fresh=%s"
-                  % (fpath, doc["count"], doc["start"], doc["end"], fresh))
-            manifest["indices"].append({
-                "key": key, "index": name, "file": fname,
-                "count": doc["count"], "start": doc["start"],
-                "end": doc["end"], "fresh": fresh,
-            })
-            if not fresh:
-                failures.append("%s(stale:%s)" % (name, doc["end"]))
-            time.sleep(1.5)
+            items = list(INDEX_MAP.items())
+            for index, (key, meta) in enumerate(items, start=1):
+                name = meta["name"]
+                filename = meta["file"]
+                print(f"[{index}/{len(items)}] {name} ({key})")
+                rows = fetch_index(page, context, name, end)
+                if not rows:
+                    failures.append(f"{name}: fetch failed")
+                    continue
 
-        context.close()
-        browser.close()
+                doc = rows_to_doc(key, name, rows)
+                if doc["count"] < MIN_ROWS:
+                    failures.append(
+                        f"{name}: only {doc['count']} valid normalized rows (<{MIN_ROWS})"
+                    )
+                    continue
 
-    (OUT_DIR / "index.json").write_text(json.dumps(manifest, indent=2))
-    print("\nWrote manifest with %d indices; failures: %s"
-          % (len(manifest["indices"]), failures or "none"))
+                if not is_fresh(doc):
+                    failures.append(f"{name}: stale end date {doc['end']}")
+                    continue
 
-    if len(manifest["indices"]) == 0:
-        print("ERROR: no indices fetched successfully.")
+                print(
+                    "    -> rows=%d  start=%s  end=%s  fresh=True"
+                    % (doc["count"], doc["start"], doc["end"])
+                )
+                staged[key] = (filename, doc)
+                time.sleep(1.5)
+        finally:
+            if context is not None:
+                context.close()
+            if browser is not None:
+                browser.close()
+
+    # ---- SOFT COMPLETENESS GATE ----
+    # Fail closed (commit nothing, preserve the last-good dataset) only when a
+    # required broad-market index is missing/invalid, or nothing was fetched.
+    required_missing = sorted(k for k in REQUIRED_KEYS if k not in staged)
+    if required_missing or not staged:
+        print("\nERROR: required benchmark(s) missing/invalid — nothing was updated.")
+        for k in required_missing:
+            print(f"  - required index unavailable: {k}")
+        for failure in failures:
+            print(f"  - {failure}")
         sys.exit(1)
+
+    # Publish the fresh docs atomically; leave failed optional indices as last-good.
+    for key, (filename, doc) in staged.items():
+        write_json_atomic(OUT_DIR / filename, doc)
+
+    # Manifest lists every configured index: staged -> fresh:true;
+    # optional-that-failed -> fresh:false with its last-good end date (or null),
+    # so the UI banner flags exactly which benchmarks are out of date.
+    manifest = {
+        "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "indices": [],
+    }
+    for key, meta in INDEX_MAP.items():
+        filename = meta["file"]
+        name = meta["name"]
+        if key in staged:
+            doc = staged[key][1]
+            manifest["indices"].append({
+                "key": key, "index": name, "file": filename,
+                "count": doc["count"], "start": doc["start"], "end": doc["end"],
+                "fresh": True,
+            })
+        else:
+            count, start, prev_end = read_existing_end(OUT_DIR / filename)
+            manifest["indices"].append({
+                "key": key, "index": name, "file": filename,
+                "count": count, "start": start, "end": prev_end,
+                "fresh": False,
+            })
+    write_json_atomic(OUT_DIR / "index.json", manifest, pretty=True)
+
+    published = len(staged)
+    skipped = len(INDEX_MAP) - published
+    print(f"\nWrote {published} fresh TRI file(s); "
+          f"{skipped} optional index(es) kept last-good and flagged stale.")
+    if failures:
+        print("Non-fatal failures this run:")
+        for failure in failures:
+            print(f"  - {failure}")
 
 
 if __name__ == "__main__":
