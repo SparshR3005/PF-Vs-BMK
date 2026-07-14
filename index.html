@@ -587,6 +587,27 @@ function isUnsupportedCategory(category){
   return UNSUPPORTED_CAT_KEYWORDS.some(k => cat.includes(k));
 }
 
+// Name-based screen for the searchable/import list. MFAPI's /mf endpoint returns
+// scheme NAMES but no category, so we can't call isUnsupportedCategory() at list
+// build time — instead we approximate it from tokens that reliably appear in the
+// NAMES of non-equity schemes. This keeps debt / hybrid / gold / index / ETF /
+// international funds out of the pick list, so a user can't select something that
+// computeScheme() would then reject at add time (the pick -> "can't be compared"
+// round-trip). The category check in computeScheme() stays the authoritative gate
+// for anything a name doesn't reveal (e.g. a hybrid fund with a plain name, or an
+// import-by-code that bypasses this list). Kept deliberately conservative so it
+// never hides a genuine actively-managed equity fund. ELSS/value/contra/focused/
+// dividend-yield are equity and intentionally absent here.
+const NON_EQUITY_NAME_TOKENS = [
+  "liquid","overnight","gilt","money market","ultra short","low duration",
+  "short duration","medium duration","long duration","banking and psu",
+  "corporate bond","credit risk","debt","duration","floater","dynamic bond","bond",
+  "hybrid","balanced","arbitrage","equity savings","multi asset","asset allocation",
+  "gold","silver","commodit","fund of fund","fof","overseas","international","global",
+  "index fund","exchange traded","etf","retirement","children","pension",
+];
+function nameLooksNonEquity(n){ return NON_EQUITY_NAME_TOKENS.some(t => n.includes(t)); }
+
 function resolveBenchmarkKey(schemeName, category){
   const n = normName(schemeName);
   const cat = (category || "").toLowerCase();
@@ -746,13 +767,10 @@ async function loadSchemeList(){
       if(!isGrowth || isIncome) return;
       if(hasGrowthIsinField && !String(s.isinGrowth||"").trim()) return;
 
-      const isNonEquity=n.includes("liquid") || n.includes("overnight") ||
-                        n.includes("gilt") || n.includes("money market") ||
-                        n.includes("ultra short") || n.includes("low duration") ||
-                        n.includes("banking and psu") || n.includes("corporate bond") ||
-                        n.includes("credit risk") || n.includes("debt") ||
-                        n.includes("duration");
-      if(isNonEquity) return;
+      // Keep only what this tool can actually benchmark (equity). Mirrors the
+      // category gate in computeScheme() as closely as a name allows, so the
+      // pick list doesn't offer funds that would be rejected on add.
+      if(nameLooksNonEquity(n)) return;
 
       const entry={schemeCode:s.schemeCode,schemeName:s.schemeName,lower:n,isinGrowth:s.isinGrowth||""};
       const hasDirect=n.includes("direct");
@@ -1134,7 +1152,17 @@ async function computeScheme(spec){
   if(benchNav&&benchNav.length){
     cmpValueDate=minDate(fundLast,benchNav[benchNav.length-1].date);
     const cmpEnd=endVal&&endVal<cmpValueDate?endVal:cmpValueDate;
-    const common=scheduleDates(start,cmpEnd).filter(d=>navOnOrAfter(fundNav,d,7)&&navOnOrAfter(benchNav,d,7));
+    const common=scheduleDates(start,cmpEnd).filter(d=>{
+      // Keep a month only when BOTH series have a usable NAV within 7 days AND
+      // both of those NAV dates fall on/before the shared cmpValueDate. Testing
+      // navOnOrAfter alone (as before) let a month through where one side's NAV
+      // landed just after the cutoff; runSIP then dropped that installment for
+      // that side only, so fund and benchmark ended up with different invested
+      // bases in the last month — making the "same rupees into the index"
+      // counterfactual apples-to-oranges. This guarantees identical placement.
+      const fn=navOnOrAfter(fundNav,d,7), bn=navOnOrAfter(benchNav,d,7);
+      return fn && bn && fn.date<=cmpValueDate && bn.date<=cmpValueDate;
+    });
     if(common.length){
       fundCmp=runSIP(fundNav,common,amount,cmpValueDate);
       benchCmp=runSIP(benchNav,common,amount,cmpValueDate);
@@ -1279,9 +1307,13 @@ function render(){
   const wrap=$("tableWrap");
   if(!schemes.length){
     wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
-    $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";return;
+    $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
+    $("updateNavBtn").style.display="none";return;
   }
   $("toolbar").style.display="flex";
+  // Refresh is only meaningful once there's something to re-value. Shown here (and
+  // hidden above) so it appears exactly when the active portfolio has holdings.
+  $("updateNavBtn").style.display="";
   const port=portfolioMetrics(),alphaBand=perfBand(port.alpha);
   $("summaryCard").style.display="block";
   $("summaryGrid").innerHTML=`
