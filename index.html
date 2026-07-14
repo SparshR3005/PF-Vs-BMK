@@ -732,6 +732,9 @@ async function loadSchemeList(){
     if(!Array.isArray(all)) throw new Error("Invalid scheme-list response");
     allSchemes = all;
     const directByKey=new Map(),regularByKey=new Map();
+    // Newer MFAPI responses expose isinGrowth.  When the field is available,
+    // null means a legacy/closed record and must not participate in matching.
+    const hasGrowthIsinField=all.some(s=>Object.prototype.hasOwnProperty.call(s,"isinGrowth"));
 
     all.forEach(s=>{
       if(!s || !s.schemeName || !s.schemeCode) return;
@@ -741,6 +744,7 @@ async function loadSchemeList(){
                      n.includes("payout") || n.includes("reinvest") ||
                      n.includes("bonus");
       if(!isGrowth || isIncome) return;
+      if(hasGrowthIsinField && !String(s.isinGrowth||"").trim()) return;
 
       const isNonEquity=n.includes("liquid") || n.includes("overnight") ||
                         n.includes("gilt") || n.includes("money market") ||
@@ -1818,9 +1822,16 @@ function shortSchemeName(name){
   return n;
 }
 
+// True only when the benchmark comparison starts after the SIP's full window.
+// In that case the separate comparable-fund XIRR is informative; otherwise it
+// duplicates the full-period fund XIRR and is omitted from the Excel output.
+function sipBeganBeforeTri(s){
+  return !!(s && s.cmpShorter && s.cmpFirst);
+}
+
 // Short flag text for a holding whose SIP began before its TRI history (else "").
 function triWindowFlag(s){
-  if(s.cmpShorter && s.cmpFirst) return "SIP predates TRI · compared from "+fmtDate(s.cmpFirst);
+  if(sipBeganBeforeTri(s)) return "SIP predates TRI · compared from "+fmtDate(s.cmpFirst);
   if(s.benchLabel && !s.benchCmp) return "No overlapping TRI data";
   if(s.benchApprox) return "Approx: broader index used";
   return "";
@@ -1829,6 +1840,7 @@ function triWindowFlag(s){
 function exportExcel(){
   const port=portfolioMetrics(),genDate=fmtDate(new Date()),wb=XLSX.utils.book_new();
   const anyEnd = schemes.some(s=>s.endStr);
+  const showComparableFundXirr = schemes.some(sipBeganBeforeTri);
   const anyFlag = schemes.some(s=>triWindowFlag(s)!=="");   // show the flag column only if needed
   const monthlyTotal = schemes.reduce((a,s)=>a+(Number(s.amount)||0),0);
   const M = (r0,c0,r1,c1)=>({s:{r:r0,c:c0},e:{r:r1,c:c1}});
@@ -1849,7 +1861,7 @@ function exportExcel(){
                      {color:RPT.sub, sz:10}));
   for(let c=1;c<6;c++) put(1,c, styleCell("",{}));
   merges1.push(M(1,0,1,5));
-  rows1[0]={hpt:25}; rows1[1]={hpt:15};
+  rows1[0]={hpt:22}; rows1[1]={hpt:13};
 
   // KPI cards: 2 rows x 3 cards. Each card = label (small) + value (big) stacked in 2 cells,
   // spanning 2 columns. Cards start at row 3.
@@ -1879,7 +1891,7 @@ function exportExcel(){
     put(cr+1,cc+1, styleCell("",{fill:labelFill, bottom:RPT.line}));
     merges1.push(M(cr+1,cc,cr+1,cc+1));
     // spacer row under each card block
-    rows1[cr]={hpt:15}; rows1[cr+1]={hpt:23}; rows1[cr+2]={hpt:5};
+    rows1[cr]={hpt:13}; rows1[cr+1]={hpt:20}; rows1[cr+2]={hpt:3};
   });
 
   // Verdict chip under the cards
@@ -1890,15 +1902,15 @@ function exportExcel(){
   put(chipRow,0, styleCell(verdictTxt,{fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:11}));
   for(let c=1;c<6;c++) put(chipRow,c, styleCell("",{fill:FILL[pBand.key]}));
   merges1.push(M(chipRow,0,chipRow,5));
-  rows1[chipRow]={hpt:20};
-  rows1[chipRow+1]={hpt:6};
+  rows1[chipRow]={hpt:18};
+  rows1[chipRow+1]={hpt:4};
 
   // Insights header
   const insHdr = chipRow+2;
   put(insHdr,0, styleCell("KEY INSIGHTS",{fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10, align:"left"}));
   for(let c=1;c<6;c++) put(insHdr,c, styleCell("",{fill:RPT.header}));
   merges1.push(M(insHdr,0,insHdr,5));
-  rows1[insHdr]={hpt:18};
+  rows1[insHdr]={hpt:16};
 
   // Insight lines — WRAPPED across A:F with computed row heights so nothing clips.
   const insights=buildInsights(port);
@@ -1909,9 +1921,9 @@ function exportExcel(){
     put(ir,0, cell);
     for(let c=1;c<6;c++) put(ir,c, styleCell("",{fill:i%2===0?RPT.band:RPT.bandAlt}));
     merges1.push(M(ir,0,ir,5));
-    // estimate wrapped height at ~10pt across A:F (~104 chars/line)
+    // Compact but still readable: estimate wrapped height across A:F.
     const perLine=104, lines=Math.max(1,Math.ceil((line.length+3)/perLine));
-    rows1[ir]={hpt: Math.max(17, lines*13 + 4)};
+    rows1[ir]={hpt: Math.max(15, lines*11 + 3)};
     ir++;
   });
 
@@ -1929,12 +1941,15 @@ function exportExcel(){
      ============================================================ */
   const headers=["Scheme","Plan","Benchmark (TRI)","SIP start"];
   if(anyEnd) headers.push("SIP end");
-  headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)","Fund XIRR (comparable)","Benchmark XIRR","Alpha","Verdict");
+  headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)");
+  if(showComparableFundXirr) headers.push("Fund XIRR (comparable)");
+  headers.push("Benchmark XIRR","Alpha","Verdict");
   if(anyFlag) headers.push("Data window");
 
   const idx={}; headers.forEach((h,i)=>idx[h]=i);
   const inrCols=new Set([idx["Monthly SIP"],idx["Invested"],idx["Current"],idx["Gain"]]);
-  const pctCols=new Set([idx["Abs return"],idx["Fund XIRR (full)"],idx["Fund XIRR (comparable)"],idx["Benchmark XIRR"]]);
+  const pctCols=new Set([idx["Abs return"],idx["Fund XIRR (full)"],idx["Benchmark XIRR"]]);
+  if(showComparableFundXirr) pctCols.add(idx["Fund XIRR (comparable)"]);
   const ppCols =new Set([idx["Alpha"]]);
   const rightCols=new Set([...inrCols,...pctCols,...ppCols]);
   const centerCols=new Set([idx["Plan"],idx["SIP start"], anyEnd?idx["SIP end"]:-1]);
@@ -1945,14 +1960,18 @@ function exportExcel(){
     const cells=[shortSchemeName(s.name),s.plan||"",s.benchLabel||"—",s.startStr];
     if(anyEnd) cells.push(s.endStr||"");
     cells.push(s.amount,Math.round(s.fund.invested),Math.round(s.fund.currentValue),Math.round(v.gain),
-               v.absR,v.fxFull,v.fxCmp,v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word);
+               v.absR,v.fxFull);
+    if(showComparableFundXirr) cells.push(v.fxCmp);
+    cells.push(v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word);
     if(anyFlag) cells.push(triWindowFlag(s));
     data.push({band,isPort:false,cells});
   });
   const pcells=["PORTFOLIO (all holdings)","","",""];
   if(anyEnd) pcells.push("");
   pcells.push(monthlyTotal,Math.round(port.invested),Math.round(port.current),Math.round(port.gain),
-              port.absReturn,port.xirr,port.cmpFundXirr,port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word);
+              port.absReturn,port.xirr);
+  if(showComparableFundXirr) pcells.push(port.cmpFundXirr);
+  pcells.push(port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word);
   if(anyFlag) pcells.push("");
   data.push({band:pBand,isPort:true,cells:pcells});
 
@@ -1981,10 +2000,12 @@ function exportExcel(){
     rowsH[ri+1]={hpt: row.isPort?24 : (anyFlag?30:20)};
   });
   ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});
-  const colw=[{wch:40},{wch:9},{wch:24},{wch:12}];
-  if(anyEnd) colw.push({wch:12});
-  colw.push({wch:13},{wch:14},{wch:14},{wch:13},{wch:11},{wch:14},{wch:18},{wch:15},{wch:12},{wch:17});
-  if(anyFlag) colw.push({wch:32});
+  const colw=[{wch:35},{wch:8},{wch:20},{wch:10.5}];
+  if(anyEnd) colw.push({wch:10.5});
+  colw.push({wch:11.5},{wch:12.5},{wch:12.5},{wch:11.5},{wch:9.5},{wch:12.5});
+  if(showComparableFundXirr) colw.push({wch:15});
+  colw.push({wch:13},{wch:9.5},{wch:14});
+  if(anyFlag) colw.push({wch:26});
   ws["!cols"]=colw; ws["!freeze"]={xSplit:1,ySplit:1}; ws["!rows"]=rowsH;
   ws["!pageSetup"]={ orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0 };
   ws["!margins"]={ left:0.3, right:0.3, top:0.4, bottom:0.4, header:0.2, footer:0.2 };
