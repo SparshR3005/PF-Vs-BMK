@@ -3,21 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- Locks the page to the exact origins it needs: mfapi.in for NAV, jsDelivr for
-     the Excel library, Google Fonts for type, and 'self' for the committed TRI
-     JSON. Blocks injected third-party script/frame/object loads. -->
-<meta http-equiv="Content-Security-Policy" content="
-  default-src 'self';
-  script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
-  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-  font-src 'self' https://fonts.gstatic.com;
-  connect-src 'self' https://api.mfapi.in;
-  img-src 'self' data:;
-  object-src 'none';
-  frame-ancestors 'none';
-  base-uri 'self';
-  form-action 'none';">
-<meta name="referrer" content="no-referrer">
 <title>PF vs Benchmark — SIP XIRR</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -202,38 +187,6 @@
     *{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;}
   }
 
-  /* screen-reader-only utility */
-  .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
-    clip:rect(0,0,0,0);white-space:nowrap;border:0;}
-
-  /* keyboard highlight for search results (arrow-key navigation) */
-  .results div.active{background:var(--surface-3);box-shadow:inset 3px 0 0 var(--brass);}
-
-  /* ===== toast notifications (replace native alert/confirm/prompt) ===== */
-  .toast-region{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:2000;
-    display:flex;flex-direction:column;gap:10px;align-items:center;width:min(460px,calc(100% - 32px));pointer-events:none;}
-  .toast{pointer-events:auto;width:100%;background:linear-gradient(180deg,var(--surface),var(--surface-2));
-    border:1px solid var(--line-2);border-left:3px solid var(--brass);border-radius:var(--radius-sm);
-    padding:13px 15px;box-shadow:0 20px 50px -18px rgba(0,0,0,.85);color:var(--text);font-size:13.5px;
-    line-height:1.5;display:flex;gap:12px;align-items:flex-start;
-    animation:toastIn .22s cubic-bezier(.2,.7,.2,1) both;}
-  .toast.leaving{animation:toastOut .2s ease-in forwards;}
-  .toast.ok{border-left-color:var(--beat);}
-  .toast.err{border-left-color:var(--lag-strong);}
-  .toast.warn{border-left-color:var(--brass);}
-  .toast .toast-body{flex:1;min-width:0;}
-  .toast .toast-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;
-    line-height:1;padding:0 2px;flex:none;}
-  .toast .toast-close:hover{color:var(--text);}
-  @keyframes toastIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
-  @keyframes toastOut{to{opacity:0;transform:translateY(8px);}}
-
-  /* ===== prompt / confirm dialog (accessible replacement) ===== */
-  .dlg-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap;}
-  .dlg{width:min(440px,100%);}
-  .dlg p{color:var(--muted);font-size:14px;margin:0 0 14px;line-height:1.55;}
-  .dlg label{margin-bottom:7px;}
-
 </style>
 </head>
 <body>
@@ -284,13 +237,10 @@
 
     <label for="search">Scheme</label>
     <div class="search-wrap">
-      <input type="text" id="search" placeholder="Type AMC or fund name, e.g. HDFC Flexi, ICICI, Parag Parikh"
-             autocomplete="off" disabled
-             role="combobox" aria-expanded="false" aria-autocomplete="list"
-             aria-controls="results" aria-haspopup="listbox">
-      <div class="results" id="results" role="listbox" aria-label="Matching schemes" style="display:none;"></div>
+      <input type="text" id="search" placeholder="Type AMC or fund name, e.g. HDFC Flexi, ICICI, Parag Parikh" autocomplete="off" disabled>
+      <div class="results" id="results" style="display:none;"></div>
     </div>
-    <div class="selected" id="selected" aria-live="polite"></div>
+    <div class="selected" id="selected"></div>
 
     <div class="row" style="margin-top:14px;">
       <div>
@@ -346,29 +296,6 @@
   </div>
 </div>
 
-<!-- generic accessible prompt/confirm dialog (replaces native prompt/confirm) -->
-<div class="modal-backdrop" id="dlgBackdrop" role="dialog" aria-modal="true" aria-labelledby="dlgTitle" aria-describedby="dlgMsg">
-  <div class="modal dlg">
-    <h2 id="dlgTitle"></h2>
-    <p id="dlgMsg"></p>
-    <div id="dlgInputWrap" style="display:none;">
-      <label id="dlgInputLabel" for="dlgInput"></label>
-      <input type="text" id="dlgInput" autocomplete="off">
-      <div class="status" id="dlgInputError" style="color:var(--lag);min-height:16px;"></div>
-    </div>
-    <div class="dlg-actions">
-      <button class="btn blue" id="dlgCancel">Cancel</button>
-      <button class="btn" id="dlgOk">OK</button>
-    </div>
-  </div>
-</div>
-
-<!-- toast notifications -->
-<div class="toast-region" id="toastRegion" role="region" aria-label="Notifications"></div>
-
-<!-- polite live region so status messages are announced to screen readers -->
-<div class="sr-only" id="liveRegion" aria-live="polite" aria-atomic="true"></div>
-
 <!-- xlsx-js-style: SheetJS fork that supports cell fills + number formats (needed for coloured, %-formatted export) -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"
         integrity="sha384-OUW9euuUyxyHcAhTqbhI+Iyb8LMssXt/cpz0yXhs9UWG2/R/uaWdakx/4cfww7Vb"
@@ -390,107 +317,6 @@ let listReady = false;
 
 const $ = id => document.getElementById(id);
 function getPlan(){ return document.querySelector('input[name=plan]:checked').value; }
-
-/* ============================================================
-   TOAST NOTIFICATIONS + ACCESSIBLE DIALOGS
-   Replace native alert()/confirm()/prompt(), which block the main
-   thread, cannot be styled, and are increasingly suppressed by
-   browsers inside async flows. All three return/resolve the same
-   way their native counterparts did so call sites stay simple.
-   ============================================================ */
-function announce(msg){                       // polite screen-reader announcement
-  const lr = $("liveRegion"); if(!lr) return;
-  lr.textContent = ""; requestAnimationFrame(()=>{ lr.textContent = msg; });
-}
-function toast(message, { type="info", timeout=4200 }={}){
-  const region = $("toastRegion"); if(!region) return;
-  const el = document.createElement("div");
-  el.className = "toast " + (type==="error"?"err":type==="success"?"ok":type==="warn"?"warn":"");
-  el.setAttribute("role", type==="error" ? "alert" : "status");
-  const body = document.createElement("div");
-  body.className = "toast-body"; body.textContent = message;
-  const close = document.createElement("button");
-  close.className = "toast-close"; close.setAttribute("aria-label","Dismiss notification");
-  close.textContent = "\u00d7";
-  const dismiss = ()=>{
-    if(el.dataset.leaving) return; el.dataset.leaving="1";
-    el.classList.add("leaving");
-    el.addEventListener("animationend", ()=>el.remove(), { once:true });
-    setTimeout(()=>el.remove(), 400);            // fallback if animationend never fires
-  };
-  close.onclick = dismiss;
-  el.appendChild(body); el.appendChild(close); region.appendChild(el);
-  announce(message);
-  if(timeout>0) setTimeout(dismiss, timeout);
-  return dismiss;
-}
-
-/* focus-trapping modal dialog. Resolves to:
-   - confirm(): true / false
-   - prompt():  entered string / null (cancel)
-   `validate(value)` (prompt only) returns an error string to keep the
-   dialog open, or "" to accept. */
-let dlgPrevFocus = null;
-function openDialog({ title, message="", input=null, okLabel="OK", cancelLabel="Cancel", validate=null }){
-  return new Promise(resolve=>{
-    const backdrop=$("dlgBackdrop"), titleEl=$("dlgTitle"), msgEl=$("dlgMsg"),
-          wrap=$("dlgInputWrap"), inputEl=$("dlgInput"), inputLabel=$("dlgInputLabel"),
-          errEl=$("dlgInputError"), okBtn=$("dlgOk"), cancelBtn=$("dlgCancel");
-    dlgPrevFocus = document.activeElement;
-    titleEl.textContent = title || "";
-    msgEl.textContent = message || "";
-    msgEl.style.display = message ? "block" : "none";
-    okBtn.textContent = okLabel; cancelBtn.textContent = cancelLabel;
-    errEl.textContent = "";
-    const isPrompt = input!=null;
-    wrap.style.display = isPrompt ? "block" : "none";
-    if(isPrompt){
-      inputLabel.textContent = input.label || "";
-      inputEl.value = input.value || "";
-    }
-    backdrop.style.display = "flex";
-
-    const focusables = ()=>[...backdrop.querySelectorAll('button,input,[tabindex]:not([tabindex="-1"])')]
-      .filter(e=>e.offsetParent!==null);
-    const first = isPrompt ? inputEl : okBtn;
-    requestAnimationFrame(()=>{ first.focus(); if(isPrompt) inputEl.select(); });
-
-    function cleanup(){
-      backdrop.style.display="none";
-      backdrop.removeEventListener("keydown", onKey, true);
-      okBtn.onclick=null; cancelBtn.onclick=null;
-      backdrop.onclick=null;
-      if(dlgPrevFocus && dlgPrevFocus.focus) dlgPrevFocus.focus();
-    }
-    function accept(){
-      if(isPrompt){
-        const val = inputEl.value.trim();
-        if(validate){ const err = validate(val); if(err){ errEl.textContent=err; announce(err); inputEl.focus(); return; } }
-        cleanup(); resolve(val);
-      } else { cleanup(); resolve(true); }
-    }
-    function reject(){ cleanup(); resolve(isPrompt ? null : false); }
-    function onKey(e){
-      if(e.key==="Escape"){ e.preventDefault(); reject(); return; }
-      if(e.key==="Enter" && (e.target===inputEl || e.target===okBtn)){ e.preventDefault(); accept(); return; }
-      if(e.key==="Tab"){                       // focus trap
-        const f=focusables(); if(!f.length) return;
-        const i=f.indexOf(document.activeElement);
-        if(e.shiftKey && (i<=0)){ e.preventDefault(); f[f.length-1].focus(); }
-        else if(!e.shiftKey && (i===f.length-1)){ e.preventDefault(); f[0].focus(); }
-      }
-    }
-    okBtn.onclick=accept; cancelBtn.onclick=reject;
-    backdrop.onclick=e=>{ if(e.target===backdrop) reject(); };
-    backdrop.addEventListener("keydown", onKey, true);
-  });
-}
-function confirmDialog(message, { title="Please confirm", okLabel="OK", cancelLabel="Cancel", danger=false }={}){
-  return openDialog({ title, message, okLabel, cancelLabel });
-}
-function promptDialog(label, value="", { title="Enter a value", validate=null, okLabel="Save" }={}){
-  return openDialog({ title, input:{ label, value }, validate, okLabel });
-}
 
 /* ============================================================
    BENCHMARK CONFIG   (unchanged logic)
@@ -569,23 +395,6 @@ function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").tri
 function hasWord(hay, w){ return new RegExp("(^|[^a-z])"+w+"([^a-z]|$)","i").test(hay); }
 function escapeHtml(v){ return String(v==null?"":v).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
 function uid(){ return (typeof crypto!=="undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2)); }
-
-// Categories a Nifty EQUITY TRI cannot fairly benchmark. Comparing a debt, hybrid,
-// gold, or arbitrage fund against an equity index is meaningless, so we reject the
-// holding with an explanation rather than silently mapping it to Nifty 500.
-const UNSUPPORTED_CAT_KEYWORDS = [
-  "debt","liquid","overnight","gilt","money market","ultra short","low duration",
-  "banking and psu","corporate bond","credit risk","duration","floater","dynamic bond",
-  "hybrid","balanced","arbitrage","conservative","aggressive hybrid","equity savings",
-  "multi asset","asset allocation","fund of fund","fof","gold","silver","commodit",
-  "solution oriented","retirement","children","index fund","exchange traded","etf",
-  "overseas","international","global",
-];
-function isUnsupportedCategory(category){
-  const cat = (category||"").toLowerCase();
-  if(!cat) return false;                        // unknown category: fall through, flagged approx
-  return UNSUPPORTED_CAT_KEYWORDS.some(k => cat.includes(k));
-}
 
 function resolveBenchmarkKey(schemeName, category){
   const n = normName(schemeName);
@@ -752,74 +561,21 @@ async function loadSchemeList(){
   }
 }
 
-/* ---- search (mouse + full keyboard navigation) ---- */
-let currentMatches = [];      // schemes currently shown in the dropdown
-let activeIndex = -1;         // highlighted option (keyboard), -1 = none
-
-function closeResults(){
-  const box = $("results");
-  box.style.display = "none";
-  box.innerHTML = "";
-  currentMatches = []; activeIndex = -1;
-  $("search").setAttribute("aria-expanded", "false");
-  $("search").removeAttribute("aria-activedescendant");
-}
-
-function setActive(i){
-  const opts = $("results").querySelectorAll('[role="option"]');
-  if(!opts.length) return;
-  if(i < 0) i = opts.length - 1;
-  if(i >= opts.length) i = 0;
-  opts.forEach(o=>{ o.classList.remove("active"); o.setAttribute("aria-selected","false"); });
-  activeIndex = i;
-  const el = opts[i];
-  el.classList.add("active");
-  el.setAttribute("aria-selected","true");
-  // Set the a11y pointer FIRST and keep scrolling optional: scrollIntoView is a
-  // convenience, and on any engine that lacks it (or throws) an exception here
-  // must not stop the screen reader from being told which option is active.
-  $("search").setAttribute("aria-activedescendant", el.id);
-  try{ if(typeof el.scrollIntoView==="function") el.scrollIntoView({ block:"nearest" }); }catch(e){}
-}
-
+/* ---- search ---- */
 $("search").addEventListener("input", function(){
   const q = this.value.trim().toLowerCase();
   selectedScheme = null;
   $("selected").textContent = "";
   updateAddState();
   clearTimeout(searchTimer);
-  if(q.length < 2){ closeResults(); return; }
+  if(q.length < 2){ $("results").style.display="none"; return; }
   searchTimer = setTimeout(()=>runSearch(q), 150);
-});
-
-// Keyboard: ArrowDown/Up move, Enter selects, Escape closes, Home/End jump.
-$("search").addEventListener("keydown", function(e){
-  const box = $("results");
-  const open = box.style.display !== "none" && currentMatches.length > 0;
-  switch(e.key){
-    case "ArrowDown":
-      e.preventDefault();
-      if(!open && this.value.trim().length >= 2){ runSearch(this.value.trim().toLowerCase()); return; }
-      setActive(activeIndex + 1); break;
-    case "ArrowUp":
-      if(!open) return;
-      e.preventDefault(); setActive(activeIndex - 1); break;
-    case "Home":
-      if(open){ e.preventDefault(); setActive(0); } break;
-    case "End":
-      if(open){ e.preventDefault(); setActive(currentMatches.length - 1); } break;
-    case "Enter":
-      if(open && activeIndex >= 0){ e.preventDefault(); pickScheme(currentMatches[activeIndex]); } break;
-    case "Escape":
-      if(open){ e.preventDefault(); closeResults(); } break;
-  }
 });
 
 function runSearch(q){
   if(!listReady) return;
   const box = $("results");
   box.style.display = "block";
-  $("search").setAttribute("aria-expanded", "true");
   const list = getPlan() === "Direct" ? listDirect : listRegular;
   const words = q.split(/\s+/).filter(Boolean);
 
@@ -833,34 +589,15 @@ function runSearch(q){
     matches.push(s);
   }
 
-  box.innerHTML = "";
-  activeIndex = -1;
-  $("search").removeAttribute("aria-activedescendant");
-
   if(matches.length === 0){
-    currentMatches = [];
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = 'No matches. Try fewer or different words (e.g. just "hdfc" or "flexi cap").';
-    box.appendChild(hint);
+    box.innerHTML = '<div class="hint">No matches. Try fewer or different words (e.g. just "hdfc" or "flexi cap").</div>';
     return;
   }
-
-  currentMatches = matches.slice(0, 50);
-  const hint = document.createElement("div");
-  hint.className = "hint";
-  hint.textContent = matches.length + " match(es)" + (matches.length > 50 ? " — showing first 50" : "") + ":";
-  box.appendChild(hint);
-
-  currentMatches.forEach((s, i)=>{
+  box.innerHTML = '<div class="hint">'+matches.length+' match(es)'+(matches.length>50?' — showing first 50':'')+':</div>';
+  matches.slice(0,50).forEach(s=>{
     const d = document.createElement("div");
-    d.id = "opt-" + i;
-    d.setAttribute("role", "option");
-    d.setAttribute("aria-selected", "false");
     d.textContent = s.schemeName;
-    d.addEventListener("mousedown", ev=>ev.preventDefault());   // keep input focus
-    d.addEventListener("click", ()=>pickScheme(s));
-    d.addEventListener("mousemove", ()=>setActive(i));
+    d.onclick = ()=>pickScheme(s);
     box.appendChild(d);
   });
 }
@@ -869,8 +606,7 @@ function pickScheme(s){
   selectedScheme = s;
   $("search").value = s.schemeName;
   $("selected").textContent = "Selected: " + s.schemeName;
-  closeResults();
-  $("search").focus();
+  $("results").style.display = "none";
   updateAddState();
 }
 
@@ -879,7 +615,7 @@ document.querySelectorAll('input[name=plan]').forEach(r=>{
     selectedScheme = null;
     $("selected").textContent = "";
     $("search").value = "";
-    closeResults();
+    $("results").style.display = "none";
     updateAddState();
   });
 });
@@ -1046,15 +782,10 @@ function runSIP(navArr,dates,amount,valueDate){
   if(!installments.length) return null;
   const valuation=valuationAt({installments},navArr,valueDate);
   if(!valuation) return null;
-  // Use valuation.flows (installments with tradeDate <= valueDate) as the single
-  // source of truth so the XIRR cash-outflows, invested total, and units always
-  // describe the exact same set. runSIP already filters future trades above, so
-  // today these coincide, but deriving flows separately invited silent drift.
-  const flows=valuation.flows.map(f=>({date:new Date(f.date),amount:f.amount}));
-  if(!flows.length) return null;
-  const x=xirr(flows.concat([{date:new Date(valuation.date),amount:valuation.currentValue}]));
+  const flows=installments.map(x=>({date:new Date(x.tradeDate),amount:-x.amount}));
+  const x=xirr(flows.concat([{date:new Date(valueDate),amount:valuation.currentValue}]));
   return {invested:valuation.invested,currentValue:valuation.currentValue,units:valuation.units,
-          placed:flows.length,xirr:x,flows,installments,firstDate:flows[0].date,valueDate:valuation.date};
+          placed:installments.length,xirr:x,flows,installments,firstDate:installments[0].tradeDate};
 }
 
 function valuationAt(run,navArr,valueDate){
@@ -1086,13 +817,6 @@ async function computeScheme(spec){
 
   const officialName=detail.name||spec.name;
   const category=spec.category||detail.category||"";
-  // A Nifty equity TRI cannot fairly benchmark debt/hybrid/gold/arbitrage/index
-  // funds. Reject with a clear message instead of silently comparing against
-  // Nifty 500, which would produce a meaningless (and misleading) alpha.
-  if(isUnsupportedCategory(category)){
-    throw new Error(officialName+' is a "'+category.trim()+'" scheme; '+
-      "this tool only benchmarks actively-managed equity funds against a Nifty equity TRI, so it can't be compared here.");
-  }
   const fundLast=fundNav[fundNav.length-1].date;
   const fundSipEnd=endVal&&endVal<fundLast?endVal:fundLast;
   const fundDates=scheduleDates(start,fundSipEnd);
@@ -1172,9 +896,6 @@ $("addBtn").addEventListener("click", async ()=>{
 /* ---- formatting ---- */
 function inr(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
 function pct(n){ return n==null?"N/A":(n*100).toFixed(2)+"%"; }
-// Sign class that treats null/NaN as neutral (not positive). Guards against the
-// JS quirk where `null >= 0` is true, which would paint a failed/absent value green.
-function signClass(n){ return (n==null || !Number.isFinite(n)) ? "" : (n>=0 ? "pos" : "neg"); }
 function pp(n){ return (n>=0?"+":"")+(n*100).toFixed(2)+" pp"; }
 function fmtDate(d){ return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); }
 
@@ -1210,20 +931,14 @@ function schemeView(s){
 function portfolioMetrics(){
   if(!schemes.length) return null;
 
-  // Each holding's terminal (current-value) cash flow is dated at the ACTUAL NAV
-  // date the value was struck on (run.valueDate = navOnOrBefore the requested
-  // date), not the requested calendar date. When NAVs lag by a few days the two
-  // differ, and discounting a value at a date whose NAV doesn't exist yet slightly
-  // distorts the money-weighted return. Anchoring to run.valueDate removes that.
   let invested=0, current=0, valueDate=null;
   const fundFlows=[];
   for(const s of schemes){
     invested += s.fund.invested;
     current  += s.fund.currentValue;
     for(const f of s.fund.flows) fundFlows.push({date:new Date(f.date), amount:f.amount});
-    const fvd = s.fund.valueDate || s.fundValueDate;
-    fundFlows.push({date:new Date(fvd), amount:s.fund.currentValue});
-    if(!valueDate || fvd>valueDate) valueDate=fvd;
+    fundFlows.push({date:new Date(s.fundValueDate), amount:s.fund.currentValue});
+    if(!valueDate || s.fundValueDate>valueDate) valueDate=s.fundValueDate;
   }
   const fundX = xirr(fundFlows);
 
@@ -1236,10 +951,8 @@ function portfolioMetrics(){
       cmpBenchCur += s.benchCmp.currentValue;
       for(const f of s.fundCmp.flows)  ff.push({date:new Date(f.date), amount:f.amount});
       for(const f of s.benchCmp.flows) bf.push({date:new Date(f.date), amount:f.amount});
-      const fvd = s.fundCmp.valueDate  || s.cmpValueDate;
-      const bvd = s.benchCmp.valueDate || s.cmpValueDate;
-      ff.push({date:new Date(fvd), amount:s.fundCmp.currentValue});
-      bf.push({date:new Date(bvd), amount:s.benchCmp.currentValue});
+      ff.push({date:new Date(s.cmpValueDate), amount:s.fundCmp.currentValue});
+      bf.push({date:new Date(s.cmpValueDate), amount:s.benchCmp.currentValue});
       if(!cmpValueDate || s.cmpValueDate>cmpValueDate) cmpValueDate=s.cmpValueDate;
     }
     cmpFundX = xirr(ff);
@@ -1267,8 +980,8 @@ function render(){
     <div class="stat"><div class="k">Total invested</div><div class="v">${inr(port.invested)}</div></div>
     <div class="stat"><div class="k">Current value</div><div class="v">${inr(port.current)}</div></div>
     <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>
-    <div class="stat"><div class="k">Absolute return</div><div class="v ${signClass(port.absReturn)}">${pct(port.absReturn)}</div></div>
-    <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${signClass(port.xirr)}">${pct(port.xirr)}</div></div>
+    <div class="stat"><div class="k">Absolute return</div><div class="v ${port.absReturn>=0?'pos':'neg'}">${pct(port.absReturn)}</div></div>
+    <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${port.xirr>=0?'pos':'neg'}">${pct(port.xirr)}</div></div>
     <div class="stat"><div class="k">Comparable fund XIRR</div><div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div></div>
     <div class="stat"><div class="k">Benchmark XIRR</div><div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div></div>
     <div class="stat"><div class="k">Portfolio alpha</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div><div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
@@ -1287,7 +1000,7 @@ function render(){
           <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''} · valued ${fmtDate(s.fundValueDate)}</div>
           ${bmkLine}${verdict}</td>
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
-      <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
+      <td class="num"><span class="${v.fxFull>=0?'pos':'neg'}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
       <td class="num">${compCell}</td>
       <td class="num">${v.alpha!=null?'<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span>':'—'}</td>
       <td class="num"><button class="btn small" data-i="${i}">Remove</button></td></tr>`;
@@ -1295,8 +1008,8 @@ function render(){
   const pBand=perfBand(port.alpha);
   rows+=`<tr class="portfolio"><td>PORTFOLIO (all holdings)<div class="fund-meta">each holding valued at its own latest NAV (newest ${fmtDate(port.valueDate)})</div></td>
     <td class="num">${inr(port.invested)}</td><td class="num">${inr(port.current)}</td>
-    <td class="num"><span class="${signClass(port.gain)}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
-    <td class="num"><span class="${signClass(port.xirr)}" style="font-weight:600;">${pct(port.xirr)}</span></td>
+    <td class="num"><span class="${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
+    <td class="num"><span class="${port.xirr>=0?'pos':'neg'}" style="font-weight:600;">${pct(port.xirr)}</span></td>
     <td class="num">${port.anyBench?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':'—'}</td>
     <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
   wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span></th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -1306,13 +1019,9 @@ function render(){
 }
 
 /* ---- clear ---- */
-$("clearBtn").addEventListener("click", async ()=>{
+$("clearBtn").addEventListener("click", ()=>{
   if(!schemes.length) return;
-  if(await confirmDialog("Remove all schemes from this portfolio? This clears the on-screen holdings for this portfolio.",
-      {title:"Clear all holdings", okLabel:"Remove all"})){
-    schemes.length=0; saveActive(); render();
-    toast("All holdings removed from this portfolio.", {type:"success"});
-  }
+  if(confirm("Remove all schemes from this portfolio?")){ schemes.length=0; saveActive(); render(); }
 });
 
 /* ============================================================
@@ -1432,61 +1141,48 @@ $("pfSelect").addEventListener("change", function(){
   persistStore();
   hydrateActive();
 });
-$("pfNewBtn").addEventListener("click", async ()=>{
-  const name = await promptDialog("Name for the new portfolio", "", {
-    title:"New portfolio", okLabel:"Create",
-    validate:v=>!v ? "Please enter a name." : (store.portfolios[v] ? "A portfolio with that name already exists." : "")
-  });
-  if(name==null) return;                       // cancelled
+$("pfNewBtn").addEventListener("click", ()=>{
+  const name = (prompt("Name for the new portfolio:","")||"").trim();
+  if(!name) return;
+  if(store.portfolios[name]){ alert("A portfolio with that name already exists."); return; }
   store.portfolios[name] = [];
   store.active = name;
   persistStore();
   refreshPfSelect();
   hydrateActive();
-  toast('Created portfolio "'+name+'".', {type:"success"});
 });
-$("pfRenameBtn").addEventListener("click", async ()=>{
+$("pfRenameBtn").addEventListener("click", ()=>{
   const cur = store.active;
-  const name = await promptDialog("Rename portfolio", cur, {
-    title:"Rename portfolio", okLabel:"Rename",
-    validate:v=>!v ? "Please enter a name." : (v!==cur && store.portfolios[v] ? "A portfolio with that name already exists." : "")
-  });
-  if(name==null || name===cur) return;
+  const name = (prompt("Rename portfolio:", cur)||"").trim();
+  if(!name || name===cur) return;
+  if(store.portfolios[name]){ alert("A portfolio with that name already exists."); return; }
   store.portfolios[name] = store.portfolios[cur];
   delete store.portfolios[cur];
   store.active = name;
   persistStore();
   refreshPfSelect();
   hydrateActive();
-  toast('Renamed to "'+name+'".', {type:"success"});
 });
-$("pfDeleteBtn").addEventListener("click", async ()=>{
+$("pfDeleteBtn").addEventListener("click", ()=>{
   const cur = store.active;
   if(Object.keys(store.portfolios).length===1){
-    if(!await confirmDialog("This is your only portfolio. Delete all its schemes? The portfolio itself stays.",
-        {title:"Delete all schemes", okLabel:"Delete schemes"})) return;
+    if(!confirm("This is your only portfolio. Delete all its schemes?")) return;
     store.portfolios[cur] = [];
-    persistStore(); hydrateActive();
-    toast("Cleared all schemes from this portfolio.", {type:"success"});
-    return;
+    persistStore(); hydrateActive(); return;
   }
-  if(!await confirmDialog('Delete portfolio "'+cur+'"? This cannot be undone.',
-      {title:"Delete portfolio", okLabel:"Delete"})) return;
+  if(!confirm('Delete portfolio "'+cur+'"? This cannot be undone.')) return;
   delete store.portfolios[cur];
   store.active = Object.keys(store.portfolios)[0];
   persistStore();
   refreshPfSelect();
   hydrateActive();
-  toast('Deleted portfolio "'+cur+'".', {type:"success"});
 });
 
-$("eraseLocalBtn").addEventListener("click", async ()=>{
-  if(!await confirmDialog("Erase all portfolios saved by this tool in this browser? This cannot be undone.",
-      {title:"Erase browser data", okLabel:"Erase everything"})) return;
+$("eraseLocalBtn").addEventListener("click",()=>{
+  if(!confirm("Erase all portfolios saved by this tool in this browser?")) return;
   try{localStorage.removeItem(LS_KEY);localStorage.removeItem(OLD_LS_KEY);}catch(e){}
   store={version:3,active:"My Portfolio",portfolios:{"My Portfolio":[]}};
-  persistStore();refreshPfSelect();hydrateActive();
-  toast("Browser data erased.", {type:"success"});
+  persistStore();refreshPfSelect();hydrateActive();$("pmStatus").textContent="Browser data erased.";
 });
 
 /* ---- refresh (fund NAV + TRI). Button hidden by default since the nightly
@@ -1514,12 +1210,8 @@ $("templateBtn").addEventListener("click",()=>{
     else rows.push(["HDFC Flexi Cap Fund - Direct Plan - Growth Option","Direct","2022-01-01","",5000,""]);
     const ws=XLSX.utils.aoa_to_sheet(rows);ws["!cols"]=[{wch:52},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10}];
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Portfolio");XLSX.writeFile(wb,"MF_Import_Template.xlsx");
-    $("pmStatus").textContent="";
-    toast("Import template downloaded.", {type:"success"});
-  }catch(e){
-    $("pmStatus").textContent="";
-    toast("Couldn't build template: "+e.message, {type:"error", timeout:6000});
-  }
+    $("pmStatus").textContent="Template downloaded.";setTimeout(()=>$("pmStatus").textContent="",2500);
+  }catch(e){$("pmStatus").textContent="Couldn't build template: "+e.message;}
 });
 
 $("importBtn").addEventListener("click",()=>{
@@ -1620,37 +1312,14 @@ function renderImportPreview(){
       <td class="${r.statusClass}">${escapeHtml(r.message)}</td>`;body.appendChild(tr);
   });
   body.querySelectorAll("input[data-preview-i]").forEach(cb=>cb.onchange=()=>{importPreviewRows[+cb.dataset.previewI].checked=cb.checked;updatePreviewSummary();});
-  updatePreviewSummary();
-  importPrevFocus = document.activeElement;
-  $("importModal").style.display="flex";
-  document.addEventListener("keydown", importModalKeydown, true);
-  requestAnimationFrame(()=>{ const b=$("importCancelBtn"); if(b) b.focus(); });
+  updatePreviewSummary();$("importModal").style.display="flex";
 }
 function updatePreviewSummary(){
   const valid=importPreviewRows.filter(r=>r.importable).length,selected=importPreviewRows.filter(r=>r.importable&&r.checked).length,errors=importPreviewRows.length-valid;
   $("importPreviewSummary").textContent=`${importPreviewRows.length} data row(s): ${valid} valid, ${errors} requiring correction, ${selected} selected for import.`;
   $("importConfirmBtn").disabled=selected===0;
 }
-let importPrevFocus = null;
-function closeImportModal(){
-  $("importModal").style.display="none";
-  $("importModalStatus").textContent="";
-  document.removeEventListener("keydown", importModalKeydown, true);
-  if(importPrevFocus && importPrevFocus.focus) importPrevFocus.focus();
-  importPrevFocus = null;
-}
-function importModalKeydown(e){
-  if($("importModal").style.display==="none") return;
-  if(e.key==="Escape"){ e.preventDefault(); closeImportModal(); return; }
-  if(e.key==="Tab"){                                   // focus trap
-    const f=[...$("importModal").querySelectorAll('button:not([disabled]),input:not([disabled])')]
-      .filter(el=>el.offsetParent!==null);
-    if(!f.length) return;
-    const i=f.indexOf(document.activeElement);
-    if(e.shiftKey && i<=0){ e.preventDefault(); f[f.length-1].focus(); }
-    else if(!e.shiftKey && i===f.length-1){ e.preventDefault(); f[0].focus(); }
-  }
-}
+function closeImportModal(){$("importModal").style.display="none";$("importModalStatus").textContent="";}
 $("importCancelBtn").addEventListener("click",closeImportModal);
 $("importModal").addEventListener("click",e=>{if(e.target===$("importModal"))closeImportModal();});
 
@@ -1669,18 +1338,9 @@ $("importConfirmBtn").addEventListener("click",async()=>{
   }
   if(!aborted) saveActive();          // only persist if we're still on the same portfolio
   render();$("importConfirmBtn").disabled=false;$("importCancelBtn").disabled=false;closeImportModal();
-  if(aborted){
-    $("pmStatus").textContent="";
-    toast("Import stopped — the active portfolio changed before it finished, so no rows were saved. Re-open import to try again.",
-      {type:"warn", timeout:8000});
-  }else{
-    // Headline goes to a toast; per-row failure detail stays inline because it can
-    // be long (e.g. rejected non-equity schemes) and the user may want to read it
-    // while fixing the sheet.
-    toast(`Imported ${imported} of ${selected.length} selected row(s).`,
-      {type: failed.length ? "warn" : "success"});
-    $("pmStatus").textContent = failed.length ? ("Not imported — "+failed.join("; ")) : "";
-  }
+  $("pmStatus").textContent = aborted
+    ? "Import stopped — the active portfolio changed before it finished, so no rows were saved. Re-open import to try again."
+    : `Imported ${imported} of ${selected.length} selected row(s).`+(failed.length?" Failed: "+failed.join("; "):"");
 });
 
 $("importFile").addEventListener("change",function(){
@@ -1767,11 +1427,10 @@ $("exportBtn").addEventListener("click", ()=>{
   try{
     if(typeof XLSX==="undefined" || !XLSX.writeFile) throw new Error("Excel library not loaded (check your connection).");
     exportExcel();
-    $("exportStatus").textContent = "";
-    toast("Excel report downloaded.", {type:"success"});
+    $("exportStatus").textContent = "Downloaded.";
+    setTimeout(()=>{ $("exportStatus").textContent=""; }, 2500);
   }catch(e){
-    $("exportStatus").textContent = "";
-    toast("Export failed: " + e.message, {type:"error", timeout:6000});
+    $("exportStatus").textContent = "Export failed: " + e.message;
   }
 });
 
@@ -2067,7 +1726,7 @@ function buildInsights(port){
 
 
 document.addEventListener("click", e=>{
-  if(!e.target.closest(".search-wrap")) closeResults();
+  if(!e.target.closest(".search-wrap")) $("results").style.display="none";
 });
 
 /* ---- boot ---- */
