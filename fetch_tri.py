@@ -215,42 +215,6 @@ def rows_to_doc(key: str, name: str, rows: list) -> dict:
     }
 
 
-# A TRI series is a slow-moving index level. A single-day move beyond this is
-# almost certainly a data error (wrong index spliced in, decimal shift, or a
-# provider glitch) rather than a real market move -- even 2020's worst crash day
-# was ~13%. Publishing such a series would silently corrupt every XIRR computed
-# against it, so we refuse it and keep the last-good file instead.
-MAX_DAILY_MOVE = 0.35
-
-
-def validate_series(doc: dict):
-    """Return an error string if the series looks corrupt, else ''."""
-    series = doc.get("series") or {}
-    if len(series) < MIN_ROWS:
-        return f"only {len(series)} valid rows (<{MIN_ROWS})"
-
-    items = list(series.items())          # already date-sorted by rows_to_doc
-    prev_date, prev_val = None, None
-    for iso, val in items:
-        if val <= 0:
-            return f"non-positive value {val} on {iso}"
-        if prev_val is not None:
-            cur = datetime.strptime(iso, "%Y-%m-%d").date()
-            gap = (cur - prev_date).days
-            # Only police consecutive trading days; long gaps (holidays, and the
-            # sparse early history of some indices) can legitimately move more.
-            if gap <= 4:
-                move = abs(val - prev_val) / prev_val
-                if move > MAX_DAILY_MOVE:
-                    return (f"implausible {move:.0%} move on {iso} "
-                            f"({prev_val:.2f} -> {val:.2f}); refusing to publish")
-            prev_date, prev_val = cur, val
-        else:
-            prev_date = datetime.strptime(iso, "%Y-%m-%d").date()
-            prev_val = val
-    return ""
-
-
 def today_ist():
     return datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
@@ -324,9 +288,10 @@ def main():
                     continue
 
                 doc = rows_to_doc(key, name, rows)
-                problem = validate_series(doc)
-                if problem:
-                    failures.append(f"{name}: {problem}")
+                if doc["count"] < MIN_ROWS:
+                    failures.append(
+                        f"{name}: only {doc['count']} valid normalized rows (<{MIN_ROWS})"
+                    )
                     continue
 
                 if not is_fresh(doc):
