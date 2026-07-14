@@ -297,7 +297,9 @@
 </div>
 
 <!-- xlsx-js-style: SheetJS fork that supports cell fills + number formats (needed for coloured, %-formatted export) -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"
+        integrity="sha384-OUW9euuUyxyHcAhTqbhI+Iyb8LMssXt/cpz0yXhs9UWG2/R/uaWdakx/4cfww7Vb"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <script>
 "use strict";
@@ -337,7 +339,8 @@ const FLEXI_OVERRIDES = [
   { name: "quant flexi cap",        key: "NIFTY500" },
 ];
 const SECTOR_KEYWORDS = [
-  { words: ["bank","banking"], subs: ["financial services"], key: "NIFTY_FINSERV_OR_BANK" },
+  { words: [], subs: ["financial services","financial service","finserv"], key: "NIFTY_FINSERV_OR_BANK" },
+  { words: ["bank","banking"], subs: [], key: "NIFTY_BANK" },
   { words: [], subs: ["pharma","healthcare"], key: "NIFTY_PHARMA" },
   { words: ["it"], subs: ["information technology","technology","digital"], key: "NIFTY_IT" },
   { words: [], subs: ["fmcg"], key: "NIFTY_FMCG" },
@@ -484,19 +487,27 @@ async function checkTriFreshness(){
     const res = await fetch(`${TRI_DIR}/index.json`, {cache:"no-store"});
     if(!res.ok) return;
     const m = await res.json();
-    const ends = (m.indices||[]).map(x=>x&&x.end).filter(Boolean).sort();
-    if(!ends.length) return;
-    const newestDate = parseInput(ends[ends.length-1]);   // "YYYY-MM-DD"
-    if(!newestDate) return;
-    const ageDays = Math.floor(daysBetween(newestDate, new Date()));
-    if(ageDays > TRI_STALE_DAYS){
-      const el = $("triBanner");
-      if(el){
-        el.style.display = "block";
-        el.innerHTML = "⚠ Benchmark (TRI) data looks stale — the latest covered market day is <b>"
-          + fmtDate(newestDate) + "</b> (" + ageDays + " days ago). Comparisons use the newest available TRI, "
-          + "so alpha may be off until the nightly fetch catches up. Check the repo's Actions log if this persists.";
-      }
+    const list = (m.indices||[]).filter(x=>x&&x.key);
+    if(!list.length) return;
+    const today = new Date();
+    const label = x => (BENCH_FUNDS[x.key] && BENCH_FUNDS[x.key].label) || x.index || x.key;
+    // Check EACH benchmark independently — a single current index must not mask stale ones.
+    const stale = [];
+    list.forEach(x=>{
+      const d = x.end ? parseInput(x.end) : null;
+      const age = d ? Math.floor(daysBetween(d, today)) : null;
+      if(x.fresh===false || age===null || age > TRI_STALE_DAYS) stale.push({ name: label(x), age });
+    });
+    if(!stale.length) return;   // every benchmark is current
+    stale.sort((a,b)=>(b.age==null?1e9:b.age)-(a.age==null?1e9:a.age));
+    const shown = stale.slice(0,5).map(s=> s.name + (s.age!=null ? " ("+s.age+"d)" : " (no data)")).join(", ");
+    const extra = stale.length>5 ? " +"+(stale.length-5)+" more" : "";
+    const el = $("triBanner");
+    if(el){
+      el.style.display = "block";
+      el.innerHTML = "⚠ "+stale.length+" benchmark "+(stale.length===1?"series is":"series are")
+        + " out of date, so any holding mapped to "+(stale.length===1?"it":"them")
+        + " is compared on stale data — <b>"+shown+extra+"</b>. Check the repo's Actions log if this persists.";
     }
   }catch(e){ /* no manifest / offline: stay silent */ }
 }
@@ -850,6 +861,7 @@ async function computeScheme(spec){
 /* ---- ADD SCHEME (manual) ---- */
 $("addBtn").addEventListener("click", async ()=>{
   if(hydrationInProgress || !selectedScheme) return;
+  const opGen = hydrationGeneration, opPortfolio = store.active;   // capture before the await
   $("addBtn").disabled = true;
   $("status").textContent = "Fetching NAV history…";
   try{
@@ -862,6 +874,11 @@ $("addBtn").addEventListener("click", async ()=>{
       amount: Number($("amount").value),
     };
     const sch = await computeScheme(spec);
+    if(hydrationGeneration!==opGen || store.active!==opPortfolio){
+      // the active portfolio changed while we were fetching — do NOT write into the wrong one
+      $("status").textContent = "Active portfolio changed before the fetch finished — scheme not added. Please add it again.";
+      return;
+    }
     schemes.push(sch);
 
     selectedScheme=null; $("search").value=""; $("selected").textContent="";
@@ -1309,13 +1326,21 @@ $("importModal").addEventListener("click",e=>{if(e.target===$("importModal"))clo
 $("importConfirmBtn").addEventListener("click",async()=>{
   const selected=importPreviewRows.filter(r=>r.importable&&r.checked);if(!selected.length)return;
   $("importConfirmBtn").disabled=true;$("importCancelBtn").disabled=true;
-  let imported=0;const failed=[];
+  const opGen=hydrationGeneration, opPortfolio=store.active;   // capture before the awaits
+  let imported=0;const failed=[];let aborted=false;
   for(let i=0;i<selected.length;i++){
     const r=selected[i];$("importModalStatus").textContent=`Importing ${i+1} of ${selected.length}: ${r.resolvedName}`;
-    try{schemes.push(await computeScheme(r.spec));imported++;render();}catch(e){failed.push(`row ${r.rowNum}: ${e.message}`);}
+    try{
+      const sch=await computeScheme(r.spec);
+      if(hydrationGeneration!==opGen || store.active!==opPortfolio){aborted=true;break;}
+      schemes.push(sch);imported++;render();
+    }catch(e){failed.push(`row ${r.rowNum}: ${e.message}`);}
   }
-  saveActive();render();$("importCancelBtn").disabled=false;closeImportModal();
-  $("pmStatus").textContent=`Imported ${imported} of ${selected.length} selected row(s).`+(failed.length?" Failed: "+failed.join("; "):"");
+  if(!aborted) saveActive();          // only persist if we're still on the same portfolio
+  render();$("importConfirmBtn").disabled=false;$("importCancelBtn").disabled=false;closeImportModal();
+  $("pmStatus").textContent = aborted
+    ? "Import stopped — the active portfolio changed before it finished, so no rows were saved. Re-open import to try again."
+    : `Imported ${imported} of ${selected.length} selected row(s).`+(failed.length?" Failed: "+failed.join("; "):"");
 });
 
 $("importFile").addEventListener("change",function(){
@@ -1609,16 +1634,16 @@ function exportExcel(){
   const legendHdr=["Colour band","Meaning","Alpha threshold (Fund XIRR − TRI XIRR)"];
   legendHdr.forEach((h,c)=>s3[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{fill:RPT.header,color:RPT.headerTxt,bold:true,align:"left",sz:10.5}));
   const bands=[
-    ["Strongly beating","≥ +3 pp per year", FILL.strong_beat, true],
-    ["Beating","0 to +3 pp per year", FILL.beat, false],
-    ["Lagging","0 to −3 pp per year", FILL.lag, false],
-    ["Strongly lagging","≤ −3 pp per year", FILL.strong_lag, true],
+    ["Strongly beating","Fund is well ahead of its index","≥ +3 pp per year", FILL.strong_beat, true],
+    ["Beating","Fund is modestly ahead of its index","0 to +3 pp per year", FILL.beat, false],
+    ["Lagging","Fund is modestly behind its index","0 to −3 pp per year", FILL.lag, false],
+    ["Strongly lagging","Fund is well behind its index","≤ −3 pp per year", FILL.strong_lag, true],
   ];
   bands.forEach((b,i)=>{
     const r=i+1;
-    s3[XLSX.utils.encode_cell({r,c:0})]=styleCell(b[0],{fill:b[2],light:b[3],bold:true,align:"left",border:true});
-    s3[XLSX.utils.encode_cell({r,c:1})]=styleCell(b[0],{border:true});
-    s3[XLSX.utils.encode_cell({r,c:2})]=styleCell(b[1],{border:true,align:"left"});
+    s3[XLSX.utils.encode_cell({r,c:0})]=styleCell(b[0],{fill:b[3],light:b[4],bold:true,align:"left",border:true});
+    s3[XLSX.utils.encode_cell({r,c:1})]=styleCell(b[1],{border:true,align:"left"});
+    s3[XLSX.utils.encode_cell({r,c:2})]=styleCell(b[2],{border:true,align:"left"});
   });
   const notes=[
     "How it works",
