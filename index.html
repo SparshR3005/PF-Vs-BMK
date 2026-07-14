@@ -4,107 +4,196 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PF vs Benchmark — SIP XIRR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@600;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0f1720; --card:#17212b; --line:#2a3a49; --text:#e6edf3;
-    --muted:#9fb0c0; --accent:#2f9e6f; --accent2:#c9a227; --danger:#c85a54;
-    --darkgreen:#1e7d46; --green:#3ec27a; --red:#e07a72; --darkred:#b23b34;
+    --bg:#0d1312; --bg-2:#080d0c; --surface:#141e1c; --surface-2:#0f1817;
+    --surface-3:#1a2624; --line:#233330; --line-2:#32443f;
+    --text:#e9f0ed; --muted:#8ba09a; --faint:#5f716c;
+    --brass:#c9a25f; --brass-2:#e4c78d; --brass-dim:rgba(201,162,95,.13);
+    --beat:#5cc290; --beat-strong:#2e9c66; --lag:#e88b80; --lag-strong:#cf5b4c; --flat:#6d7f7a;
+    --radius:11px; --radius-sm:8px;
+    --serif:"IBM Plex Serif",Georgia,"Times New Roman",serif;
+    --sans:"IBM Plex Sans",-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+    /* legacy aliases so any hard-coded var references keep resolving */
+    --accent:var(--beat); --accent2:var(--brass); --danger:var(--lag-strong);
+    --card:var(--surface); --darkgreen:var(--beat-strong); --green:var(--beat);
+    --red:var(--lag); --darkred:var(--lag-strong);
   }
   *{box-sizing:border-box;}
-  body{margin:0;background:var(--bg);color:var(--text);
-    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-    line-height:1.5;padding:24px;}
-  .wrap{max-width:1040px;margin:0 auto;}
-  h1{font-size:22px;margin:0 0 4px;}
-  .sub{color:var(--muted);font-size:14px;margin:0 0 20px;}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
-    padding:16px 18px;margin-bottom:18px;}
-  label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;
-    color:var(--muted);margin-bottom:5px;}
-  input,select{width:100%;padding:9px 10px;border:1px solid var(--line);
-    border-radius:6px;background:#0d141c;color:var(--text);font-size:14px;}
-  input:focus,select:focus{outline:2px solid var(--accent);}
-  input:disabled{opacity:.5;}
-  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;}
-  .plan-toggle{display:flex;gap:8px;align-items:center;margin-bottom:16px;}
-  .plan-toggle .opt{display:flex;gap:6px;align-items:center;font-size:14px;color:var(--text);cursor:pointer;}
-  .search-wrap{position:relative;}
-  .results{position:absolute;z-index:10;left:0;right:0;top:100%;
-    background:#0d141c;border:1px solid var(--line);border-top:none;
-    border-radius:0 0 6px 6px;max-height:240px;overflow-y:auto;}
-  .results div{padding:9px 10px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line);}
-  .results div:hover{background:#16222e;}
-  .results .hint{color:var(--muted);cursor:default;}
-  .btn{padding:10px 18px;border:none;border-radius:6px;background:var(--accent);
-    color:#fff;font-size:14px;font-weight:600;cursor:pointer;}
-  .btn:disabled{opacity:.5;cursor:not-allowed;}
-  .btn.ghost{background:transparent;border:1px solid var(--accent);color:var(--accent);}
-  .btn.small{padding:5px 10px;font-size:12px;background:transparent;
-    border:1px solid var(--danger);color:var(--danger);font-weight:400;}
-  .btn.blue{background:transparent;border:1px solid var(--accent2);color:var(--accent2);}
-  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
-  .selected{font-size:14px;color:var(--accent);margin:8px 0 0;min-height:20px;}
-  table{width:100%;border-collapse:collapse;font-size:13px;}
-  th{text-align:left;padding:8px;border-bottom:2px solid var(--line);
-    color:var(--muted);font-size:11px;text-transform:uppercase;}
-  td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top;}
-  td.num{text-align:right;font-variant-numeric:tabular-nums;}
-  .pos{color:var(--accent);} .neg{color:var(--danger);}
-  .empty{color:var(--muted);text-align:center;padding:24px;}
-  .status{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px;}
-  .loadbar{font-size:13px;color:var(--accent2);margin-bottom:12px;min-height:18px;display:flex;align-items:center;gap:8px;}
-  .spinner{width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--accent2);border-radius:50%;display:inline-block;animation:spin .8s linear infinite;}
-  @keyframes spin{to{transform:rotate(360deg);}}
-  .fund-name{font-weight:600;}
-  .fund-meta{color:var(--muted);font-size:11px;margin-top:2px;}
-  .bmk-line{font-size:11px;margin-top:4px;color:var(--accent2);}
-  .bmk-line .approx{color:var(--muted);}
-  .sub2{color:var(--muted);font-size:11px;margin-top:1px;}
-  .verdict{font-size:11px;margin-top:4px;font-weight:600;}
-  .chip{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;color:#fff;}
-  .c-darkgreen{background:var(--darkgreen);} .c-green{background:var(--green);color:#062a15;}
-  .c-red{background:var(--red);color:#2a0806;} .c-darkred{background:var(--darkred);}
-  .c-flat{background:#4b5b6a;}
-  tr.portfolio td{border-top:2px solid var(--line);border-bottom:none;font-weight:600;background:#101923;}
-  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:6px;}
-  .stat{background:#101923;border:1px solid var(--line);border-radius:6px;padding:10px 12px;}
-  .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
-  .stat .v{font-size:18px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;}
-  .foot{color:var(--muted);font-size:11px;margin-top:12px;}
-  .tri-banner{background:#3a2f1a;border:1px solid #7a5c1e;color:#e8d9a8;
-    border-radius:8px;padding:10px 14px;margin:0 0 18px;font-size:13px;line-height:1.45;}
-  .tri-banner b{color:#f4e6bc;}
-  /* portfolio manager */
-  .pm-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
-  .pm-bar select{width:auto;min-width:200px;}
-  .pm-bar .grow{flex:1;}
-  .pm-name{font-weight:700;font-size:15px;color:var(--text);}
-  .hidden-file{display:none;}
-  .divider{height:1px;background:var(--line);margin:14px 0;}
-  .hintline{font-size:12px;color:var(--muted);margin-top:6px;}
+  html{-webkit-text-size-adjust:100%;}
+  body{margin:0;color:var(--text);font-family:var(--sans);line-height:1.55;
+    padding:40px 24px 72px;font-size:15px;letter-spacing:.01em;min-height:100vh;
+    background:
+      radial-gradient(1200px 620px at 84% -10%, rgba(201,162,95,.06), transparent 60%),
+      radial-gradient(900px 520px at -5% 2%, rgba(46,156,102,.05), transparent 55%),
+      linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+    background-attachment:fixed;}
+  .wrap{max-width:1060px;margin:0 auto;}
 
-  .privacy-note{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:#101923;color:var(--muted);font-size:12px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
+  /* header */
+  .eyebrow{font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--brass);margin:0 0 14px;display:flex;align-items:center;gap:11px;}
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--brass);opacity:.7;}
+  h1{font-family:var(--serif);font-weight:600;font-size:38px;line-height:1.08;
+    letter-spacing:-.015em;margin:0 0 13px;color:var(--text);}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 30px;max-width:66ch;}
+
+  /* cards */
+  .card{background:linear-gradient(180deg,var(--surface),var(--surface-2));
+    border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin-bottom:20px;
+    box-shadow:0 1px 0 rgba(255,255,255,.02) inset, 0 14px 34px -22px rgba(0,0,0,.85);
+    animation:rise .5s cubic-bezier(.2,.7,.2,1) both;}
+  @keyframes rise{from{opacity:0;transform:translateY(9px);}to{opacity:1;transform:none;}}
+
+  /* labels & inputs */
+  label{display:block;font-family:var(--mono);font-size:11px;font-weight:500;text-transform:uppercase;
+    letter-spacing:.14em;color:var(--muted);margin-bottom:7px;}
+  input,select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);
+    background:var(--surface-2);color:var(--text);font-family:var(--sans);font-size:14.5px;
+    transition:border-color .15s,box-shadow .15s,background .15s;}
+  input::placeholder{color:var(--faint);}
+  input:hover,select:hover{border-color:var(--line-2);}
+  input:focus,select:focus{outline:none;border-color:var(--brass);box-shadow:0 0 0 3px var(--brass-dim);background:var(--bg-2);}
+  input:disabled{opacity:.45;cursor:not-allowed;}
+  input[type=date],input[type=number]{font-family:var(--mono);letter-spacing:0;}
+  input[type=radio],input[type=checkbox]{accent-color:var(--brass);}
+  ::selection{background:rgba(201,162,95,.28);color:#fff;}
+
+  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px;}
+  .plan-toggle{display:flex;gap:14px;align-items:center;margin-bottom:18px;flex-wrap:wrap;}
+  .plan-toggle .opt{display:flex;gap:7px;align-items:center;font-size:14px;color:var(--text);cursor:pointer;}
+  .search-wrap{position:relative;}
+  .results{position:absolute;z-index:20;left:0;right:0;top:calc(100% + 4px);background:var(--surface-2);
+    border:1px solid var(--line-2);border-radius:var(--radius-sm);max-height:266px;overflow-y:auto;
+    box-shadow:0 18px 46px -14px rgba(0,0,0,.72);}
+  .results div{padding:11px 13px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--line);color:var(--text);}
+  .results div:last-child{border-bottom:none;}
+  .results div:hover{background:var(--surface-3);box-shadow:inset 3px 0 0 var(--brass);}
+  .results .hint{color:var(--muted);cursor:default;}
+  .results .hint:hover{background:none;box-shadow:none;}
+
+  /* buttons */
+  .btn{font-family:var(--sans);padding:11px 20px;border:1px solid transparent;border-radius:var(--radius-sm);
+    background:var(--brass);color:#17130a;font-size:14px;font-weight:600;letter-spacing:.01em;cursor:pointer;
+    transition:background .15s,border-color .15s,color .15s,transform .05s;}
+  .btn:hover{background:var(--brass-2);}
+  .btn:active{transform:translateY(1px);}
+  .btn:disabled{opacity:.4;cursor:not-allowed;background:var(--brass);}
+  .btn.ghost{background:transparent;border-color:rgba(201,162,95,.5);color:var(--brass);}
+  .btn.ghost:hover{background:var(--brass-dim);border-color:var(--brass);color:var(--brass-2);}
+  .btn.blue{background:transparent;border-color:var(--line-2);color:var(--muted);font-weight:500;}
+  .btn.blue:hover{background:var(--surface-3);border-color:var(--brass);color:var(--text);}
+  .btn.small{padding:6px 12px;font-size:12px;font-weight:500;background:transparent;
+    border-color:var(--lag-strong);color:var(--lag);}
+  .btn.small:hover{background:rgba(207,91,76,.12);border-color:var(--lag);color:var(--lag);}
+  .btn:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
+
+  .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px;}
+  .selected{font-family:var(--mono);font-size:13px;color:var(--brass);margin:10px 0 0;min-height:20px;letter-spacing:.01em;}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:13.5px;}
+  th{text-align:left;padding:10px 9px;border-bottom:1px solid var(--line-2);color:var(--muted);
+    font-family:var(--mono);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap;}
+  td{padding:12px 9px;border-bottom:1px solid var(--line);vertical-align:top;}
+  tbody tr{transition:background .12s;}
+  tbody tr:hover td{background:rgba(255,255,255,.015);}
+  td.num,.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em;}
+  .pos{color:var(--beat);} .neg{color:var(--lag);}
+  .empty{color:var(--muted);text-align:center;padding:34px 10px;font-size:14px;}
+  tr.portfolio td{border-top:1px solid var(--brass);border-bottom:none;font-weight:600;background:var(--surface-2);}
+  .fund-name{font-weight:600;color:var(--text);}
+  .fund-meta{color:var(--muted);font-size:11.5px;margin-top:3px;}
+  .bmk-line{font-family:var(--mono);font-size:11px;margin-top:5px;color:var(--brass);letter-spacing:.01em;}
+  .bmk-line .approx{color:var(--faint);}
+  .sub2{color:var(--muted);font-size:11px;margin-top:1px;}
+  .verdict{font-size:11px;margin-top:5px;font-weight:600;}
+
+  /* chips — semantic performance signal only */
+  .chip{display:inline-block;padding:3px 9px;border-radius:6px;font-family:var(--mono);
+    font-size:10.5px;font-weight:600;letter-spacing:.04em;white-space:nowrap;}
+  .c-darkgreen{background:var(--beat-strong);color:#04170d;}
+  .c-green{background:rgba(92,194,144,.16);color:var(--beat);box-shadow:inset 0 0 0 1px rgba(92,194,144,.35);}
+  .c-red{background:rgba(232,139,128,.15);color:var(--lag);box-shadow:inset 0 0 0 1px rgba(232,139,128,.32);}
+  .c-darkred{background:var(--lag-strong);color:#1e0503;}
+  .c-flat{background:var(--surface-3);color:var(--muted);box-shadow:inset 0 0 0 1px var(--line-2);}
+
+  /* summary KPI — instrument panel */
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px;margin-bottom:2px;}
+  .stat{position:relative;background:var(--surface-2);border:1px solid var(--line);
+    border-radius:var(--radius-sm);padding:14px 15px 15px;overflow:hidden;}
+  .stat::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,var(--brass),transparent 78%);opacity:.55;}
+  .stat .k{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);}
+  .stat .v{font-family:var(--mono);font-size:20px;font-weight:600;margin-top:6px;
+    font-variant-numeric:tabular-nums;letter-spacing:-.02em;line-height:1.15;color:var(--text);}
+  .stat .v.pos{color:var(--beat);} .stat .v.neg{color:var(--lag);}
+
+  .foot{color:var(--faint);font-size:11px;margin-top:16px;line-height:1.65;font-family:var(--mono);letter-spacing:.01em;}
+
+  /* status / loader */
+  .status{font-size:13px;color:var(--muted);margin-top:10px;min-height:18px;}
+  .loadbar{font-family:var(--mono);font-size:12.5px;color:var(--brass);margin-bottom:14px;min-height:18px;display:flex;align-items:center;gap:9px;letter-spacing:.02em;}
+  .spinner{width:12px;height:12px;border:2px solid var(--line-2);border-top-color:var(--brass);border-radius:50%;display:inline-block;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* tri banner */
+  .tri-banner{background:var(--brass-dim);border:1px solid rgba(201,162,95,.4);color:#e7d6ad;
+    border-radius:var(--radius-sm);padding:12px 15px;margin:0 0 20px;font-size:13.5px;line-height:1.5;}
+  .tri-banner b{color:var(--brass-2);}
+
+  /* portfolio manager */
+  .pm-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+  .pm-bar select{width:auto;min-width:210px;}
+  .pm-bar .grow{flex:1;}
+  .pm-name{font-weight:600;font-size:15px;color:var(--text);}
+  .hidden-file{display:none;}
+  .divider{height:1px;background:var(--line);margin:16px 0;}
+  .hintline{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.55;}
+  .privacy-note{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--radius-sm);
+    background:var(--surface-2);color:var(--muted);font-size:12.5px;display:flex;gap:14px;align-items:center;
+    justify-content:space-between;flex-wrap:wrap;}
   .privacy-note b{color:var(--text);}
-  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:1000;display:none;align-items:center;justify-content:center;padding:20px;}
-  .modal{width:min(1180px,100%);max-height:90vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;box-shadow:0 20px 70px rgba(0,0,0,.45);}
-  .modal h2{font-size:18px;margin:0 0 6px;}
-  .modal-actions{display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:14px;flex-wrap:wrap;}
+
+  /* modal */
+  .modal-backdrop{position:fixed;inset:0;background:rgba(4,8,7,.74);backdrop-filter:blur(3px);
+    z-index:1000;display:none;align-items:center;justify-content:center;padding:20px;}
+  .modal{width:min(1180px,100%);max-height:90vh;overflow:auto;background:var(--surface);
+    border:1px solid var(--line-2);border-radius:var(--radius);padding:22px;box-shadow:0 30px 90px rgba(0,0,0,.6);}
+  .modal h2{font-family:var(--serif);font-weight:600;font-size:21px;margin:0 0 6px;}
+  .modal-actions{display:flex;gap:12px;justify-content:flex-end;align-items:center;margin-top:18px;flex-wrap:wrap;}
   .preview-table{min-width:980px;}
-  .preview-table td,.preview-table th{padding:8px 7px;}
-  .preview-table .ok{color:var(--accent);}
-  .preview-table .warn{color:var(--accent2);}
-  .preview-table .bad{color:var(--danger);}
+  .preview-table td,.preview-table th{padding:9px 8px;}
+  .preview-table .ok{color:var(--beat);}
+  .preview-table .warn{color:var(--brass);}
+  .preview-table .bad{color:var(--lag);}
   .preview-table input[type=checkbox]{width:auto;}
   .scroll-x{overflow-x:auto;}
-  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;}
-  @media(max-width:760px){body{padding:12px}.row{grid-template-columns:1fr}.wrap{max-width:100%}.stat .v{font-size:16px;}}
+  .mono{font-family:var(--mono);}
+
+  @media(max-width:760px){
+    body{padding:24px 14px 56px;}
+    h1{font-size:29px;}
+    .row{grid-template-columns:1fr;}
+    .wrap{max-width:100%;}
+    .stat .v{font-size:20px;}
+    .card{padding:16px 16px;}
+  }
+  @media(prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;}
+  }
 
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>SIP Performance — Fund vs Benchmark XIRR</h1>
-  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted return next to the matching index's Total Return Index (TRI) over the same period.</p>
+  <div class="eyebrow">SIP Performance · Nifty TRI Benchmark</div>
+  <h1>Are your funds beating the index?</h1>
+  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted XIRR next to the matching Nifty Total Return Index over the same window — so you know whether active selection is earning its fee.</p>
 
   <div id="triBanner" class="tri-banner" style="display:none;"></div>
 
@@ -1365,14 +1454,14 @@ function exportExcel(){
   const put=(r,c,cell)=>{ s1[XLSX.utils.encode_cell({r,c})]=cell; };
 
   // Title band (row 0-1), merged across A:F
-  put(0,0, styleCell("SIP Performance Report",{bold:true, sz:20, color:RPT.ink}));
+  put(0,0, styleCell("SIP Performance Report",{bold:true, sz:18, color:RPT.ink}));
   for(let c=1;c<6;c++) put(0,c, styleCell("",{}));
   merges1.push(M(0,0,0,5));
   put(1,0, styleCell("Fund SIPs vs Nifty Total Return Index  ·  Portfolio: "+store.active+"  ·  "+genDate,
-                     {color:RPT.sub, sz:11}));
+                     {color:RPT.sub, sz:10}));
   for(let c=1;c<6;c++) put(1,c, styleCell("",{}));
   merges1.push(M(1,0,1,5));
-  rows1[0]={hpt:30}; rows1[1]={hpt:18};
+  rows1[0]={hpt:25}; rows1[1]={hpt:15};
 
   // KPI cards: 2 rows x 3 cards. Each card = label (small) + value (big) stacked in 2 cells,
   // spanning 2 columns. Cards start at row 3.
@@ -1396,13 +1485,13 @@ function exportExcel(){
     put(cr,cc+1, styleCell("",{fill:labelFill, top:RPT.accent}));
     merges1.push(M(cr,cc,cr,cc+1));
     // value row
-    const vcell = card.val==null ? styleCell("N/A",{fill:labelFill, align:"left", sz:18, bold:true, color:RPT.sub, bottom:RPT.line})
-                                 : styleCell(card.val,{fill:labelFill, align:"left", sz:18, bold:true, numFmt:card.fmt, color:valColor, bottom:RPT.line});
+    const vcell = card.val==null ? styleCell("N/A",{fill:labelFill, align:"left", sz:16, bold:true, color:RPT.sub, bottom:RPT.line})
+                                 : styleCell(card.val,{fill:labelFill, align:"left", sz:16, bold:true, numFmt:card.fmt, color:valColor, bottom:RPT.line});
     put(cr+1,cc,   vcell);
     put(cr+1,cc+1, styleCell("",{fill:labelFill, bottom:RPT.line}));
     merges1.push(M(cr+1,cc,cr+1,cc+1));
     // spacer row under each card block
-    rows1[cr]={hpt:18}; rows1[cr+1]={hpt:28}; rows1[cr+2]={hpt:7};
+    rows1[cr]={hpt:15}; rows1[cr+1]={hpt:23}; rows1[cr+2]={hpt:5};
   });
 
   // Verdict chip under the cards
@@ -1410,33 +1499,31 @@ function exportExcel(){
   const pBand=perfBand(port.alpha);
   const verdictTxt = port.alpha==null ? "No benchmark comparison available"
       : (port.alpha>=0? "Portfolio is BEATING its blended TRI benchmark" : "Portfolio is LAGGING its blended TRI benchmark");
-  put(chipRow,0, styleCell(verdictTxt,{fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:12}));
+  put(chipRow,0, styleCell(verdictTxt,{fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:11}));
   for(let c=1;c<6;c++) put(chipRow,c, styleCell("",{fill:FILL[pBand.key]}));
   merges1.push(M(chipRow,0,chipRow,5));
-  rows1[chipRow]={hpt:24};
-  rows1[chipRow+1]={hpt:8};
+  rows1[chipRow]={hpt:20};
+  rows1[chipRow+1]={hpt:6};
 
   // Insights header
   const insHdr = chipRow+2;
-  put(insHdr,0, styleCell("KEY INSIGHTS",{fill:RPT.header, color:RPT.headerTxt, bold:true, sz:11, align:"left"}));
+  put(insHdr,0, styleCell("KEY INSIGHTS",{fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10, align:"left"}));
   for(let c=1;c<6;c++) put(insHdr,c, styleCell("",{fill:RPT.header}));
   merges1.push(M(insHdr,0,insHdr,5));
-  rows1[insHdr]={hpt:22};
+  rows1[insHdr]={hpt:18};
 
   // Insight lines — WRAPPED across A:F with computed row heights so nothing clips.
   const insights=buildInsights(port);
   let ir=insHdr+1;
   insights.forEach((line,i)=>{
-    const isDisc = i===insights.length-1;   // disclaimer styled subtly
     const cell = styleCell("•  "+line,{ wrap:true, valign:"top",
-        color:isDisc?RPT.sub:RPT.ink, italic:isDisc, sz:isDisc?9.5:11,
-        fill: i%2===0? RPT.band : RPT.bandAlt });
+        color:RPT.ink, sz:10, fill: i%2===0? RPT.band : RPT.bandAlt });
     put(ir,0, cell);
     for(let c=1;c<6;c++) put(ir,c, styleCell("",{fill:i%2===0?RPT.band:RPT.bandAlt}));
     merges1.push(M(ir,0,ir,5));
-    // estimate wrapped height: ~95 chars per line across A:F at width ~16.7 each
-    const perLine=95, lines=Math.max(1,Math.ceil((line.length+3)/perLine));
-    rows1[ir]={hpt: Math.max(20, lines*15 + 6)};
+    // estimate wrapped height at ~10pt across A:F (~104 chars/line)
+    const perLine=104, lines=Math.max(1,Math.ceil((line.length+3)/perLine));
+    rows1[ir]={hpt: Math.max(17, lines*13 + 4)};
     ir++;
   });
 
@@ -1539,7 +1626,6 @@ function exportExcel(){
     "Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows.",
     "Benchmark is the matching Nifty gross Total Return Index (TRI) — it includes reinvested dividends, the SEBI-standard benchmark.",
     "Alpha is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column.",
-    "This is an information tool, not investment advice. Past performance does not predict future returns.",
     "Generated "+genDate
   ];
   let nr=6;
@@ -1568,28 +1654,29 @@ function exportExcel(){
 /* ---- portfolio insight lines (plain, data-driven) ---- */
 function buildInsights(port){
   const lines=[];
-  // 1) Index counterfactual: what the TRI would have returned on the same cash-flows.
+  // Build the "same SIP into the index" counterfactual first, but hold it to the END.
+  let counterfactual=null;
   if(port.anyBench && Number.isFinite(port.cmpFundCurrent) && Number.isFinite(port.benchCurrent)){
     const diff = port.cmpFundCurrent - port.benchCurrent; // + = funds ahead, - = index ahead
     const abs = Math.abs(Math.round(diff));
     if(diff < 0){
-      lines.push("Had the same SIP amounts gone into the benchmark index (TRI) instead of your funds, "
+      counterfactual="Had the same SIP amounts gone into the benchmark index (TRI) instead of your funds, "
         +"the comparable holdings would be worth about "+inr(abs)+" MORE. "
-        +"Your active fund selection cost roughly "+inr(abs)+" over this window.");
+        +"Your active fund selection cost roughly "+inr(abs)+" over this window.";
     }else if(diff > 0){
-      lines.push("Your funds are worth about "+inr(abs)+" MORE than the same SIP amounts invested directly "
-        +"in the benchmark index (TRI) would be — your fund selection added value over this window.");
+      counterfactual="Your funds are worth about "+inr(abs)+" MORE than the same SIP amounts invested directly "
+        +"in the benchmark index (TRI) would be — your fund selection added value over this window.";
     }else{
-      lines.push("Your funds and the benchmark index (TRI) delivered almost identical outcomes over this window.");
+      counterfactual="Your funds and the benchmark index (TRI) delivered almost identical outcomes over this window.";
     }
   }
-  // 2) Overall verdict line.
+  // 1) Overall verdict line.
   if(port.alpha!=null){
     const pp=(port.alpha*100);
     lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI benchmark by "
       +Math.abs(pp).toFixed(2)+" pp per year (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
-  // 3) Best and worst holdings by alpha.
+  // 2) Best and worst holdings by alpha.
   const withAlpha=schemes.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
   if(withAlpha.length){
     const best=withAlpha[0], worst=withAlpha[withAlpha.length-1];
@@ -1599,7 +1686,7 @@ function buildInsights(port){
     lines.push(beating+" of "+withAlpha.length+" comparable holdings beat their benchmark; "
       +(withAlpha.length-beating)+" lagged.");
   }
-  // 4) Concentration hint if many holdings share one benchmark.
+  // 3) Concentration hint if many holdings share one benchmark.
   const byBench={};
   schemes.forEach(s=>{ if(s.benchLabel) byBench[s.benchLabel]=(byBench[s.benchLabel]||0)+1; });
   const topBench=Object.entries(byBench).sort((a,b)=>b[1]-a[1])[0];
@@ -1607,7 +1694,8 @@ function buildInsights(port){
     lines.push("Concentration note: "+topBench[1]+" of "+schemes.length+" holdings map to "+topBench[0]
       +", so much of the portfolio moves with that single index.");
   }
-  lines.push("This is an information tool, not investment advice. Past performance does not predict future returns.");
+  // 4) Counterfactual comes last.
+  if(counterfactual) lines.push(counterfactual);
   return lines;
 }
 
