@@ -1,0 +1,6 @@
+# Pinned so `actions/setup-python` pip caching has a dependency file to key on
+# (without this the cache step fails with "No file matched to requirements.txt")
+# and so CI runs are reproducible. Bump deliberately and re-test the fetcher when
+# upgrading — a new Playwright ships a new bundled Chromium, which is exactly the
+# surface that niftyindices' Akamai wall reacts to.
+playwright==1.55.0
