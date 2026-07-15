@@ -294,14 +294,20 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
   const missing = [...routed].filter(k => /^NIFTY/.test(k) && !A.BENCH_FUNDS[k]);
   ok("every routable benchmark key exists in BENCH_FUNDS", missing.length === 0, missing.join(","));
 
-  // The 21 indices added in v6 have no committed TRI file until the fetcher's first
+  // The indices added in v6 have no committed TRI file until the fetcher's first
   // run. resolveBenchmarkTri() walks .fb when a file is missing, so every benchmark
   // must reach a key whose file already exists — otherwise those holdings lose
   // their benchmark between deploy and first fetch.
-  const SHIPPED = new Set(["NIFTY50","NIFTY100","NIFTY500","NIFTY_NEXT_50","NIFTY_MIDCAP150",
-    "NIFTY_SMALLCAP250","NIFTY_LARGEMIDCAP250","NIFTY_MULTICAP","NIFTY_FINSERV_OR_BANK",
-    "NIFTY_BANK","NIFTY_IT","NIFTY_PHARMA","NIFTY_FMCG","NIFTY_CONSUMPTION","NIFTY_INFRA",
-    "NIFTY_AUTO","NIFTY_ENERGY","NIFTY_PSE"]);
+  // Read the committed files from disk rather than hand-maintaining a list: a
+  // hardcoded set goes stale the moment a .json is added or deleted, and would then
+  // assert something untrue about the repo.
+  const triDir = path.join(__dirname, "..", "data", "tri");
+  const SHIPPED = new Set(
+    fs.existsSync(triDir)
+      ? fs.readdirSync(triDir).filter(f => f.endsWith(".json") && f !== "index.json")
+           .map(f => f.replace(/\.json$/, ""))
+      : []);
+  ok("data/tri contains committed TRI files to fall back on", SHIPPED.size > 0);
   const stranded = keys.filter(k => {
     let cur = k, guard = 0;
     while (cur && guard++ < 6) { if (SHIPPED.has(cur)) return false; cur = A.BENCH_FUNDS[cur].fb; }
