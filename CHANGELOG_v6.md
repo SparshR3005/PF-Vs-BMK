@@ -154,8 +154,10 @@ by name`.*
 - Deleted `data/tri/NIFTY_SMALLCAP_250.json` — an orphan: not in `INDEX_MAP`, not in
   the manifest, stale, and duplicating `NIFTY_SMALLCAP250.json`.
 - `data/tri/NIFTY_NEXT_50.json` was a **second orphan** — present but absent from
-  `INDEX_MAP`, so it was never refreshed. Now a first-class entry, so the fetcher
-  maintains it.
+  `INDEX_MAP`, so it was never refreshed and had gone stale. The file has been
+  deleted; `NIFTY_NEXT_50` is now a first-class `INDEX_MAP` entry, so the fetcher
+  builds it fresh on the next run and maintains it from then on. Until that run it
+  falls back to Nifty 100 TRI, flagged as an approximation.
 - `tri-fetch.yml` timeout **25 → 45 min**. The index set more than doubled; each
   index allows 4 attempts with backoff, and a timeout kills the job and commits
   nothing.
@@ -179,8 +181,8 @@ by name`.*
 
 ## Verify after deploying
 
-The 22 new indices use canonical names that must match niftyindices' internal
-spelling exactly — a wrong name returns an **empty result**, not an error. The
+The 22 indices without a committed TRI file use canonical names that must match
+niftyindices' internal spelling exactly — a wrong name returns an **empty result**, not an error. The
 fetcher reports these as `"EMPTY result -> likely wrong canonical name; skipping"`,
 and `REQUIRED_KEYS` deliberately excludes them so a bad name can't block the commit.
 
