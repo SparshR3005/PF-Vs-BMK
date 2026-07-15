@@ -5,9 +5,23 @@ python3 tests/test_fetch_tri.py     # 11 tests — TRI continuity gate, fetch re
 node    tests/test_app.js           # 33 assertions — export, import, retry, storage, search
 ```
 
-No dependencies. No test runner. Plain Python 3.12 and Node 20, both already
-required by the project. `pytest` works too if you prefer it
-(`python3 -m pytest tests/ -q`).
+No test runner, no npm install. Plain Python 3.12 and Node 20. `pytest` works too
+if you prefer it (`python3 -m pytest tests/ -q`).
+
+**Playwright is optional for these tests.** `fetch_tri.py` imports it at module
+scope, but nothing here drives a real browser — the `#5` timeout tests use fakes.
+So `test_fetch_tri.py` installs a minimal stub (just `TimeoutError` and a
+`sync_playwright` that refuses to run) *only when playwright is genuinely absent*.
+Clone and run; no install needed.
+
+When the real package IS present it's used unchanged, so the stub can never mask a
+broken install. CI installs the real one via `requirements.txt` for exactly that
+reason; the scheduled fetch job additionally runs `playwright install chromium`,
+because it actually launches a browser.
+
+Verified both ways: the suite passes in a clean venv with playwright absent, and
+still produces its 5 expected failures against unfixed v4 in that same clean venv —
+the stub does not weaken the mutation guarantee.
 
 Both run on every push via `.github/workflows/tests.yml`, and
 `tests/test_fetch_tri.py` runs **before** the scheduled TRI fetch in
