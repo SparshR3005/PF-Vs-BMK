@@ -26,11 +26,27 @@ jobs:
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
+          cache: pip          # requirements.txt exists, so this has a key to hash
 
       - name: Set up Node
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: "20"
+
+      # fetch_tri.py imports playwright at module scope, so importing it for tests
+      # needs the pip package present. Install the package ONLY — deliberately not
+      # `playwright install chromium`, which downloads a ~150MB browser this job
+      # never launches (the timeout tests use fakes). The scheduled fetch job does
+      # install the browser, because it actually drives one.
+      #
+      # tests/test_fetch_tri.py also stubs playwright when it's absent, so the suite
+      # still runs for a contributor who hasn't installed anything. Installing it
+      # here anyway means CI exercises the real import path the fetcher uses, rather
+      # than only ever testing against the stub.
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       # Syntax gates: cheap, and they catch a broken paste of index.html before
       # anything else runs.
