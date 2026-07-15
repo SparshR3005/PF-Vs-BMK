@@ -3,6 +3,8 @@
 ```bash
 python3 tests/test_fetch_tri.py     # 11 tests — TRI continuity gate, fetch resilience
 node    tests/test_app.js           # 33 assertions — export, import, retry, storage, search
+node    tests/test_matching.js      # 79 assertions — scheme matching, SEBI category guard,
+                                    #                 benchmark mapping, rename aliases
 ```
 
 No test runner, no npm install. Plain Python 3.12 and Node 20. `pytest` works too
@@ -90,3 +92,27 @@ coverage:
   promote them.
 - The report's deferred recommendations (#3 full schema validation, #4 pending-promise
   cache, #5 parser isolation).
+
+## test_matching.js — scheme matching and benchmarks
+
+Covers the wrong-fund import bug (a sheet reading "ICICI Prudential Large Cap
+Fund" resolved to *Large & Mid Cap Fund*), the SEBI category guard, benchmark
+mapping for all 39 indices, and SEBI-2.0 rename aliases.
+
+Two rules specific to this suite:
+
+1. **Every category string is real.** Each `"Equity Scheme - ..."` value asserted
+   here was read from a live MFAPI response, never assumed. MFAPI's category field
+   is dirty — live data contains `"1"`, `"1099 Days"`, `"Growth"`, `"Income"`,
+   `"IDF"`, `"Payout"` and `"Formerly Known as IIFL Mutual Fund"` on legacy records.
+   Those are asserted as *rejected*, because the old blocklist gate let all of them
+   through to a Nifty 500 comparison.
+2. **Every benchmark choice cites its source.** `Large Cap -> Nifty 100 TRI` and
+   `Large & Mid Cap -> Nifty LargeMidcap 250 TRI` are both confirmed from AMC
+   disclosures (comments in the test name the source). A mapping nobody verified is
+   a guess with a test wrapped around it.
+
+The suite fails cleanly (not with a stack trace) when run against an index.html
+that predates this work — the constants simply aren't there, and that's reported as
+a failure. Verified: against the pre-fix file the correct fund scores 72.1% (below
+the 0.78 auto-accept floor) while the wrong fund scores 89.4% and wins.
