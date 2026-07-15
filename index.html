@@ -164,6 +164,8 @@
   /* portfolio manager */
   .pm-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
   .pm-bar select{width:auto;min-width:210px;}
+  /* In-table picker for import rows we couldn't resolve confidently. */
+  select.pick-scheme{width:100%;min-width:240px;padding:6px 8px;font-size:.85rem;}
   .pm-bar .grow{flex:1;}
   .pm-name{font-weight:600;font-size:15px;color:var(--text);}
   .hidden-file{display:none;}
@@ -517,22 +519,72 @@ const FLEXI_OVERRIDES = [
   { name: "jm flexicap",            key: "NIFTY500" },
   { name: "quant flexi cap",        key: "NIFTY500" },
 ];
+/* Sector routing is NAME-based and must stay that way: MFAPI collapses every
+   sector fund into the single category "Equity Scheme - Sectoral/ Thematic" and
+   never says WHICH sector, so the category guard cannot help here.
+   ORDER IS SIGNIFICANT — first match wins, so the most specific pattern must come
+   first. "psu bank" before "bank" before "financial services"; "consumer durables"
+   before "consumption"; "oil & gas" before "energy". Getting this order wrong is
+   the same substring trap that put Large & Mid Cap funds on a Mid Cap benchmark. */
 const SECTOR_KEYWORDS = [
-  { words: [], subs: ["financial services","financial service","finserv"], key: "NIFTY_FINSERV_OR_BANK" },
+  { words: [], subs: ["psu bank","public sector bank"], key: "NIFTY_PSU_BANK" },
+  { words: [], subs: ["private bank"], key: "NIFTY_PRIVATE_BANK" },
+  { words: [], subs: ["financial services","financial service","finserv","banking and financial"], key: "NIFTY_FINSERV_OR_BANK" },
   { words: ["bank","banking"], subs: [], key: "NIFTY_BANK" },
-  { words: [], subs: ["pharma","healthcare"], key: "NIFTY_PHARMA" },
+  { words: [], subs: ["consumer durable"], key: "NIFTY_CONSUMER_DUR" },
+  { words: [], subs: ["pharma"], key: "NIFTY_PHARMA" },
+  { words: [], subs: ["healthcare","health care"], key: "NIFTY_HEALTHCARE" },
   { words: ["it"], subs: ["information technology","technology","digital"], key: "NIFTY_IT" },
   { words: [], subs: ["fmcg"], key: "NIFTY_FMCG" },
   { words: [], subs: ["consumption","consumer"], key: "NIFTY_CONSUMPTION" },
+  { words: [], subs: ["transportation","logistics"], key: "NIFTY_TRANSPORT" },
   { words: [], subs: ["infrastructure","infra"], key: "NIFTY_INFRA" },
-  { words: [], subs: ["auto","automobile"], key: "NIFTY_AUTO" },
+  { words: [], subs: ["auto","automobile","automotive"], key: "NIFTY_AUTO" },
+  { words: [], subs: ["oil","gas","petroleum"], key: "NIFTY_OIL_GAS" },
   { words: [], subs: ["energy","power"], key: "NIFTY_ENERGY" },
-  { words: ["psu"], subs: ["public sector"], key: "NIFTY_PSE" },
+  { words: [], subs: ["metal","mining","steel"], key: "NIFTY_METAL" },
+  { words: [], subs: ["realty","real estate"], key: "NIFTY_REALTY" },
+  { words: [], subs: ["media","entertainment"], key: "NIFTY_MEDIA" },
+  { words: [], subs: ["defence","defense"], key: "NIFTY_INDIA_DEFENCE" },
+  { words: [], subs: ["manufacturing"], key: "NIFTY_INDIA_MFG" },
+  { words: [], subs: ["commodit"], key: "NIFTY_COMMODITIES" },
+  { words: ["mnc"], subs: ["multinational"], key: "NIFTY_MNC" },
+  { words: ["cpse"], subs: [], key: "NIFTY_CPSE" },
+  { words: ["psu","pse"], subs: ["public sector"], key: "NIFTY_PSE" },
 ];
+/* Benchmark per SEBI category key — the AUTHORITATIVE route, keyed on the exact
+   category string rather than a substring of it.
+   Verified against AMC disclosures (Jul 2026):
+     Large Cap      -> Nifty 100 TRI          (icicipruamc.com, ICICI Pru Large Cap Fund)
+     Large & Mid Cap-> Nifty LargeMidcap 250 TRI (ICICI Pru Large & Mid Cap factsheet)
+   Focused / Value / Contra / Dividend Yield / ELSS stay on Nifty 500: that mirrors
+   real AMC practice (most are benchmarked to a broad index, not a strategy index).
+   SECTORAL is absent by design — the category never says which sector, so those
+   route through SECTOR_KEYWORDS on the name. */
+const CATEGORY_KEY_BENCH = {
+  LARGE_CAP: "NIFTY100",
+  LARGE_MID: "NIFTY_LARGEMIDCAP250",
+  MID_CAP:   "NIFTY_MIDCAP150",
+  SMALL_CAP: "NIFTY_SMALLCAP250",
+  MULTI_CAP: "NIFTY_MULTICAP",
+  FLEXI_CAP: "NIFTY500",
+  FOCUSED:   "NIFTY500",
+  VALUE:     "NIFTY500",
+  CONTRA:    "NIFTY500",
+  DIV_YIELD: "NIFTY500",
+  ELSS:      "NIFTY500",
+};
+// Name-based fallback, used only when the category is Sectoral/Thematic or absent.
+// Longest match first — "large & mid" must beat both "large cap" and "mid cap".
 const CATEGORY_DEFAULTS = [
   { match: "large & mid",   key: "NIFTY_LARGEMIDCAP250" },
   { match: "large and mid", key: "NIFTY_LARGEMIDCAP250" },
+  { match: "largemidcap",   key: "NIFTY_LARGEMIDCAP250" },
   { match: "large cap",     key: "NIFTY100" },
+  { match: "mid small",     key: "NIFTY_MIDSMALLCAP400" },
+  { match: "midsmall",      key: "NIFTY_MIDSMALLCAP400" },
+  { match: "micro cap",     key: "NIFTY_MICROCAP250" },
+  { match: "microcap",      key: "NIFTY_MICROCAP250" },
   { match: "mid cap",       key: "NIFTY_MIDCAP150" },
   { match: "midcap",        key: "NIFTY_MIDCAP150" },
   { match: "small cap",     key: "NIFTY_SMALLCAP250" },
@@ -546,28 +598,53 @@ const CATEGORY_DEFAULTS = [
   { match: "contra",        key: "NIFTY500" },
   { match: "dividend yield",key: "NIFTY500" },
   { match: "elss",          key: "NIFTY500" },
+  { match: "tax saver",     key: "NIFTY500" },
 ];
 const FALLBACK_KEY = "NIFTY500";
 // label = display name for the benchmark; fb = fallback key used when this
 // index's TRI file is missing (degrades a sector to its broad-market proxy).
 const BENCH_FUNDS = {
+  // --- broad market ---
   NIFTY50:              { label:"Nifty 50 TRI",                   fb:"NIFTY500" },
   NIFTY100:             { label:"Nifty 100 TRI",                  fb:"NIFTY50" },
+  NIFTY200:             { label:"Nifty 200 TRI",                  fb:"NIFTY500" },
   NIFTY500:             { label:"Nifty 500 TRI",                  fb:null },
+  NIFTY_NEXT_50:        { label:"Nifty Next 50 TRI",              fb:"NIFTY100" },
+  NIFTY_TOTAL_MARKET:   { label:"Nifty Total Market TRI",         fb:"NIFTY500" },
   NIFTY_MIDCAP150:      { label:"Nifty Midcap 150 TRI",           fb:"NIFTY500" },
+  NIFTY_MIDCAP100:      { label:"Nifty Midcap 100 TRI",           fb:"NIFTY_MIDCAP150" },
   NIFTY_SMALLCAP250:    { label:"Nifty Smallcap 250 TRI",         fb:"NIFTY500" },
+  NIFTY_SMALLCAP100:    { label:"Nifty Smallcap 100 TRI",         fb:"NIFTY_SMALLCAP250" },
+  NIFTY_MICROCAP250:    { label:"Nifty Microcap 250 TRI",         fb:"NIFTY_SMALLCAP250" },
   NIFTY_LARGEMIDCAP250: { label:"Nifty LargeMidcap 250 TRI",      fb:"NIFTY500" },
+  NIFTY_MIDSMALLCAP400: { label:"Nifty MidSmallcap 400 TRI",      fb:"NIFTY500" },
   NIFTY_MULTICAP:       { label:"Nifty500 Multicap 50:25:25 TRI", fb:"NIFTY500" },
+  // --- sectoral / thematic ---
   NIFTY_FINSERV_OR_BANK:{ label:"Nifty Financial Services TRI",   fb:"NIFTY_BANK" },
   NIFTY_BANK:           { label:"Nifty Bank TRI",                 fb:"NIFTY500" },
+  NIFTY_PRIVATE_BANK:   { label:"Nifty Private Bank TRI",         fb:"NIFTY_BANK" },
+  NIFTY_PSU_BANK:       { label:"Nifty PSU Bank TRI",             fb:"NIFTY_BANK" },
   NIFTY_IT:             { label:"Nifty IT TRI",                   fb:"NIFTY500" },
-  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",               fb:"NIFTY500" },
+  NIFTY_PHARMA:         { label:"Nifty Pharma TRI",               fb:"NIFTY_HEALTHCARE" },
+  NIFTY_HEALTHCARE:     { label:"Nifty Healthcare TRI",           fb:"NIFTY500" },
   NIFTY_FMCG:           { label:"Nifty FMCG TRI",                 fb:"NIFTY_CONSUMPTION" },
   NIFTY_CONSUMPTION:    { label:"Nifty India Consumption TRI",    fb:"NIFTY500" },
+  NIFTY_CONSUMER_DUR:   { label:"Nifty Consumer Durables TRI",    fb:"NIFTY_CONSUMPTION" },
   NIFTY_INFRA:          { label:"Nifty Infrastructure TRI",       fb:"NIFTY500" },
   NIFTY_AUTO:           { label:"Nifty Auto TRI",                 fb:"NIFTY500" },
   NIFTY_ENERGY:         { label:"Nifty Energy TRI",               fb:"NIFTY500" },
+  NIFTY_OIL_GAS:        { label:"Nifty Oil & Gas TRI",            fb:"NIFTY_ENERGY" },
+  NIFTY_METAL:          { label:"Nifty Metal TRI",                fb:"NIFTY_COMMODITIES" },
+  NIFTY_REALTY:         { label:"Nifty Realty TRI",               fb:"NIFTY500" },
+  NIFTY_MEDIA:          { label:"Nifty Media TRI",                fb:"NIFTY500" },
   NIFTY_PSE:            { label:"Nifty PSE TRI",                  fb:"NIFTY500" },
+  NIFTY_CPSE:           { label:"Nifty CPSE TRI",                 fb:"NIFTY_PSE" },
+  NIFTY_COMMODITIES:    { label:"Nifty Commodities TRI",          fb:"NIFTY500" },
+  NIFTY_MNC:            { label:"Nifty MNC TRI",                  fb:"NIFTY500" },
+  NIFTY_INDIA_DEFENCE:  { label:"Nifty India Defence TRI",        fb:"NIFTY500" },
+  NIFTY_INDIA_MFG:      { label:"Nifty India Manufacturing TRI",  fb:"NIFTY500" },
+  NIFTY_INDIA_DIGITAL:  { label:"Nifty India Digital TRI",        fb:"NIFTY_IT" },
+  NIFTY_TRANSPORT:      { label:"Nifty Transportation & Logistics TRI", fb:"NIFTY500" },
 };
 
 function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
@@ -575,21 +652,83 @@ function hasWord(hay, w){ return new RegExp("(^|[^a-z])"+w+"([^a-z]|$)","i").tes
 function escapeHtml(v){ return String(v==null?"":v).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
 function uid(){ return (typeof crypto!=="undefined" && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2)); }
 
-// Categories a Nifty EQUITY TRI cannot fairly benchmark. Comparing a debt, hybrid,
-// gold, or arbitrage fund against an equity index is meaningless, so we reject the
-// holding with an explanation rather than silently mapping it to Nifty 500.
-const UNSUPPORTED_CAT_KEYWORDS = [
-  "debt","liquid","overnight","gilt","money market","ultra short","low duration",
-  "banking and psu","corporate bond","credit risk","duration","floater","dynamic bond",
-  "hybrid","balanced","arbitrage","conservative","aggressive hybrid","equity savings",
-  "multi asset","asset allocation","fund of fund","fof","gold","silver","commodit",
-  "solution oriented","retirement","children","index fund","exchange traded","etf",
-  "overseas","international","global",
-];
+/* ---- SEBI category taxonomy (exact match, allowlist) --------------------
+   MFAPI's meta.scheme_category is mostly "<Type> Scheme - <Category>", but the
+   field is DIRTY: live data also contains "1", "1099 Days", "Growth", "Income",
+   "IDF", "Payout" and "Formerly Known as IIFL Mutual Fund" on legacy/closed
+   records. The previous gate BLOCKLISTED bad categories and returned false for
+   anything unrecognised — so every one of those junk values fell through to
+   FALLBACK_KEY and got benchmarked against Nifty 500. A scheme whose category is
+   literally "1099 Days" is a fixed-maturity debt plan; printing an XIRR spread
+   vs Nifty 500 for it is a confidently wrong number in a client report.
+
+   So: ALLOWLIST the categories we can actually benchmark, keyed on the EXACT
+   normalised string, and reject everything else. Fails closed.
+
+   Exact match (not includes()) is deliberate: "mid cap" is a substring of
+   "Large & Mid Cap Fund", so a substring test would benchmark a Large & Mid Cap
+   fund against Nifty Midcap 150 instead of Nifty LargeMidcap 250.
+
+   Every string below was read from live MFAPI responses, not assumed. When NSE/
+   AMFI adds a category, it lands here as "unknown" and is rejected with a clear
+   message rather than silently mis-mapped — add it deliberately. */
+const CATEGORY_CANON = {
+  "equity scheme - large cap fund":        "LARGE_CAP",
+  "equity scheme - large & mid cap fund":  "LARGE_MID",
+  "equity scheme - large and mid cap fund":"LARGE_MID",
+  "equity scheme - mid cap fund":          "MID_CAP",
+  "equity scheme - small cap fund":        "SMALL_CAP",
+  "equity scheme - multi cap fund":        "MULTI_CAP",
+  "equity scheme - flexi cap fund":        "FLEXI_CAP",
+  "equity scheme - focused fund":          "FOCUSED",
+  "equity scheme - value fund":            "VALUE",
+  "equity scheme - contra fund":           "CONTRA",
+  "equity scheme - dividend yield fund":   "DIV_YIELD",
+  "equity scheme - sectoral/ thematic":    "SECTORAL",
+  "equity scheme - sectoral/thematic":     "SECTORAL",
+  "equity scheme - elss":                  "ELSS",
+  "elss":                                  "ELSS",   // MFAPI returns this bare
+};
+function normCategory(category){
+  return String(category||"").toLowerCase().replace(/\s+/g," ").trim();
+}
+// Canonical SEBI category key, or null when the category is absent, junk, or a
+// type this tool cannot benchmark against an equity TRI (debt/hybrid/index/FoF).
+function categoryKey(category){
+  return CATEGORY_CANON[normCategory(category)] || null;
+}
 function isUnsupportedCategory(category){
-  const cat = (category||"").toLowerCase();
-  if(!cat) return false;                        // unknown category: fall through, flagged approx
-  return UNSUPPORTED_CAT_KEYWORDS.some(k => cat.includes(k));
+  return categoryKey(category) === null;
+}
+// Cap-tier categories a fund NAME can be checked against. Sectoral/Thematic is
+// excluded on purpose: MFAPI collapses every sector into one string and never says
+// WHICH sector, so only the name can route those (see SECTOR_KEYWORDS).
+const CATEGORY_NAME_TOKENS = {
+  LARGE_CAP: ["large cap"],
+  LARGE_MID: ["large & mid cap","large and mid cap","large & midcap","large and midcap","largemidcap","large mid cap"],
+  MID_CAP:   ["mid cap"],
+  SMALL_CAP: ["small cap"],
+  MULTI_CAP: ["multi cap"],
+  FLEXI_CAP: ["flexi cap"],
+  FOCUSED:   ["focused"],
+  VALUE:     ["value"],
+  CONTRA:    ["contra"],
+  DIV_YIELD: ["dividend yield"],
+  ELSS:      ["elss","tax saver","tax saving"],
+};
+/* Does a user-typed name CLAIM a cap tier that contradicts the resolved fund's
+   real SEBI category? Returns the claimed key, or null when the name claims
+   nothing checkable. "large cap" must not resolve to a Large & Mid Cap fund —
+   the exact wrong-fund import this guards against.
+   Order matters: the longest/most specific claim wins, so "large & mid cap"
+   is not read as a "large cap" claim (nor as "mid cap"). */
+function claimedCategoryFromName(name){
+  const n = normName(stripRenameNote(name));
+  const order = ["LARGE_MID","DIV_YIELD","LARGE_CAP","MID_CAP","SMALL_CAP","MULTI_CAP","FLEXI_CAP","ELSS","CONTRA","FOCUSED","VALUE"];
+  for(const key of order){
+    if((CATEGORY_NAME_TOKENS[key]||[]).some(t=>n.includes(t))) return key;
+  }
+  return null;
 }
 
 // Name-based screen for the searchable/import list. MFAPI's /mf endpoint returns
@@ -614,21 +753,31 @@ const NON_EQUITY_NAME_TOKENS = [
 function nameLooksNonEquity(n){ return NON_EQUITY_NAME_TOKENS.some(t => n.includes(t)); }
 
 function resolveBenchmarkKey(schemeName, category){
-  const n = normName(schemeName);
+  const n = normName(stripRenameNote(schemeName));
   const cat = (category || "").toLowerCase();
+  const catKey = categoryKey(category);          // exact SEBI key, or null
   for(const o of FLEXI_OVERRIDES){ if(n.includes(o.name)) return { key:o.key, approx:false }; }
-  const isSectoral = cat.includes("sectoral") || cat.includes("thematic");
-  if(isSectoral){
+
+  // Sectoral/Thematic collapses every sector into one category string, so the
+  // sector can only come from the name.
+  if(catKey === "SECTORAL" || cat.includes("sectoral") || cat.includes("thematic")){
     for(const s of SECTOR_KEYWORDS){
       const wordHit = (s.words||[]).some(w => hasWord(n, w));
       const subHit  = (s.subs||[]).some(sub => n.includes(sub));
       if(wordHit || subHit) return { key:s.key, approx:false };
     }
-    return { key:FALLBACK_KEY, approx:true };
+    return { key:FALLBACK_KEY, approx:true };    // sector unknown -> broad-market proxy
   }
-  for(const c of CATEGORY_DEFAULTS){ if(cat.includes(c.match)) return { key:c.key, approx:false }; }
-  const cleanEquity = cat.includes("equity");
-  return { key:FALLBACK_KEY, approx:!cleanEquity };
+
+  // Authoritative: exact SEBI category -> benchmark. Correct by construction, not
+  // by list order — the previous cat.includes() chain only got Large & Mid Cap
+  // right because "large & mid" happened to be listed before "mid cap".
+  if(catKey && CATEGORY_KEY_BENCH[catKey]) return { key:CATEGORY_KEY_BENCH[catKey], approx:false };
+
+  // Category absent/unrecognised: fall back to the name. computeScheme() rejects
+  // unsupported categories before this runs, so this is for name-only paths.
+  for(const c of CATEGORY_DEFAULTS){ if(n.includes(c.match)) return { key:c.key, approx:true }; }
+  return { key:FALLBACK_KEY, approx:true };
 }
 
 /* ============================================================
@@ -1251,8 +1400,31 @@ async function computeScheme(spec){
   // funds. Reject with a clear message instead of silently comparing against
   // Nifty 500, which would produce a meaningless (and misleading) alpha.
   if(isUnsupportedCategory(category)){
-    throw new Error(officialName+' is a "'+category.trim()+'" scheme; '+
-      "this tool only benchmarks actively-managed equity funds against a Nifty equity TRI, so it can't be compared here.");
+    const shown=(category||"").trim();
+    // MFAPI's category field is dirty on legacy records ("1", "1099 Days",
+    // "Growth", "Income", "IDF", "Payout"). Those aren't a scheme type the user
+    // can act on, so say so plainly instead of quoting the junk back at them.
+    const looksJunk = !shown || !/scheme|elss/i.test(shown);
+    throw new Error(looksJunk
+      ? officialName+" doesn't report a recognisable SEBI scheme category"+(shown?' (its category reads "'+shown+'")':"")+
+        ", so it can't be benchmarked here. This tool only compares actively-managed equity funds against a Nifty equity TRI."
+      : officialName+' is a "'+shown+'" scheme; '+
+        "this tool only benchmarks actively-managed equity funds against a Nifty equity TRI, so it can't be compared here.");
+  }
+  // Wrong-fund guard: if the name the user supplied CLAIMS a cap tier that
+  // contradicts the resolved fund's real SEBI category, we resolved the wrong
+  // scheme. Refuse rather than report a confident spread against the wrong
+  // benchmark. Only fires when the user's own text made a checkable claim, so
+  // picking from the dropdown (inputName === official name) never trips it.
+  if(spec.inputName){
+    const claimed = claimedCategoryFromName(spec.inputName);
+    const actual  = categoryKey(category);
+    if(claimed && actual && claimed !== actual && actual !== "SECTORAL"){
+      throw new Error('You asked for "'+String(spec.inputName).trim()+'", but the closest match is "'+
+        officialName+'" — a '+String(category).replace(/^.*?-\s*/,"").trim()+
+        ". These are different SEBI categories with different benchmarks, so this hasn't been added. "+
+        "Search for the fund by name and pick it from the list, or import it by scheme code.");
+    }
   }
   const fundLast=fundNav[fundNav.length-1].date;
   const navStaleDays=Math.max(0, Math.floor(daysBetween(fundLast, new Date())));
@@ -1788,11 +1960,36 @@ if(updateNavBtnEl){
 $("templateBtn").addEventListener("click",()=>{
   try{
     if(typeof XLSX==="undefined") throw new Error("Excel library not loaded (check your connection).");
+    // Code stays in the template and is exported populated. It is OPTIONAL, but it
+    // is the only field that identifies a scheme unambiguously: SEBI's 2025
+    // recategorisation renamed schemes industry-wide (Bluechip -> Large Cap etc.),
+    // so names drift while codes don't. When Code is present, import resolves
+    // exactly and skips name matching entirely. The example row carries a real
+    // code so the column doesn't read as "leave this blank".
     const rows=[["Scheme","Plan","Start","End","Monthly","Code"]];
     if(schemes.length) schemes.forEach(s=>rows.push([s.name,s.plan||detectPlanFromName(s.name)||"",s.startStr,s.endStr||"",s.amount,s.code]));
-    else rows.push(["HDFC Flexi Cap Fund - Direct Plan - Growth Option","Direct","2022-01-01","",5000,""]);
+    else rows.push(["Parag Parikh Flexi Cap Fund - Direct Plan - Growth","Direct","2022-01-01","",5000,"122639"]);
     const ws=XLSX.utils.aoa_to_sheet(rows);ws["!cols"]=[{wch:52},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10}];
-    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Portfolio");XLSX.writeFile(wb,"MF_Import_Template.xlsx");
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Portfolio");
+    // Guidance lives on its own sheet: notes in the Portfolio sheet would be read
+    // back as data rows on import and surface as errors.
+    const notes=XLSX.utils.aoa_to_sheet([
+      ["How to fill this template"],[],
+      ["Scheme","Full scheme name, e.g. \"Parag Parikh Flexi Cap Fund - Direct Plan - Growth\". Required."],
+      ["Plan","Direct or Regular. Required (may be omitted if the scheme name already says which)."],
+      ["Start","SIP start date, YYYY-MM-DD. Required."],
+      ["End","SIP end date, YYYY-MM-DD. Optional — leave blank for an ongoing SIP."],
+      ["Monthly","Monthly SIP amount, digits only. Required."],
+      ["Code","AMFI scheme code. OPTIONAL but recommended."],[],
+      ["Why the Code column is worth filling"],
+      ["SEBI's 2025 recategorisation renamed schemes across the industry (e.g. ICICI Prudential Bluechip Fund became ICICI Prudential Large Cap Fund)."],
+      ["Names drift; codes do not. With a Code, import resolves the exact fund and skips name matching entirely."],
+      ["Without a Code, the fund is matched on name. Anything ambiguous is flagged on import for you to confirm — nothing is guessed silently."],
+      ["Find a code at https://api.mfapi.in/mf (search for the scheme name), or download this template from a portfolio you have already built."],
+    ]);
+    notes["!cols"]=[{wch:12},{wch:104}];
+    XLSX.utils.book_append_sheet(wb,notes,"How to fill");
+    XLSX.writeFile(wb,"MF_Import_Template.xlsx");
     $("pmStatus").textContent="";
     toast("Import template downloaded.", {type:"success"});
   }catch(e){
@@ -1810,16 +2007,63 @@ $("importBtn").addEventListener("click",()=>{
 function normHeader(h){return String(h||"").toLowerCase().replace(/[^a-z]/g,"");}
 function normalisePlan(v){const n=normName(v);if(/\b(direct|dir)\b/.test(n))return "Direct";if(/\b(regular|reg)\b/.test(n))return "Regular";return "";}
 function detectPlanFromName(name){return normalisePlan(name);}
+// SEBI's "Recategorisation 2.0" (circular Mar-2025, deadline 30-Jun-2025) forced
+// every AMC to rename schemes to match their SEBI category: Bluechip -> Large Cap
+// (ICICI, SBI, Axis, Canara Robeco), Mid Cap Opportunities -> Mid Cap (HDFC),
+// Equity Opportunities -> Large & Mid Cap (DSP), Value Discovery -> Value (ICICI).
+// MFAPI records the new name WITH a parenthetical rename note, e.g.
+//   "ICICI Prudential Large Cap Fund (erstwhile Bluechip Fund) - Direct Plan - Growth"
+// That note is pure noise for matching AND it actively breaks it: it drags the
+// CORRECT fund's similarity DOWN (72.1% vs a sheet saying "ICICI Prudential Large
+// Cap Fund") while the WRONG "Large & Mid Cap Fund" scores 89.4% and wins the
+// fuzzy round outright. Stripping the note makes the correct fund an EXACT match,
+// so the fuzzy path never runs. This is the root cause of the wrong-fund import.
+function stripRenameNote(s){
+  return String(s||"").replace(/\((?:\s*)(?:erstwhile|formerly|formally|earlier|previously|renamed from|ex)\b[^)]*\)/gi," ");
+}
 function matchKey(name){
-  let n=normName(name).replace(/flexicap/g,"flexi cap").replace(/midcap/g,"mid cap").replace(/smallcap/g,"small cap").replace(/multicap/g,"multi cap");
+  let n=normName(stripRenameNote(name)).replace(/flexicap/g,"flexi cap").replace(/midcap/g,"mid cap").replace(/smallcap/g,"small cap").replace(/multicap/g,"multi cap");
   n=n.replace(/\b(gr|growth|option|plan|fund|direct|dir|regular|reg|the)\b/g," ").replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
   return n.replace(/\s/g,"");
+}
+/* SEBI Recategorisation 2.0 (deadline 30-Jun-2025) renamed schemes industry-wide
+   to match their SEBI category. A sheet written before that still carries the OLD
+   name, and MFAPI now lists only the NEW one — so those rows would fail to match
+   or, worse, fuzzy-match to a neighbouring category. Rewriting the old marketing
+   word to the new category word makes the intent explicit before keying.
+   Applied to the USER'S typed name only (not to MFAPI's list), and only as whole
+   words, so "Bluechip" -> "large cap" can't corrupt an unrelated name.
+   These are the industry-wide word swaps, not an AMC-by-AMC table — a scheme named
+   "<AMC> Bluechip Fund" became "<AMC> Large Cap Fund" at essentially every house. */
+const RENAME_WORD_ALIASES = [
+  { from: /\bblue\s*chip\b/g,               to: "large cap" },
+  { from: /\bmid\s*cap\s+opportunities\b/g, to: "mid cap" },
+  { from: /\bequity\s+opportunities\b/g,    to: "large & mid cap" },
+  { from: /\bvalue\s+discovery\b/g,         to: "value" },
+  { from: /\bemerging\s+equities\b/g,       to: "large & mid cap" },
+  { from: /\bcore\s+equity\b/g,             to: "large & mid cap" },
+  { from: /\bsterling\s+value\b/g,          to: "value" },
+  { from: /\bgrowth\s+opportunities\b/g,    to: "large & mid cap" },
+  { from: /\blarge\s*cap\s*\+/g,            to: "large cap" },
+];
+function applyRenameAliases(name){
+  let n = normName(stripRenameNote(name));
+  for(const r of RENAME_WORD_ALIASES) n = n.replace(r.from, r.to);
+  return n.replace(/\s+/g," ").trim();
 }
 function bigrams(s){const a=[];for(let i=0;i<s.length-1;i++)a.push(s.slice(i,i+2));return a;}
 function similarity(a,b){if(a===b)return 1;if(!a||!b)return 0;const aa=bigrams(a),bb=bigrams(b),m=new Map();bb.forEach(x=>m.set(x,(m.get(x)||0)+1));let hit=0;aa.forEach(x=>{if(m.get(x)>0){hit++;m.set(x,m.get(x)-1);}});return 2*hit/(aa.length+bb.length||1);}
 function listForPlan(plan){return plan==="Regular"?listRegular:listDirect;}
 function findSchemeMatch(name,plan){
-  const list=listForPlan(plan),key=matchKey(name);
+  const list=listForPlan(plan);
+  let key=matchKey(name);
+  if(!list.some(s=>matchKey(s.schemeName)===key)){
+    // No exact hit on the name as typed. Retry once with SEBI-2.0 rename aliases
+    // applied ("HDFC Bluechip Fund" -> "hdfc large cap"), which turns a pre-2025
+    // sheet into an exact match instead of leaving it to the fuzzy matcher.
+    const aliasKey=matchKey(applyRenameAliases(name));
+    if(aliasKey!==key && list.some(s=>matchKey(s.schemeName)===aliasKey)) key=aliasKey;
+  }
   const exact=list.filter(s=>matchKey(s.schemeName)===key);
   // loadSchemeList normally leaves one candidate per canonical key.  Retain a
   // deterministic fallback for cached/older responses that still contain more.
@@ -1828,9 +2072,14 @@ function findSchemeMatch(name,plan){
     return {hit:exact[0],ambiguous:[],matchType:"exact",score:1};
   }
   const ranked=list.map(s=>({s,score:similarity(key,matchKey(s.schemeName))})).sort((a,b)=>b.score-a.score);
+  // `candidates` are the plausible near-misses, offered to the user as a pick list
+  // when we can't resolve confidently (or when the top hit's SEBI category
+  // contradicts the typed name). Kept wider than the old .70 floor so a genuinely
+  // renamed scheme still appears as an option.
+  const candidates=ranked.filter(x=>x.score>=.55).slice(0,6).map(x=>x.s);
   if(ranked.length&&ranked[0].score>=.78&&(ranked.length===1||ranked[0].score-ranked[1].score>=.06))
-    return {hit:ranked[0].s,ambiguous:[],matchType:"fuzzy",score:ranked[0].score};
-  return {hit:null,ambiguous:ranked.filter(x=>x.score>=.70).slice(0,5).map(x=>x.s),matchType:"none",score:ranked.length?ranked[0].score:0};
+    return {hit:ranked[0].s,ambiguous:[],candidates,matchType:"fuzzy",score:ranked[0].score};
+  return {hit:null,ambiguous:ranked.filter(x=>x.score>=.70).slice(0,5).map(x=>x.s),candidates,matchType:"none",score:ranked.length?ranked[0].score:0};
 }
 function parseDateParts(y,m,d){const dt=new Date(y,m-1,d);return dt.getFullYear()===y&&dt.getMonth()===m-1&&dt.getDate()===d?isoDate(dt):"";}
 function dateCellFromParts(y,m,d,error="invalid date"){
@@ -1886,11 +2135,44 @@ async function resolveImportRow(row,rowNum,col){
     }catch(e){base.message="Code "+code+" failed validation: "+e.message;return base;}
   }else{
     const found=findSchemeMatch(inputName,effectivePlan);
-    if(!found.hit){base.message=found.ambiguous.length?"Ambiguous match: "+found.ambiguous.map(x=>x.schemeName).join(" | "):"No scheme match in "+effectivePlan+" Growth list";return base;}
+    if(!found.hit){
+      // No confident match. Offer the near-misses as a pick list instead of just
+      // reporting failure — the user knows which fund they meant.
+      if(found.candidates && found.candidates.length){
+        base.candidates=found.candidates.map(c=>({code:String(c.schemeCode),name:c.schemeName}));
+        base.message="Couldn't identify this fund — choose the intended scheme";
+        base.statusClass="warn"; base.needsPick=true;
+        return base;
+      }
+      base.message="No scheme match in "+effectivePlan+" Growth list";
+      return base;
+    }
     code=String(found.hit.schemeCode);officialName=found.hit.schemeName;
     // A fuzzy (non-exact) name match can silently resolve a typo/renamed scheme to
     // the WRONG fund. Flag it and leave it unchecked so the user must confirm.
-    if(found.matchType==="fuzzy") fuzzyWarn=`Fuzzy name match (${Math.round(found.score*100)}% similar) → "${officialName}"; verify this is the intended fund.`;
+    if(found.matchType==="fuzzy"){
+      fuzzyWarn=`Fuzzy name match (${Math.round(found.score*100)}% similar) → "${officialName}"; verify this is the intended fund.`;
+      // Category guard on the fuzzy path: a sheet saying "ICICI Prudential Large
+      // Cap Fund" scored 89% against "Large & Mid Cap Fund" and was auto-accepted.
+      // If the typed name claims a cap tier the candidate's real SEBI category
+      // contradicts, don't offer it as the answer — make the user choose.
+      const claimed=claimedCategoryFromName(inputName);
+      if(claimed){
+        try{
+          const d=await getDetail(code);
+          const actual=categoryKey(d.category);
+          if(actual && actual!=="SECTORAL" && actual!==claimed){
+            base.candidates=[{code:String(found.hit.schemeCode),name:found.hit.schemeName}]
+              .concat((found.candidates||[]).filter(c=>String(c.schemeCode)!==code)
+                                            .map(c=>({code:String(c.schemeCode),name:c.schemeName})));
+            base.message=`"${inputName}" looks like a different SEBI category than the closest match `+
+                         `("${officialName}") — choose the intended scheme`;
+            base.statusClass="warn"; base.needsPick=true;
+            return base;
+          }
+        }catch(e){ /* detail lookup failed; fall through with the fuzzy warning */ }
+      }
+    }
   }
   const allWarn=[warning,fuzzyWarn].filter(Boolean).join(" ");
   base.resolvedName=officialName;base.importable=true;
@@ -1905,10 +2187,39 @@ function renderImportPreview(){
   const body=$("importPreviewBody");body.innerHTML="";
   importPreviewRows.forEach((r,i)=>{
     const tr=document.createElement("tr");
+    // Rows we couldn't resolve confidently get a picker instead of a resolved name,
+    // so an ambiguous sheet is fixable in place rather than being an error to
+    // chase back through Excel.
+    const resolvedCell = r.needsPick
+      ? `<select data-pick-i="${i}" class="pick-scheme">
+           <option value="">— choose the intended fund —</option>
+           ${(r.candidates||[]).map(c=>`<option value="${escapeHtml(c.code)}"${String(r.pickedCode)===String(c.code)?' selected':''}>${escapeHtml(c.name)}</option>`).join("")}
+         </select>`
+      : escapeHtml(r.resolvedName||'—');
     tr.innerHTML=`<td><input type="checkbox" data-preview-i="${i}" ${r.checked?'checked':''} ${r.importable?'':'disabled'}></td>
       <td class="num">${r.rowNum}</td><td>${escapeHtml(r.inputName)}</td><td>${escapeHtml(r.inputPlan||'—')}</td>
-      <td>${escapeHtml(r.resolvedName||'—')}</td><td class="mono">${escapeHtml(r.startStr||'—')}</td><td class="num">${r.amount?inr(r.amount):'—'}</td>
+      <td>${resolvedCell}</td><td class="mono">${escapeHtml(r.startStr||'—')}</td><td class="num">${r.amount?inr(r.amount):'—'}</td>
       <td class="${r.statusClass}">${escapeHtml(r.message)}</td>`;body.appendChild(tr);
+  });
+  body.querySelectorAll("select[data-pick-i]").forEach(sel=>sel.onchange=async ()=>{
+    const i=+sel.dataset.pickI, r=importPreviewRows[i], code=sel.value;
+    if(!code){ r.importable=false; r.checked=false; r.pickedCode=""; r.statusClass="warn";
+               r.message="Couldn't identify this fund — choose the intended scheme"; renderImportPreview(); return; }
+    const chosen=(r.candidates||[]).find(c=>String(c.code)===String(code));
+    sel.disabled=true;
+    try{
+      const d=await getDetail(code);                       // cached; also validates the code
+      const apiPlan=detectPlanFromName(d.name||chosen.name)||r.spec?.plan||"";
+      r.pickedCode=code; r.resolvedName=d.name||chosen.name;
+      r.spec={holdingId:uid(),name:r.resolvedName,inputName:r.inputName,sourceRow:r.rowNum,code:String(code),
+              category:d.category||"",plan:apiPlan,startStr:r.startStr,endStr:r.endStr,amount:r.amount};
+      r.importable=true; r.checked=true; r.needsPick=false;
+      r.statusClass="ok"; r.message="Confirmed manually";
+    }catch(e){
+      r.importable=false; r.checked=false; r.statusClass="bad";
+      r.message="Couldn't load that scheme: "+((e&&e.message)||"unknown error");
+    }
+    renderImportPreview();
   });
   body.querySelectorAll("input[data-preview-i]").forEach(cb=>cb.onchange=()=>{importPreviewRows[+cb.dataset.previewI].checked=cb.checked;updatePreviewSummary();});
   updatePreviewSummary();
@@ -1994,7 +2305,11 @@ $("importFile").addEventListener("change",function(){
       if(Object.getOwnPropertyNames(Object.prototype).length!==protoBefore){
         throw new Error("workbook attempted to modify Object.prototype — import aborted for safety");
       }
-      const ws=wb.Sheets[wb.SheetNames[0]];
+      // Prefer a sheet named "Portfolio" (what the template writes) so the
+      // guidance sheet — or any sheet the user adds/reorders — can't be read as
+      // data. Falls back to the first sheet for hand-made files.
+      const portfolioSheet = wb.SheetNames.find(n=>String(n).trim().toLowerCase()==="portfolio") || wb.SheetNames[0];
+      const ws=wb.Sheets[portfolioSheet];
       if(!ws){$("pmStatus").textContent="No sheet found in the file.";return;}
       let aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});
       if(aoa.length>IMPORT_MAX_ROWS+1){$("pmStatus").textContent="Too many rows ("+aoa.length+"); the limit is "+IMPORT_MAX_ROWS+".";return;}
