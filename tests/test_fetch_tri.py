@@ -13,9 +13,32 @@ again.
 import datetime
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# fetch_tri.py imports playwright at module scope, but nothing under test drives a
+# real browser — the timeout tests use fakes. Rather than force CI to install a
+# ~100MB browser library to exercise date arithmetic, install a minimal stub when
+# playwright is genuinely absent. If the real package IS present we use it, so this
+# never masks a broken install in the fetch job (which does need Chromium).
+if importlib.util.find_spec("playwright") is None:
+    _pw = types.ModuleType("playwright")
+    _sync = types.ModuleType("playwright.sync_api")
+
+    class TimeoutError(Exception):        # mirrors playwright.sync_api.TimeoutError
+        pass
+
+    def sync_playwright(*a, **k):         # never called by these tests
+        raise RuntimeError("playwright is stubbed; the fetch job installs the real one")
+
+    _sync.TimeoutError = TimeoutError
+    _sync.sync_playwright = sync_playwright
+    _pw.sync_api = _sync
+    sys.modules["playwright"] = _pw
+    sys.modules["playwright.sync_api"] = _sync
+
 spec = importlib.util.spec_from_file_location("fetch_tri", ROOT / "fetch_tri.py")
 ft = importlib.util.module_from_spec(spec)
 sys.modules["fetch_tri"] = ft
