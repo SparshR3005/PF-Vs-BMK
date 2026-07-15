@@ -51,24 +51,53 @@ REQUIRED_KEYS = {
 # The `file` is normally slug(name), but is stated explicitly so the front-end
 # and fetcher never drift. If any index logs "EMPTY result", its `name` spelling
 # is wrong -- fix it against the benchmark-codes PDF above and re-run.
+# `name` MUST be the exact canonical index name niftyindices' endpoint expects —
+# it is sent verbatim as both `name` and `indexName`. A wrong name returns an
+# EMPTY result (not an error), which fetch_index() reports as
+# "likely wrong canonical name; skipping". Verify a new entry's first run rather
+# than assuming the name is right.
 INDEX_MAP = {
+    # --- broad market ---
     "NIFTY50":              {"name": "NIFTY 50",                   "file": "NIFTY50.json"},
     "NIFTY100":             {"name": "NIFTY 100",                  "file": "NIFTY100.json"},
+    "NIFTY200":             {"name": "NIFTY 200",                  "file": "NIFTY200.json"},
     "NIFTY500":             {"name": "NIFTY 500",                  "file": "NIFTY500.json"},
+    "NIFTY_NEXT_50":        {"name": "NIFTY NEXT 50",              "file": "NIFTY_NEXT_50.json"},
+    "NIFTY_TOTAL_MARKET":   {"name": "NIFTY TOTAL MARKET",         "file": "NIFTY_TOTAL_MARKET.json"},
     "NIFTY_MIDCAP150":      {"name": "NIFTY MIDCAP 150",           "file": "NIFTY_MIDCAP150.json"},
+    "NIFTY_MIDCAP100":      {"name": "NIFTY MIDCAP 100",           "file": "NIFTY_MIDCAP100.json"},
     "NIFTY_SMALLCAP250":    {"name": "NIFTY SMALLCAP 250",         "file": "NIFTY_SMALLCAP250.json"},
+    "NIFTY_SMALLCAP100":    {"name": "NIFTY SMALLCAP 100",         "file": "NIFTY_SMALLCAP100.json"},
+    "NIFTY_MICROCAP250":    {"name": "NIFTY MICROCAP 250",         "file": "NIFTY_MICROCAP250.json"},
     "NIFTY_LARGEMIDCAP250": {"name": "NIFTY LARGEMIDCAP 250",      "file": "NIFTY_LARGEMIDCAP250.json"},
+    "NIFTY_MIDSMALLCAP400": {"name": "NIFTY MIDSMALLCAP 400",      "file": "NIFTY_MIDSMALLCAP400.json"},
     "NIFTY_MULTICAP":       {"name": "NIFTY500 MULTICAP 50:25:25", "file": "NIFTY_MULTICAP.json"},
+    # --- sectoral / thematic ---
     "NIFTY_FINSERV_OR_BANK":{"name": "NIFTY FINANCIAL SERVICES",   "file": "NIFTY_FINSERV_OR_BANK.json"},
     "NIFTY_BANK":           {"name": "NIFTY BANK",                 "file": "NIFTY_BANK.json"},
+    "NIFTY_PRIVATE_BANK":   {"name": "NIFTY PRIVATE BANK",         "file": "NIFTY_PRIVATE_BANK.json"},
+    "NIFTY_PSU_BANK":       {"name": "NIFTY PSU BANK",             "file": "NIFTY_PSU_BANK.json"},
     "NIFTY_IT":             {"name": "NIFTY IT",                   "file": "NIFTY_IT.json"},
     "NIFTY_PHARMA":         {"name": "NIFTY PHARMA",               "file": "NIFTY_PHARMA.json"},
+    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE INDEX",     "file": "NIFTY_HEALTHCARE.json"},
     "NIFTY_FMCG":           {"name": "NIFTY FMCG",                 "file": "NIFTY_FMCG.json"},
     "NIFTY_CONSUMPTION":    {"name": "NIFTY INDIA CONSUMPTION",    "file": "NIFTY_CONSUMPTION.json"},
+    "NIFTY_CONSUMER_DUR":   {"name": "NIFTY CONSUMER DURABLES",    "file": "NIFTY_CONSUMER_DUR.json"},
     "NIFTY_INFRA":          {"name": "NIFTY INFRASTRUCTURE",       "file": "NIFTY_INFRA.json"},
     "NIFTY_AUTO":           {"name": "NIFTY AUTO",                 "file": "NIFTY_AUTO.json"},
     "NIFTY_ENERGY":         {"name": "NIFTY ENERGY",               "file": "NIFTY_ENERGY.json"},
+    "NIFTY_OIL_GAS":        {"name": "NIFTY OIL & GAS",            "file": "NIFTY_OIL_GAS.json"},
+    "NIFTY_METAL":          {"name": "NIFTY METAL",                "file": "NIFTY_METAL.json"},
+    "NIFTY_REALTY":         {"name": "NIFTY REALTY",               "file": "NIFTY_REALTY.json"},
+    "NIFTY_MEDIA":          {"name": "NIFTY MEDIA",                "file": "NIFTY_MEDIA.json"},
     "NIFTY_PSE":            {"name": "NIFTY PSE",                  "file": "NIFTY_PSE.json"},
+    "NIFTY_CPSE":           {"name": "NIFTY CPSE",                 "file": "NIFTY_CPSE.json"},
+    "NIFTY_COMMODITIES":    {"name": "NIFTY COMMODITIES",          "file": "NIFTY_COMMODITIES.json"},
+    "NIFTY_MNC":            {"name": "NIFTY MNC",                  "file": "NIFTY_MNC.json"},
+    "NIFTY_INDIA_DEFENCE":  {"name": "NIFTY INDIA DEFENCE",        "file": "NIFTY_INDIA_DEFENCE.json"},
+    "NIFTY_INDIA_MFG":      {"name": "NIFTY INDIA MANUFACTURING",  "file": "NIFTY_INDIA_MFG.json"},
+    "NIFTY_INDIA_DIGITAL":  {"name": "NIFTY INDIA DIGITAL",        "file": "NIFTY_INDIA_DIGITAL.json"},
+    "NIFTY_TRANSPORT":      {"name": "NIFTY TRANSPORTATION & LOGISTICS", "file": "NIFTY_TRANSPORT.json"},
 }
 
 # In-page fetch: runs in the real renderer, inherits cookies + fingerprint.
