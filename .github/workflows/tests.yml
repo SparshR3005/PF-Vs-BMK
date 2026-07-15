@@ -73,3 +73,6 @@ jobs:
 
       - name: JavaScript regression tests
         run: node tests/test_app.js
+
+      - name: Scheme matching / category / benchmark tests
+        run: node tests/test_matching.js
