@@ -391,6 +391,7 @@ let listDirect = [];
 let listRegular = [];
 let allSchemes = [];
 let listReady = false;
+let listComplete = false;   // #9: true only when /mf returned the FULL list (not one page)
 
 const $ = id => document.getElementById(id);
 function getPlan(){ return document.querySelector('input[name=plan]:checked').value; }
@@ -770,6 +771,13 @@ async function loadSchemeList(){
               : (raw && Array.isArray(raw.data)) ? raw.data
               : (raw && Array.isArray(raw.schemes)) ? raw.schemes : null;
     if(!all) throw new Error("Unexpected scheme-list response shape");
+    // #9: a bare array is the whole list. A wrapped object that advertises more pages
+    // is only the FIRST page — accepting it as complete let listReady=true short-circuit
+    // /mf/search, so any scheme on a later page became permanently unsearchable.
+    listComplete = Array.isArray(raw) ||
+      !(raw && (raw.nextPage!=null || raw.next!=null || raw.hasMore===true ||
+                (raw.page!=null && raw.totalPages!=null && raw.page<raw.totalPages)));
+    if(!listComplete) console.warn("Scheme list looks paginated; falling back to server search for misses.");
     allSchemes = all;
     const directByKey=new Map(),regularByKey=new Map();
     // Newer MFAPI responses expose isinGrowth.  When the field is available,
@@ -814,8 +822,15 @@ async function loadSchemeList(){
 /* ---- search (mouse + full keyboard navigation) ---- */
 let currentMatches = [];      // schemes currently shown in the dropdown
 let activeIndex = -1;         // highlighted option (keyboard), -1 = none
+let serverSearchSeq = 0;      // #8: declared before closeResults(), which bumps it (let is not hoisted)
 
 function closeResults(){
+  // #8: bump the search sequence so any in-flight /mf/search response is treated as
+  // superseded. Previously only a NEW search invalidated a pending one, so clearing
+  // the box, shortening the query, switching Direct/Regular, picking a scheme or
+  // pressing Escape left an older request free to land and re-open this dropdown
+  // with stale results over the user's selection.
+  serverSearchSeq++;
   const box = $("results");
   box.style.display = "none";
   box.innerHTML = "";
@@ -898,6 +913,9 @@ function runSearch(q){
 
   if(matches.length === 0){
     currentMatches = [];
+    // #9: if the local list is only one page, a local miss is not proof of absence —
+    // ask the server before telling the user the fund doesn't exist.
+    if(!listComplete){ serverSearch(q); return; }
     const hint = document.createElement("div");
     hint.className = "hint";
     hint.textContent = 'No matches. Try fewer or different words (e.g. just "hdfc" or "flexi cap").';
@@ -927,7 +945,6 @@ function runSearch(q){
 // #9: server-side fallback picker. Uses /mf/search (the endpoint mfapi recommends
 // for lookups) so search works even when the full /mf list failed to load or is
 // paginated. Applies the same growth/plan/equity gates as the local list.
-let serverSearchSeq = 0;
 async function serverSearch(q){
   const box = $("results");
   box.style.display = "block";
@@ -991,7 +1008,8 @@ document.querySelectorAll('input[name=plan]').forEach(r=>{
 });
 
 function updateAddState(){
-  const ok = !hydrationInProgress && selectedScheme && $("startDate").value && Number($("amount").value) > 0;
+  const amt = Number($("amount").value);   // #6: keep the UI gate in step with computeScheme
+  const ok = !hydrationInProgress && selectedScheme && $("startDate").value && Number.isFinite(amt) && amt > 0;
   $("addBtn").disabled = !ok;
 }
 ["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
@@ -1218,7 +1236,10 @@ async function computeScheme(spec){
   if(!start) throw new Error("Invalid start date for "+spec.name);
   if(spec.endStr && !endVal) throw new Error("Invalid end date for "+spec.name);
   if(endVal && endVal<start) throw new Error("End date is before start date for "+spec.name);
-  if(!(amount>0)) throw new Error("Monthly SIP must be greater than zero for "+spec.name);
+  // #6: Number("1e309") === Infinity, and Infinity > 0 is true — so a bare >0 test
+  // admitted it, producing Infinity invested/current values that JSON.stringify
+  // then serialised as null, corrupting the stored portfolio.
+  if(!Number.isFinite(amount)||amount<=0) throw new Error("Monthly SIP must be a finite number greater than zero for "+spec.name);
 
   const officialName=detail.name||spec.name;
   // Prefer the CURRENT API category over any value persisted at first add, so a
@@ -1487,14 +1508,23 @@ function render(){
   wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
     const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
     const opGen=hydrationGeneration, opPortfolio=store.active;
+    // #3: capture the STABLE id, not the array index. The index captured here goes
+    // stale if the user removes/clears/imports while the await is in flight, and the
+    // old code then wrote this holding's result over whatever slid into that slot.
+    // hydrationGeneration alone did not cover it — splice() never bumps it.
+    const opHoldingId=s.holdingId;
     btn.disabled=true; btn.textContent="Retrying…";
+    const commit=(row)=>{
+      if(hydrationGeneration!==opGen || store.active!==opPortfolio) return false;
+      const at=opHoldingId!=null ? schemes.findIndex(x=>x && x.holdingId===opHoldingId) : -1;
+      if(at<0) return false;                       // holding was removed mid-flight — drop the result
+      schemes[at]=row; return true;
+    };
     try{
       const sch=await computeScheme(s);
-      if(hydrationGeneration!==opGen || store.active!==opPortfolio) return;
-      schemes[i]=sch; saveActive(); render();
+      if(commit(sch)){ saveActive(); render(); }
     }catch(e){
-      if(hydrationGeneration!==opGen || store.active!==opPortfolio) return;
-      schemes[i]={...s, error:(e&&e.message)||"Could not value this holding"}; render();
+      if(commit({...s, error:(e&&e.message)||"Could not value this holding"})) render();
     }
   });
   $("foot").style.display="block";
@@ -1528,7 +1558,15 @@ function isPlainObj(o){ return o && typeof o==="object" && !Array.isArray(o); }
 function backupCorruptStore(raw){
   // Never silently discard unreadable saved data — keep a timestamped backup so a
   // manual edit or a partial write can be recovered from the console.
-  try{ localStorage.setItem(LS_KEY+"__backup_"+Date.now(), raw); }catch(e){}
+  try{
+    localStorage.setItem(LS_KEY+"__backup_"+Date.now(), raw);
+    // #7: cap retained backups at 3 (newest first) so repeated corruption can't fill
+    // the origin's quota — which would then block legitimate saves.
+    const pfx=LS_KEY+"__backup_", keys=[];
+    for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith(pfx)) keys.push(k); }
+    keys.sort((a,b)=>Number(b.slice(pfx.length))-Number(a.slice(pfx.length)));
+    keys.slice(3).forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });
+  }catch(e){}
   try{ toast("Saved portfolio data was unreadable; a backup was kept and a fresh store started.", {type:"warn", timeout:9000}); }catch(e){}
 }
 function loadStore(){
@@ -1714,7 +1752,17 @@ $("pfDeleteBtn").addEventListener("click", async ()=>{
 $("eraseLocalBtn").addEventListener("click", async ()=>{
   if(!await confirmDialog("Erase all portfolios saved by this tool in this browser? This cannot be undone.",
       {title:"Erase browser data", okLabel:"Erase everything"})) return;
-  try{localStorage.removeItem(LS_KEY);localStorage.removeItem(OLD_LS_KEY);}catch(e){}
+  // #7: loadStore() parks unreadable data at LS_KEY+"__backup_"+Date.now(). Removing
+  // only the two main keys left that financial data in the browser while the dialog
+  // promised "erase all… cannot be undone". Sweep the backups as well. Iterate
+  // downwards: removeItem() re-indexes localStorage as we go.
+  try{
+    const prefixes=[LS_KEY,OLD_LS_KEY];
+    for(let i=localStorage.length-1;i>=0;i--){
+      const key=localStorage.key(i);
+      if(key && prefixes.some(p=>key===p||key.startsWith(p+"__backup_"))) localStorage.removeItem(key);
+    }
+  }catch(e){ console.error("Unable to erase stored data",e); }
   store={version:3,active:"My Portfolio",portfolios:{"My Portfolio":[]}};
   persistStore();refreshPfSelect();hydrateActive();
   toast("Browser data erased.", {type:"success"});
@@ -1953,7 +2001,21 @@ $("importFile").addEventListener("change",function(){
       aoa=aoa.map(r=>Array.isArray(r)?r.slice(0,IMPORT_MAX_COLS):r);   // bound column scan
       if(!aoa.length){$("pmStatus").textContent="Empty sheet.";return;}
       const hdr=aoa[0].map(normHeader),col={};
-      hdr.forEach((h,i)=>{if(h.includes("scheme")||h==="fund"||h==="name")col.scheme=i;else if(h.includes("plan"))col.plan=i;else if(h.includes("start"))col.start=i;else if(h.includes("end"))col.end=i;else if(h.includes("monthly")||h.includes("amount")||h.includes("sip"))col.amount=i;else if(h.includes("code"))col.code=i;});
+      // #4: "Scheme Code" contains "scheme", so a substring test that checks scheme
+      // BEFORE code mapped col.scheme at the code column and never set col.code at
+      // all — a silent wrong-fund import. Test exact normalized aliases, code first,
+      // and use ??= so a later duplicate header can't clobber the first valid match.
+      // (normHeader strips non-letters: "Scheme Code" -> "schemecode".)
+      hdr.forEach((h,i)=>{
+        if(h==="code"||h==="schemecode"||h==="fundcode"||h==="amficode"){col.code??=i;}
+        else if(h==="scheme"||h==="schemename"||h==="fund"||h==="fundname"||h==="name"){col.scheme??=i;}
+        else if(h==="plan"||h==="plantype"){col.plan??=i;}
+        else if(h.includes("start")){col.start??=i;}
+        else if(h.includes("end")){col.end??=i;}
+        else if(h.includes("monthly")||h.includes("amount")||h.includes("sip")){col.amount??=i;}
+        else if(h.includes("code")){col.code??=i;}      // late catch-all, after exact names
+        else if(h.includes("scheme")||h.includes("fund")){col.scheme??=i;}
+      });
       if(col.scheme==null||col.start==null||col.amount==null){$("pmStatus").textContent="Header must include Scheme, Start and Monthly columns.";return;}
       $("pmStatus").textContent="Validating Excel rows…";importPreviewRows=[];
       for(let r=1;r<aoa.length;r++){
@@ -2109,7 +2171,7 @@ function exportExcel(){
     {label:"GAIN / LOSS",    val:Math.round(port.gain),     fmt:FMT_INR, tone:port.gain>=0?"good":"bad"},
     {label:"PORTFOLIO XIRR (FULL)", val:port.xirr,                 fmt:FMT_PCT, tone:"neutral"},
     {label:"BENCHMARK TRI XIRR (COMPARABLE)", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
-    {label:"PORTFOLIO ALPHA (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
+    {label:"XIRR SPREAD VS BENCHMARK PROXY (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
        tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
   ];
   const cardTop=3;
@@ -2151,7 +2213,7 @@ function exportExcel(){
   rows1[insHdr]={hpt:16};
 
   // Insight lines — WRAPPED across A:F with computed row heights so nothing clips.
-  const insights=buildInsights(port);
+  const insights=buildInsights(port, schemes);   // #2: `schemes` here is the local valuedSchemes() list (line ~2078)
   let ir=insHdr+1;
   insights.forEach((line,i)=>{
     const cell = styleCell("•  "+line,{ wrap:true, valign:"top",
@@ -2271,7 +2333,7 @@ function exportExcel(){
     "How it works",
     "SIP purchases use the first published NAV on or after each scheduled date (up to 7 calendar days).",
     "Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows.",
-    "Benchmark is the matching Nifty gross Total Return Index (TRI) — it includes reinvested dividends, the SEBI-standard benchmark.",
+    "Benchmark is the matching Nifty gross Total Return Index (TRI) — it includes reinvested dividends. It is a category / broad-market PROXY chosen by this tool, not necessarily the fund's own disclosed benchmark.",
     "The XIRR spread is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column.",
     "Generated "+genDate
   ];
@@ -2299,8 +2361,13 @@ function exportExcel(){
 }
 
 /* ---- portfolio insight lines (plain, data-driven) ---- */
-function buildInsights(port){
+function buildInsights(port, holdings){
   const lines=[];
+  // #2: operate ONLY on the holdings passed in (the caller filters to valued rows).
+  // Reading the global `schemes` here meant retained error rows — which carry no
+  // .fund — reached schemeView() and threw, breaking export for any portfolio with
+  // even one failed holding. Default keeps the function safe if ever called bare.
+  const rows=(holdings||[]).filter(s=>s && !s.error && s.fund);
   // Build the "same SIP into the index" counterfactual first, but hold it to the END.
   let counterfactual=null;
   if(port.anyBench && Number.isFinite(port.cmpFundCurrent) && Number.isFinite(port.benchCurrent)){
@@ -2324,7 +2391,7 @@ function buildInsights(port){
       +Math.abs(pp).toFixed(2)+" pp per year XIRR spread (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
   // 2) Best and worst holdings by alpha.
-  const withAlpha=schemes.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
+  const withAlpha=rows.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
   if(withAlpha.length){
     const best=withAlpha[0], worst=withAlpha[withAlpha.length-1];
     lines.push("Best performer vs its TRI: "+shortSchemeName(best.s.name)+" ("+pp(best.a)+" p.a.). "
@@ -2335,10 +2402,10 @@ function buildInsights(port){
   }
   // 3) Concentration hint if many holdings share one benchmark.
   const byBench={};
-  schemes.forEach(s=>{ if(s.benchLabel) byBench[s.benchLabel]=(byBench[s.benchLabel]||0)+1; });
+  rows.forEach(s=>{ if(s.benchLabel) byBench[s.benchLabel]=(byBench[s.benchLabel]||0)+1; });
   const topBench=Object.entries(byBench).sort((a,b)=>b[1]-a[1])[0];
-  if(topBench && topBench[1]>=Math.ceil(schemes.length/2) && schemes.length>=4){
-    lines.push("Concentration note: "+topBench[1]+" of "+schemes.length+" holdings map to "+topBench[0]
+  if(topBench && topBench[1]>=Math.ceil(rows.length/2) && rows.length>=4){
+    lines.push("Concentration note: "+topBench[1]+" of "+rows.length+" holdings map to "+topBench[0]
       +", so much of the portfolio moves with that single index.");
   }
   // 4) Counterfactual comes last.
