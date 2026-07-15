@@ -262,7 +262,7 @@
       <button class="btn blue" id="updateNavBtn" style="display:none;">↻ Refresh</button>
       <button class="btn ghost" id="importBtn">⤒ Import from Excel</button>
       <button class="btn ghost" id="templateBtn">⤓ Download import template</button>
-      <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.xls">
+      <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.csv">
       <span class="status" id="pmStatus" style="margin:0;"></span>
     </div>
     <div class="hintline">Portfolios are saved in this browser automatically. Import accepts the template's columns: Scheme, Plan, Start (YYYY-MM-DD), End (optional), Monthly.</div>
@@ -380,6 +380,10 @@ const API = "https://api.mfapi.in";
 let selectedScheme = null;
 let searchTimer = null;
 let detailCache = {};
+// A fund NAV should update every trading day. India's longest holiday clusters
+// (Diwali etc.) rarely exceed ~4 non-trading days, so a latest NAV older than
+// this many calendar days suggests a suspended/closed/stale scheme, not a weekend.
+const NAV_STALE_DAYS = 10;
 let schemes = [];
 let importPreviewRows = [];
 
@@ -654,20 +658,29 @@ function triSeriesToNavArr(series){
   return arr;
 }
 
+const TRI_MISS_TTL_MS     = 5*60*1000;    // transient miss (network blip): retry after 5 min
+const TRI_MISS_TTL_404_MS = 30*60*1000;   // definitive 404: won't appear until the next commit
 async function loadTriFile(key){
-  if(key in triCache) return triCache[key];
+  const cached = triCache[key];
+  if(cached && cached.navArr) return cached;                             // good hit
+  if(cached && cached.__miss && Date.now() < cached.expires) return null; // miss still fresh
   try{
     const res = await fetch(`${TRI_DIR}/${encodeURIComponent(key)}.json`, {cache:"no-store"});
-    if(!res.ok) throw new Error("HTTP "+res.status);
+    if(!res.ok){ const e=new Error("HTTP "+res.status); e.status=res.status; throw e; }
     const json = await res.json();
     const navArr = triSeriesToNavArr(json.series);
     if(!navArr.length) throw new Error("empty TRI series");
     const label = (BENCH_FUNDS[key] && BENCH_FUNDS[key].label) || json.index || key;
     triCache[key] = { key, label, navArr };
+    return triCache[key];
   }catch(e){
-    triCache[key] = null;               // remember the miss so we don't refetch each time
+    // Cache the miss only briefly so a transient blip doesn't disable a benchmark
+    // for the whole session (previously it was cached permanently). A real 404 is
+    // held longer since the file only appears after the next nightly commit.
+    const ttl = (e && e.status===404) ? TRI_MISS_TTL_404_MS : TRI_MISS_TTL_MS;
+    triCache[key] = { __miss:true, expires: Date.now()+ttl };
+    return null;
   }
-  return triCache[key];
 }
 
 // Resolve a benchmark key to a loaded TRI series, following .fb fallbacks
@@ -749,8 +762,14 @@ function keepPreferredScheme(map,entry,plan){
 }
 async function loadSchemeList(){
   try{
-    const all = await fetchJson(`${API}/mf`);
-    if(!Array.isArray(all)) throw new Error("Invalid scheme-list response");
+    const raw = await fetchJson(`${API}/mf`);
+    // Tolerate a shape change: today /mf returns a bare array; guard against a
+    // future paginated object so the whole list doesn't silently vanish. (If it
+    // ever returns only a page, the picker still works via /mf/search — see #9.)
+    const all = Array.isArray(raw) ? raw
+              : (raw && Array.isArray(raw.data)) ? raw.data
+              : (raw && Array.isArray(raw.schemes)) ? raw.schemes : null;
+    if(!all) throw new Error("Unexpected scheme-list response shape");
     allSchemes = all;
     const directByKey=new Map(),regularByKey=new Map();
     // Newer MFAPI responses expose isinGrowth.  When the field is available,
@@ -856,7 +875,7 @@ $("search").addEventListener("keydown", function(e){
 });
 
 function runSearch(q){
-  if(!listReady) return;
+  if(!listReady){ serverSearch(q); return; }   // #9: picker still works if the /mf list is down/partial
   const box = $("results");
   box.style.display = "block";
   $("search").setAttribute("aria-expanded", "true");
@@ -905,6 +924,53 @@ function runSearch(q){
   });
 }
 
+// #9: server-side fallback picker. Uses /mf/search (the endpoint mfapi recommends
+// for lookups) so search works even when the full /mf list failed to load or is
+// paginated. Applies the same growth/plan/equity gates as the local list.
+let serverSearchSeq = 0;
+async function serverSearch(q){
+  const box = $("results");
+  box.style.display = "block";
+  $("search").setAttribute("aria-expanded","true");
+  box.innerHTML = '<div class="hint">Searching…</div>';
+  const seq = ++serverSearchSeq;
+  let arr = [];
+  try{
+    const raw = await fetchJson(`${API}/mf/search?q=`+encodeURIComponent(q));
+    arr = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.data) ? raw.data : []);
+  }catch(e){ /* fall through to empty */ }
+  if(seq!==serverSearchSeq) return;                        // superseded by a newer keystroke
+  const wantPlan = getPlan();
+  const norm = arr
+    .map(s=>({schemeCode:s.schemeCode, schemeName:s.schemeName, lower:String(s.schemeName||"").toLowerCase(), isinGrowth:s.isinGrowth||""}))
+    .filter(s=>s.schemeCode && s.schemeName)
+    .filter(s=>s.lower.includes("growth") && !/(idcw|dividend|payout|reinvest|bonus)/.test(s.lower))
+    .filter(s=>!nameLooksNonEquity(s.lower))
+    .filter(s=>{ const isDirect=s.lower.includes("direct"); return wantPlan==="Direct" ? isDirect : !isDirect; });
+  box.innerHTML = "";
+  activeIndex = -1;
+  $("search").removeAttribute("aria-activedescendant");
+  if(!norm.length){
+    currentMatches = [];
+    const hint=document.createElement("div"); hint.className="hint";
+    hint.textContent='No matches from server search for "'+q+'".';
+    box.appendChild(hint); return;
+  }
+  currentMatches = norm.slice(0,50);
+  const hint=document.createElement("div"); hint.className="hint";
+  hint.textContent = norm.length+" match(es) (server search)"+(norm.length>50?" — showing first 50":"")+":";
+  box.appendChild(hint);
+  currentMatches.forEach((s,i)=>{
+    const d=document.createElement("div");
+    d.id="opt-"+i; d.setAttribute("role","option"); d.setAttribute("aria-selected","false");
+    d.textContent=s.schemeName;
+    d.addEventListener("mousedown",ev=>ev.preventDefault());
+    d.addEventListener("click",()=>pickScheme(s));
+    d.addEventListener("mousemove",()=>setActive(i));
+    box.appendChild(d);
+  });
+}
+
 function pickScheme(s){
   selectedScheme = s;
   $("search").value = s.schemeName;
@@ -931,16 +997,39 @@ function updateAddState(){
 ["startDate","amount"].forEach(id=> $(id).addEventListener("input", updateAddState));
 
 /* ---- detail fetch + validated NAV calculations ---- */
+const FETCH_TIMEOUT_MS = 15000;   // hard per-attempt deadline so a hung request can't stall hydration
 async function fetchJson(url, attempts=3){
   let lastErr = null;
   for(let i=0;i<attempts;i++){
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), FETCH_TIMEOUT_MS);
+    let retryAfterMs = null;
     try{
-      const res = await fetch(url, {cache:"no-store"});
-      if(!res.ok) throw new Error("HTTP "+res.status);
+      const res = await fetch(url, {cache:"no-store", signal:ctrl.signal});
+      if(!res.ok){
+        // 408/429/5xx are transient and worth retrying; other 4xx (e.g. a bad
+        // scheme code -> 404) are permanent, so fail fast instead of burning retries.
+        const retryable = res.status===408 || res.status===429 || res.status>=500;
+        if(res.status===429){
+          const ra = Number(res.headers.get("retry-after"));
+          if(Number.isFinite(ra) && ra>0) retryAfterMs = Math.min(ra*1000, 10000);
+        }
+        const err = new Error("HTTP "+res.status);
+        err.retryable = retryable;
+        throw err;
+      }
       return await res.json();
     }catch(e){
-      lastErr=e;
-      if(i<attempts-1) await new Promise(r=>setTimeout(r, 350*Math.pow(2,i)));
+      lastErr = e;
+      // A timeout (AbortError) or network TypeError has no .retryable flag -> retry.
+      // An explicit non-retryable HTTP error stops the loop immediately.
+      if(e && e.retryable===false) break;
+      if(i<attempts-1){
+        const backoff = retryAfterMs!=null ? retryAfterMs : 350*Math.pow(2,i);
+        await new Promise(r=>setTimeout(r, backoff));
+      }
+    }finally{
+      clearTimeout(timer);
     }
   }
   throw lastErr || new Error("Network request failed");
@@ -1078,9 +1167,16 @@ function scheduleDates(start,end){
 
 function runSIP(navArr,dates,amount,valueDate){
   const installments=[];
+  const skipped=[];   // scheduled months on/before valueDate with no NAV within 7 days
   for(const scheduledDate of dates){
     const n=navOnOrAfter(navArr,scheduledDate,7);
-    if(!n || n.date>valueDate) continue;
+    if(!n || n.date>valueDate){
+      // Only count it as "skipped" (a data gap) if the month is actually within
+      // the valuation window; months whose NAV simply lands after valueDate are
+      // future/out-of-window, not missing data.
+      if(scheduledDate<=valueDate) skipped.push(isoDate(scheduledDate));
+      continue;
+    }
     installments.push({scheduledDate:new Date(scheduledDate),tradeDate:new Date(n.date),nav:n.nav,amount,units:amount/n.nav});
   }
   if(!installments.length) return null;
@@ -1094,7 +1190,7 @@ function runSIP(navArr,dates,amount,valueDate){
   if(!flows.length) return null;
   const x=xirr(flows.concat([{date:new Date(valuation.date),amount:valuation.currentValue}]));
   return {invested:valuation.invested,currentValue:valuation.currentValue,units:valuation.units,
-          placed:flows.length,xirr:x,flows,installments,firstDate:flows[0].date,valueDate:valuation.date};
+          placed:flows.length,skipped,xirr:x,flows,installments,firstDate:flows[0].date,valueDate:valuation.date};
 }
 
 function valuationAt(run,navArr,valueDate){
@@ -1125,7 +1221,11 @@ async function computeScheme(spec){
   if(!(amount>0)) throw new Error("Monthly SIP must be greater than zero for "+spec.name);
 
   const officialName=detail.name||spec.name;
-  const category=spec.category||detail.category||"";
+  // Prefer the CURRENT API category over any value persisted at first add, so a
+  // reclassification (or a previously-blank/incorrect stored value) is picked up
+  // on the next hydrate instead of being frozen forever. spec.category is only a
+  // fallback for the rare case the API omits it.
+  const category=detail.category||spec.category||"";
   // A Nifty equity TRI cannot fairly benchmark debt/hybrid/gold/arbitrage/index
   // funds. Reject with a clear message instead of silently comparing against
   // Nifty 500, which would produce a meaningless (and misleading) alpha.
@@ -1134,6 +1234,7 @@ async function computeScheme(spec){
       "this tool only benchmarks actively-managed equity funds against a Nifty equity TRI, so it can't be compared here.");
   }
   const fundLast=fundNav[fundNav.length-1].date;
+  const navStaleDays=Math.max(0, Math.floor(daysBetween(fundLast, new Date())));
   const fundSipEnd=endVal&&endVal<fundLast?endVal:fundLast;
   const fundDates=scheduleDates(start,fundSipEnd);
   const fundFull=runSIP(fundNav,fundDates,amount,fundLast);
@@ -1178,7 +1279,8 @@ async function computeScheme(spec){
     inputName:spec.inputName||spec.name||officialName,
     sourceRow:spec.sourceRow||null,
     startStr:spec.startStr,endStr:spec.endStr||"",start,amount,
-    fundValueDate:fundLast,cmpValueDate,fund:fundFull,fundCmp,benchCmp,cmpFirst,cmpCount,
+    fundValueDate:fundLast,navStaleDays,cmpValueDate,fund:fundFull,fundCmp,benchCmp,cmpFirst,cmpCount,
+    fundSkipped:(fundFull&&fundFull.skipped)?fundFull.skipped.length:0,
     benchLabel:benchInfo?benchInfo.label:null,benchApprox:benchInfo?benchInfo.approx:false,
     cmpShorter:!!(benchCmp&&cmpCount<fundFull.placed)
   };
@@ -1257,8 +1359,12 @@ function schemeView(s){
    the sum of the rows shown above them (no re-valuation at a forced
    common date, which previously dropped the freshest installments).
    ============================================================ */
+function valuedSchemes(){ return schemes.filter(s=>!s.error && s.fund); }
 function portfolioMetrics(){
-  if(!schemes.length) return null;
+  // Only aggregate holdings that actually valued; error rows (retained after a
+  // failed hydrate) carry no fund/flows and must never enter the totals.
+  const valued = schemes.filter(s=>!s.error && s.fund);
+  if(!valued.length) return null;
 
   // Each holding's terminal (current-value) cash flow is dated at the ACTUAL NAV
   // date the value was struck on (run.valueDate = navOnOrBefore the requested
@@ -1267,7 +1373,7 @@ function portfolioMetrics(){
   // distorts the money-weighted return. Anchoring to run.valueDate removes that.
   let invested=0, current=0, valueDate=null;
   const fundFlows=[];
-  for(const s of schemes){
+  for(const s of valued){
     invested += s.fund.invested;
     current  += s.fund.currentValue;
     for(const f of s.fund.flows) fundFlows.push({date:new Date(f.date), amount:f.amount});
@@ -1277,7 +1383,7 @@ function portfolioMetrics(){
   }
   const fundX = xirr(fundFlows);
 
-  const comparable = schemes.filter(s=>s.fundCmp && s.benchCmp && s.cmpValueDate);
+  const comparable = valued.filter(s=>s.fundCmp && s.benchCmp && s.cmpValueDate);
   let benchX=null, cmpFundX=null, alpha=null, cmpValueDate=null, cmpFundCur=0, cmpBenchCur=0;
   if(comparable.length){
     const ff=[], bf=[];
@@ -1314,10 +1420,13 @@ function render(){
   // Refresh is only meaningful once there's something to re-value. Shown here (and
   // hidden above) so it appears exactly when the active portfolio has holdings.
   $("updateNavBtn").style.display="";
-  const port=portfolioMetrics(),alphaBand=perfBand(port.alpha);
-  $("summaryCard").style.display="block";
-  $("summaryGrid").innerHTML=`
-    <div class="stat"><div class="k">Holdings</div><div class="v">${schemes.length}</div></div>
+  const errorCount = schemes.filter(s=>s.error).length;
+  const port=portfolioMetrics();
+  const alphaBand=perfBand(port?port.alpha:null);
+  if(port){
+    $("summaryCard").style.display="block";
+    $("summaryGrid").innerHTML=`
+    <div class="stat"><div class="k">Holdings</div><div class="v">${schemes.length-errorCount}${errorCount?' <span class="approx">(+'+errorCount+' unvalued)</span>':''}</div></div>
     <div class="stat"><div class="k">Total invested</div><div class="v">${inr(port.invested)}</div></div>
     <div class="stat"><div class="k">Current value</div><div class="v">${inr(port.current)}</div></div>
     <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>
@@ -1325,38 +1434,71 @@ function render(){
     <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${signClass(port.xirr)}">${pct(port.xirr)}</div></div>
     <div class="stat"><div class="k">Comparable fund XIRR</div><div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div></div>
     <div class="stat"><div class="k">Benchmark XIRR</div><div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div></div>
-    <div class="stat"><div class="k">Portfolio alpha</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div><div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
+    <div class="stat"><div class="k">XIRR spread vs benchmark</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div><div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
+  }else{
+    $("summaryCard").style.display="none";
+  }
 
   let rows="";
   schemes.forEach((s,i)=>{
+    if(s.error){
+      // Retained error row: keep the holding visible with a Retry so a transient
+      // failure never silently drops it from the portfolio (see hydrateActive).
+      rows+=`<tr>
+        <td><div class="fund-name">${escapeHtml(s.name||s.inputName||('Code '+s.code))}</div>
+            <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''}</div>
+            <div class="bmk-line" style="color:var(--danger);">⚠ Couldn't value: ${escapeHtml(s.error)}</div></td>
+        <td class="num" colspan="6" style="color:var(--sub);">retained — value not available right now</td>
+        <td class="num"><button class="btn small" data-retry="${i}">Retry</button> <button class="btn small" data-i="${i}">Remove</button></td></tr>`;
+      return;
+    }
     const v=schemeView(s),band=perfBand(v.alpha),f=s.fund,b=s.benchCmp;
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
-    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+(s.benchApprox?' <span class="approx">(≈ approximate)</span>':'')+'</div>';}
-    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(no overlapping data)</span></div>';}
-    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.</div>';
+    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market proxy':'category proxy')+')</span></div>';}
+    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category proxy · no overlapping data)</span></div>';}
+    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark proxy by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a. (XIRR spread)</div>';
+    // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
+    let notes="";
+    if(s.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+s.navStaleDays+' days ago ('+fmtDate(s.fundValueDate)+') — value may be stale/suspended</div>';
+    if(s.fundSkipped>0) notes+='<div class="bmk-line approx">'+s.fundSkipped+' SIP month(s) skipped — no NAV within 7 days (holiday, data gap, or suspension)</div>';
     const gainCell='<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span><div class="sub2">'+pct(v.absR)+'</div>';
     const compCell=b?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'—';
     rows+=`<tr>
       <td><div class="fund-name">${escapeHtml(s.name)}</div>
           <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''} · valued ${fmtDate(s.fundValueDate)}</div>
-          ${bmkLine}${verdict}</td>
+          ${bmkLine}${verdict}${notes}</td>
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
       <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
       <td class="num">${compCell}</td>
       <td class="num">${v.alpha!=null?'<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span>':'—'}</td>
       <td class="num"><button class="btn small" data-i="${i}">Remove</button></td></tr>`;
   });
-  const pBand=perfBand(port.alpha);
-  rows+=`<tr class="portfolio"><td>PORTFOLIO (all holdings)<div class="fund-meta">each holding valued at its own latest NAV (newest ${fmtDate(port.valueDate)})</div></td>
-    <td class="num">${inr(port.invested)}</td><td class="num">${inr(port.current)}</td>
-    <td class="num"><span class="${signClass(port.gain)}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
-    <td class="num"><span class="${signClass(port.xirr)}" style="font-weight:600;">${pct(port.xirr)}</span></td>
-    <td class="num">${port.anyBench?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':'—'}</td>
-    <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
-  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span></th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  if(port){
+    const pBand=perfBand(port.alpha);
+    rows+=`<tr class="portfolio"><td>PORTFOLIO (valued holdings)<div class="fund-meta">each holding valued at its own latest NAV (newest ${fmtDate(port.valueDate)})</div></td>
+      <td class="num">${inr(port.invested)}</td><td class="num">${inr(port.current)}</td>
+      <td class="num"><span class="${signClass(port.gain)}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
+      <td class="num"><span class="${signClass(port.xirr)}" style="font-weight:600;">${pct(port.xirr)}</span></td>
+      <td class="num">${port.anyBench?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':'—'}</td>
+      <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
+  }
+  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span></th><th style="text-align:right;">XIRR spread</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
+  wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
+    const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
+    const opGen=hydrationGeneration, opPortfolio=store.active;
+    btn.disabled=true; btn.textContent="Retrying…";
+    try{
+      const sch=await computeScheme(s);
+      if(hydrationGeneration!==opGen || store.active!==opPortfolio) return;
+      schemes[i]=sch; saveActive(); render();
+    }catch(e){
+      if(hydrationGeneration!==opGen || store.active!==opPortfolio) return;
+      schemes[i]={...s, error:(e&&e.message)||"Could not value this holding"}; render();
+    }
+  });
   $("foot").style.display="block";
-  $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows, so the portfolio totals equal the sum of the rows. Benchmark = the matching Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends — the same standard mutual funds are benchmarked against. TRI values are refreshed automatically each market day. Because index TRI inception dates differ, alpha is measured only over the months where both the fund and its TRI have data; a shorter window is flagged per holding. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
+  $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows, so the portfolio totals equal the sum of the rows. Benchmark = a category-appropriate Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends, chosen from the scheme's category/name — a <b>proxy</b>, not necessarily the fund's officially disclosed benchmark. The <b>XIRR spread</b> is the fund's money-weighted XIRR minus the benchmark's over the same installments; it is a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). Because index TRI inception dates differ, the spread is measured only over the months where both the fund and its TRI have data; a shorter window is flagged per holding. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
 }
 
 /* ---- clear ---- */
@@ -1382,14 +1524,29 @@ const LS_KEY = "mf_sip_portfolios_v3";
 const OLD_LS_KEY = "mf_sip_portfolios_v2";
 let store = { version:3, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
 
+function isPlainObj(o){ return o && typeof o==="object" && !Array.isArray(o); }
+function backupCorruptStore(raw){
+  // Never silently discard unreadable saved data — keep a timestamped backup so a
+  // manual edit or a partial write can be recovered from the console.
+  try{ localStorage.setItem(LS_KEY+"__backup_"+Date.now(), raw); }catch(e){}
+  try{ toast("Saved portfolio data was unreadable; a backup was kept and a fresh store started.", {type:"warn", timeout:9000}); }catch(e){}
+}
 function loadStore(){
-  try{
-    const raw = localStorage.getItem(LS_KEY) || localStorage.getItem(OLD_LS_KEY);
-    if(raw){
-      const p = JSON.parse(raw);
-      if(p && p.portfolios) store = p;
+  let raw=null;
+  try{ raw = localStorage.getItem(LS_KEY) || localStorage.getItem(OLD_LS_KEY); }catch(e){}
+  if(raw){
+    let parsed=null, parseOk=true;
+    try{ parsed = JSON.parse(raw); }catch(e){ parseOk=false; }
+    if(!parseOk || !isPlainObj(parsed) || !isPlainObj(parsed.portfolios)){
+      backupCorruptStore(raw);                       // structurally broken -> back up, then default
+    }else{
+      const clean={};
+      for(const [k,v] of Object.entries(parsed.portfolios)) if(Array.isArray(v)) clean[k]=v;
+      if(Object.keys(clean).length){
+        store = { version:3, active:(typeof parsed.active==="string"?parsed.active:Object.keys(clean)[0]), portfolios:clean };
+      } // valid but empty -> fall through to default without a scary backup/toast
     }
-  }catch(e){}
+  }
   if(!store.portfolios || Object.keys(store.portfolios).length===0){
     store = { version:3, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
   }
@@ -1397,8 +1554,18 @@ function loadStore(){
     store.active = Object.keys(store.portfolios)[0];
   }
 }
+let lastPersistWarn = 0;
+function notifyPersistFailure(){
+  $("pmStatus").textContent = "⚠ Couldn't save to this browser (storage full or blocked) — changes are shown but NOT persisted.";
+  const now = Date.now();
+  if(now - lastPersistWarn > 30000){   // throttle so repeated saves don't spam toasts
+    lastPersistWarn = now;
+    toast("Saving to this browser failed — changes are not persisted (storage full, or blocked in private mode).", {type:"warn", timeout:8000});
+  }
+}
 function persistStore(){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify(store)); }catch(e){}
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(store)); return true; }
+  catch(e){ notifyPersistFailure(); return false; }
 }
 function specsFromSchemes(){
   return schemes.map(s=>({
@@ -1455,7 +1622,14 @@ async function hydrateActive(){
     try{
       loaded.push(await computeScheme(spec));
     }catch(e){
+      // Keep the holding as a retained ERROR ROW instead of dropping it. Dropping
+      // meant the next saveActive() (add/remove/import/clear) serialized a schemes
+      // array WITHOUT this holding, permanently deleting it from storage over what
+      // might be a transient NAV/network failure. The placeholder carries the full
+      // original spec, so specsFromSchemes() round-trips it and the next hydrate —
+      // or the row's Retry button — re-attempts valuation.
       failed.push(spec.name);
+      loaded.push({ ...spec, holdingId: spec.holdingId||uid(), error:(e&&e.message)||"Could not value this holding" });
     }
     if(generation!==hydrationGeneration || store.active!==portfolioName) return;
   }
@@ -1477,7 +1651,10 @@ let listReadyPending = true;
 function afterListReady(){
   if(!listReadyPending) return;
   listReadyPending = false;
-  hydrateActive();
+  // Hydration no longer waits on the scheme list (#8) — it ran at boot by code.
+  // Only re-hydrate if something is currently unvalued (a transient failure that
+  // may now succeed), and never while a hydrate is already running.
+  if(!hydrationInProgress && schemes.some(s=>s && s.error)) hydrateActive();
 }
 
 /* ---- portfolio manager buttons ---- */
@@ -1549,11 +1726,11 @@ $("eraseLocalBtn").addEventListener("click", async ()=>{
 const updateNavBtnEl = $("updateNavBtn");
 if(updateNavBtnEl){
   updateNavBtnEl.addEventListener("click", ()=>{
-    if(!listReady){ $("pmStatus").textContent="Still loading scheme list…"; return; }
     detailCache = {};                          // force refetch of fund NAV
     for(const k in triCache) delete triCache[k]; // force reload of TRI files
     $("pmStatus").textContent = "Refreshing…";
-    hydrateActive();
+    hydrateActive();                           // #8: re-value by stored code, list or no list
+    if(!listReady){ listReadyPending = true; loadSchemeList(); }  // also retry the scheme list
   });
 }
 
@@ -1600,11 +1777,12 @@ function findSchemeMatch(name,plan){
   // deterministic fallback for cached/older responses that still contain more.
   if(exact.length){
     exact.sort((a,b)=>schemeCandidateScore(b,plan)-schemeCandidateScore(a,plan));
-    return {hit:exact[0],ambiguous:[]};
+    return {hit:exact[0],ambiguous:[],matchType:"exact",score:1};
   }
   const ranked=list.map(s=>({s,score:similarity(key,matchKey(s.schemeName))})).sort((a,b)=>b.score-a.score);
-  if(ranked.length&&ranked[0].score>=.78&&(ranked.length===1||ranked[0].score-ranked[1].score>=.06))return {hit:ranked[0].s,ambiguous:[]};
-  return {hit:null,ambiguous:ranked.filter(x=>x.score>=.70).slice(0,5).map(x=>x.s)};
+  if(ranked.length&&ranked[0].score>=.78&&(ranked.length===1||ranked[0].score-ranked[1].score>=.06))
+    return {hit:ranked[0].s,ambiguous:[],matchType:"fuzzy",score:ranked[0].score};
+  return {hit:null,ambiguous:ranked.filter(x=>x.score>=.70).slice(0,5).map(x=>x.s),matchType:"none",score:ranked.length?ranked[0].score:0};
 }
 function parseDateParts(y,m,d){const dt=new Date(y,m-1,d);return dt.getFullYear()===y&&dt.getMonth()===m-1&&dt.getDate()===d?isoDate(dt):"";}
 function dateCellFromParts(y,m,d,error="invalid date"){
@@ -1646,7 +1824,7 @@ async function resolveImportRow(row,rowNum,col){
   if(!amount){base.message="Monthly amount must be greater than zero";return base;}
 
   const cellPlan=normalisePlan(inputPlan),namePlan=detectPlanFromName(inputName);
-  let effectivePlan=cellPlan||namePlan,warning="";
+  let effectivePlan=cellPlan||namePlan,warning="",fuzzyWarn="";
   if(cellPlan&&namePlan&&cellPlan!==namePlan){effectivePlan=namePlan;warning=`Plan conflict: column says ${cellPlan}; scheme name says ${namePlan}. Resolved using the explicit scheme name.`;}
   if(!effectivePlan){base.message="Plan is missing or invalid (use Direct or Regular)";return base;}
 
@@ -1662,8 +1840,15 @@ async function resolveImportRow(row,rowNum,col){
     const found=findSchemeMatch(inputName,effectivePlan);
     if(!found.hit){base.message=found.ambiguous.length?"Ambiguous match: "+found.ambiguous.map(x=>x.schemeName).join(" | "):"No scheme match in "+effectivePlan+" Growth list";return base;}
     code=String(found.hit.schemeCode);officialName=found.hit.schemeName;
+    // A fuzzy (non-exact) name match can silently resolve a typo/renamed scheme to
+    // the WRONG fund. Flag it and leave it unchecked so the user must confirm.
+    if(found.matchType==="fuzzy") fuzzyWarn=`Fuzzy name match (${Math.round(found.score*100)}% similar) → "${officialName}"; verify this is the intended fund.`;
   }
-  base.resolvedName=officialName;base.importable=true;base.checked=true;base.statusClass=warning?"warn":"ok";base.message=warning||"Ready";
+  const allWarn=[warning,fuzzyWarn].filter(Boolean).join(" ");
+  base.resolvedName=officialName;base.importable=true;
+  base.checked = !fuzzyWarn;                      // fuzzy matches start unchecked
+  base.statusClass = allWarn ? "warn" : "ok";
+  base.message = allWarn || "Ready";
   base.spec={holdingId:uid(),name:officialName,inputName,sourceRow:rowNum,code,category:"",plan:effectivePlan,startStr:start.value,endStr:end.value,amount};
   return base;
 }
@@ -1741,12 +1926,31 @@ $("importConfirmBtn").addEventListener("click",async()=>{
   }
 });
 
+const IMPORT_MAX_BYTES = 5*1024*1024;   // 5 MB
+const IMPORT_MAX_ROWS  = 5000;
+const IMPORT_MAX_COLS  = 64;
 $("importFile").addEventListener("change",function(){
   const file=this.files&&this.files[0];this.value="";if(!file)return;
+  const nameLc=(file.name||"").toLowerCase();
+  if(!/\.(xlsx|csv)$/.test(nameLc)){$("pmStatus").textContent="Unsupported file type — use .xlsx or .csv.";return;}
+  if(file.size>IMPORT_MAX_BYTES){$("pmStatus").textContent="File too large ("+Math.round(file.size/1048576)+" MB); the limit is 5 MB.";return;}
   const reader=new FileReader();reader.onload=async ev=>{
     try{
+      // Defence-in-depth around the parser (xlsx-js-style bundles an older SheetJS
+      // core; see README "Deferred"). Snapshot Object.prototype's own-property set
+      // before the read and abort if a crafted workbook adds to it (the shape of
+      // CVE-2023-30533 prototype pollution). Coarse but real; the full fix is to
+      // move import to official SheetJS CE >=0.20.2, which needs a new CDN+SRI.
+      const protoBefore=Object.getOwnPropertyNames(Object.prototype).length;
       const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array",cellDates:true});
-      const ws=wb.Sheets[wb.SheetNames[0]],aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});
+      if(Object.getOwnPropertyNames(Object.prototype).length!==protoBefore){
+        throw new Error("workbook attempted to modify Object.prototype — import aborted for safety");
+      }
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      if(!ws){$("pmStatus").textContent="No sheet found in the file.";return;}
+      let aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});
+      if(aoa.length>IMPORT_MAX_ROWS+1){$("pmStatus").textContent="Too many rows ("+aoa.length+"); the limit is "+IMPORT_MAX_ROWS+".";return;}
+      aoa=aoa.map(r=>Array.isArray(r)?r.slice(0,IMPORT_MAX_COLS):r);   // bound column scan
       if(!aoa.length){$("pmStatus").textContent="Empty sheet.";return;}
       const hdr=aoa[0].map(normHeader),col={};
       hdr.forEach((h,i)=>{if(h.includes("scheme")||h==="fund"||h==="name")col.scheme=i;else if(h.includes("plan"))col.plan=i;else if(h.includes("start"))col.start=i;else if(h.includes("end"))col.end=i;else if(h.includes("monthly")||h.includes("amount")||h.includes("sip"))col.amount=i;else if(h.includes("code"))col.code=i;});
@@ -1822,6 +2026,7 @@ function styleCell(v, o={}){
 
 $("exportBtn").addEventListener("click", ()=>{
   if(!schemes.length) return;
+  if(!valuedSchemes().length){ toast("Nothing to export yet — no holdings could be valued.", {type:"warn"}); return; }
   try{
     if(typeof XLSX==="undefined" || !XLSX.writeFile) throw new Error("Excel library not loaded (check your connection).");
     exportExcel();
@@ -1870,6 +2075,7 @@ function triWindowFlag(s){
 }
 
 function exportExcel(){
+  const schemes = valuedSchemes();   // export excludes retained error rows (#2)
   const port=portfolioMetrics(),genDate=fmtDate(new Date()),wb=XLSX.utils.book_new();
   const anyEnd = schemes.some(s=>s.endStr);
   const showComparableFundXirr = schemes.some(sipBeganBeforeTri);
@@ -1971,18 +2177,18 @@ function exportExcel(){
   /* ============================================================
      HOLDINGS  — clean modern table with zebra striping
      ============================================================ */
-  const headers=["Scheme","Plan","Benchmark (TRI)","SIP start"];
+  const headers=["Scheme","Plan","Benchmark (TRI proxy)","SIP start"];
   if(anyEnd) headers.push("SIP end");
   headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)");
   if(showComparableFundXirr) headers.push("Fund XIRR (comparable)");
-  headers.push("Benchmark XIRR","Alpha","Verdict");
+  headers.push("Benchmark XIRR","XIRR spread","Verdict");
   if(anyFlag) headers.push("Data window");
 
   const idx={}; headers.forEach((h,i)=>idx[h]=i);
   const inrCols=new Set([idx["Monthly SIP"],idx["Invested"],idx["Current"],idx["Gain"]]);
   const pctCols=new Set([idx["Abs return"],idx["Fund XIRR (full)"],idx["Benchmark XIRR"]]);
   if(showComparableFundXirr) pctCols.add(idx["Fund XIRR (comparable)"]);
-  const ppCols =new Set([idx["Alpha"]]);
+  const ppCols =new Set([idx["XIRR spread"]]);
   const rightCols=new Set([...inrCols,...pctCols,...ppCols]);
   const centerCols=new Set([idx["Plan"],idx["SIP start"], anyEnd?idx["SIP end"]:-1]);
 
@@ -2023,7 +2229,7 @@ function exportExcel(){
       else if(pctCols.has(c))opts.numFmt=FMT_PCT;
       else if(ppCols.has(c))opts.numFmt=FMT_PP;
       // colour alpha + verdict by band
-      if(c===idx["Alpha"]||c===idx["Verdict"]){ opts.fill=FILL[row.band.key]; opts.light=row.band.key!=="beat"; }
+      if(c===idx["XIRR spread"]||c===idx["Verdict"]){ opts.fill=FILL[row.band.key]; opts.light=row.band.key!=="beat"; }
       else if(row.isPort){ opts.fill=RPT.portRow; opts.light=true; }
       else { opts.fill=zebra; }
       if(anyFlag && c===idx["Data window"]){ opts.wrap=true; opts.color=RPT.sub; opts.sz=9.5; opts.align="left"; }
@@ -2047,7 +2253,7 @@ function exportExcel(){
      LEGEND  — polished
      ============================================================ */
   const s3={}; const rows3={};
-  const legendHdr=["Colour band","Meaning","Alpha threshold (Fund XIRR − TRI XIRR)"];
+  const legendHdr=["Colour band","Meaning","XIRR spread threshold (Fund − TRI)"];
   legendHdr.forEach((h,c)=>s3[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{fill:RPT.header,color:RPT.headerTxt,bold:true,align:"left",sz:10.5}));
   const bands=[
     ["Strongly beating","Fund is well ahead of its index","≥ +3 pp per year", FILL.strong_beat, true],
@@ -2066,7 +2272,7 @@ function exportExcel(){
     "SIP purchases use the first published NAV on or after each scheduled date (up to 7 calendar days).",
     "Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows.",
     "Benchmark is the matching Nifty gross Total Return Index (TRI) — it includes reinvested dividends, the SEBI-standard benchmark.",
-    "Alpha is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column.",
+    "The XIRR spread is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column.",
     "Generated "+genDate
   ];
   let nr=6;
@@ -2114,8 +2320,8 @@ function buildInsights(port){
   // 1) Overall verdict line.
   if(port.alpha!=null){
     const pp=(port.alpha*100);
-    lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI benchmark by "
-      +Math.abs(pp).toFixed(2)+" pp per year (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
+    lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI proxy by "
+      +Math.abs(pp).toFixed(2)+" pp per year XIRR spread (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
   // 2) Best and worst holdings by alpha.
   const withAlpha=schemes.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
@@ -2148,7 +2354,8 @@ document.addEventListener("click", e=>{
 /* ---- boot ---- */
 loadStore();
 refreshPfSelect();
-loadSchemeList();      // will call afterListReady() -> hydrateActive()
+hydrateActive();       // #8: value saved holdings by their stored code, independent of the /mf list
+loadSchemeList();      // enables search + name-based import; no longer gates hydration
 checkTriFreshness();   // warn if committed TRI data has gone stale
 </script>
 </body>
