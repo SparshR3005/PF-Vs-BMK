@@ -18,18 +18,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # Actions are pinned to commit SHAs (not floating tags) so a compromised or
+      # retagged upstream release can't silently change what runs against a token
+      # with contents:write. Comments record the human-readable version.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install Playwright + Chromium
         run: |
           python -m pip install --upgrade pip
-          python -m pip install playwright
+          python -m pip install -r requirements.txt
           python -m playwright install --with-deps chromium
           sudo apt-get install -y xvfb
 
@@ -45,5 +49,7 @@ jobs:
             echo "No data changes to commit."
           else
             git commit -m "Update TRI data [skip ci]"
-            git push
+            # The scheduled job can race with a concurrent push; rebase and retry
+            # once rather than failing the run and skipping a day of data.
+            git push || (git pull --rebase --autostash && git push)
           fi
