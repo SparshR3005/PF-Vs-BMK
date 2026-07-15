@@ -37,6 +37,12 @@ jobs:
           python -m playwright install --with-deps chromium
           sudo apt-get install -y xvfb
 
+      # The continuity gate is the only thing standing between a bad fetch and a
+      # permanently rewritten history. If its tests don't pass, do not fetch and do
+      # not commit — a skipped day costs nothing, a corrupted series is forever.
+      - name: Run regression tests (gate)
+        run: python tests/test_fetch_tri.py
+
       - name: Fetch TRI (headful under xvfb)
         run: xvfb-run -a python fetch_tri.py
 
