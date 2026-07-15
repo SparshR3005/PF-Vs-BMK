@@ -75,9 +75,12 @@ INDEX_MAP = {
 # Body arrives as text/html but is JSON; caller parses the text directly.
 JS_FETCH = r"""
 async ([url, payload]) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);   // 20s hard deadline per request
   try {
     const r = await fetch(url, {
       method: "POST", credentials: "include", redirect: "follow",
+      signal: ctrl.signal,
       headers: {
         "Content-Type": "application/json; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest",
@@ -89,6 +92,8 @@ async ([url, payload]) => {
     return { status: r.status, redirected: r.redirected, text: text };
   } catch (e) {
     return { status: -1, redirected: false, text: "FETCH_ERROR: " + String(e) };
+  } finally {
+    clearTimeout(t);
   }
 }
 """
@@ -284,6 +289,60 @@ def read_existing_end(path: Path):
         return 0, None, None
 
 
+def read_existing_doc(path: Path):
+    """Return the full committed TRI doc (incl. series), or None if absent/unreadable."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+# A validated series can still be a DISASTER to publish: a smooth, fresh, but
+# truncated 200-row window passes validate_series()/is_fresh() yet would overwrite
+# a multi-year committed file and silently rewrite every historical XIRR. Before
+# publishing we therefore diff each new series against the last-good file and
+# refuse anything that loses early history, materially shrinks, or disagrees with
+# committed historical values (the fingerprint of a wrong index being spliced in).
+CONT_MIN_KEEP_FRACTION = 0.98   # new count must be >= 98% of the committed count
+CONT_VALUE_TOLERANCE   = 0.01   # committed historical points must match within 1%
+
+
+def continuity_problem(new_doc: dict, old_doc) -> str:
+    """Return a reason string if the new series breaks continuity, else ''."""
+    if not old_doc:
+        return ""                                   # first run: nothing to protect
+    old_series = old_doc.get("series") or {}
+    new_series = new_doc.get("series") or {}
+    old_count, new_count = len(old_series), len(new_series)
+    old_start, new_start = old_doc.get("start"), new_doc.get("start")
+    old_end = old_doc.get("end")
+
+    # ISO dates sort chronologically as plain strings, so a later start = lost history.
+    if old_start and new_start and new_start > old_start:
+        return (f"new start {new_start} is later than committed start {old_start} "
+                f"— earlier history would be dropped")
+    if old_count and new_count < old_count * CONT_MIN_KEEP_FRACTION:
+        return (f"row count shrank {old_count} -> {new_count} "
+                f"(<{CONT_MIN_KEEP_FRACTION:.0%} retained)")
+
+    # Overlapping historical points are fixed once published; large drift means a
+    # different index (or a decimal shift) was returned under the same name.
+    common = [d for d in old_series if d in new_series]
+    if len(common) >= 20:
+        step = max(1, len(common) // 40)            # sample up to ~40 points
+        for d in common[::step]:
+            ov, nv = old_series[d], new_series[d]
+            if ov and abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
+                return (f"committed value on {d} changed {ov:.2f} -> {nv:.2f} "
+                        f"(>{CONT_VALUE_TOLERANCE:.0%}) — likely a different series")
+        if old_end and old_end in new_series and old_series.get(old_end):
+            ov, nv = old_series[old_end], new_series[old_end]
+            if abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
+                return (f"value on prior end {old_end} changed {ov:.2f} -> {nv:.2f} "
+                        f"(>{CONT_VALUE_TOLERANCE:.0%}) — likely a different series")
+    return ""
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     end = today_ist().strftime("%d-%b-%Y")
@@ -331,6 +390,13 @@ def main():
 
                 if not is_fresh(doc):
                     failures.append(f"{name}: stale end date {doc['end']}")
+                    continue
+
+                # Continuity gate: never let a validated-but-truncated/mismatched
+                # series overwrite good committed history (see continuity_problem).
+                cont = continuity_problem(doc, read_existing_doc(OUT_DIR / filename))
+                if cont:
+                    failures.append(f"{name}: continuity check failed — {cont}")
                     continue
 
                 print(
