@@ -169,28 +169,39 @@ def has_akamai(context) -> bool:
 def fetch_index(page, context, name: str, end: str):
     payload = build_payload(name, START_DATE, end)
     for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
-        prime(page, reload=(attempt > 1))
-        if not has_akamai(context):
-            print("    [%s] attempt %d: no ak_bmsc yet" % (name, attempt))
+        # The whole attempt — navigation, cookie check and in-page fetch — runs inside
+        # one guard. A PWTimeout from goto/reload/evaluate must degrade this index to
+        # "failed" (last-good preserved, or fail-closed if required), never propagate
+        # out of main() and abort every index still queued behind it. (#5)
+        try:
+            prime(page, reload=(attempt > 1))
+            if not has_akamai(context):
+                print("    [%s] attempt %d: no ak_bmsc yet" % (name, attempt))
+                time.sleep(2 * attempt)
+                continue
+            res = page.evaluate(JS_FETCH, [ENDPOINT, payload])
+            rows = parse_rows(res)
+            if rows is None:
+                snippet = (res.get("text", "") or "")[:80].replace("\n", " ")
+                print("    [%s] attempt %d: wall/redirect (status=%s redir=%s) %r"
+                      % (name, attempt, res.get("status"), res.get("redirected"), snippet))
+                time.sleep(2 * attempt)
+                continue
+            if len(rows) == 0:
+                print("    [%s] EMPTY result -> likely wrong canonical name; skipping" % name)
+                return None
+            if len(rows) < MIN_ROWS:
+                print("    [%s] attempt %d: only %d rows (<%d), retrying"
+                      % (name, attempt, len(rows), MIN_ROWS))
+                time.sleep(2 * attempt)
+                continue
+            return rows
+        except PWTimeout as exc:
+            print("    [%s] attempt %d: browser timeout: %s" % (name, attempt, exc))
             time.sleep(2 * attempt)
-            continue
-        res = page.evaluate(JS_FETCH, [ENDPOINT, payload])
-        rows = parse_rows(res)
-        if rows is None:
-            snippet = (res.get("text", "") or "")[:80].replace("\n", " ")
-            print("    [%s] attempt %d: wall/redirect (status=%s redir=%s) %r"
-                  % (name, attempt, res.get("status"), res.get("redirected"), snippet))
+        except Exception as exc:
+            print("    [%s] attempt %d: browser error: %s" % (name, attempt, exc))
             time.sleep(2 * attempt)
-            continue
-        if len(rows) == 0:
-            print("    [%s] EMPTY result -> likely wrong canonical name; skipping" % name)
-            return None
-        if len(rows) < MIN_ROWS:
-            print("    [%s] attempt %d: only %d rows (<%d), retrying"
-                  % (name, attempt, len(rows), MIN_ROWS))
-            time.sleep(2 * attempt)
-            continue
-        return rows
     print("    [%s] FAILED after %d attempts" % (name, PER_INDEX_ATTEMPTS))
     return None
 
@@ -315,12 +326,18 @@ def continuity_problem(new_doc: dict, old_doc) -> str:
     new_series = new_doc.get("series") or {}
     old_count, new_count = len(old_series), len(new_series)
     old_start, new_start = old_doc.get("start"), new_doc.get("start")
-    old_end = old_doc.get("end")
+    old_end, new_end = old_doc.get("end"), new_doc.get("end")
 
     # ISO dates sort chronologically as plain strings, so a later start = lost history.
     if old_start and new_start and new_start > old_start:
         return (f"new start {new_start} is later than committed start {old_start} "
                 f"— earlier history would be dropped")
+    # ...and an earlier END = lost RECENT history. A fresh-but-truncated tail passes
+    # is_fresh() (MAX_STALE_DAYS bounds it to ~7 days) and can retain >98% of rows,
+    # so neither the freshness gate nor the row-count gate catches this on its own.
+    if old_end and new_end and new_end < old_end:
+        return (f"new end {new_end} is earlier than committed end {old_end} "
+                f"— recent history would be dropped")
     if old_count and new_count < old_count * CONT_MIN_KEEP_FRACTION:
         return (f"row count shrank {old_count} -> {new_count} "
                 f"(<{CONT_MIN_KEEP_FRACTION:.0%} retained)")
@@ -370,7 +387,15 @@ def main():
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
             page = context.new_page()
-            prime(page, reload=False)
+            # Best-effort warm-up only: fetch_index() re-primes on every attempt, so a
+            # timeout here must not abort the run before a single index is tried. (#5)
+            try:
+                prime(page, reload=False)
+            except PWTimeout as exc:
+                print("    initial prime timed out (%s) — continuing; "
+                      "each index re-primes on its own attempts" % exc)
+            except Exception as exc:
+                print("    initial prime failed (%s) — continuing" % exc)
 
             items = list(INDEX_MAP.items())
             for index, (key, meta) in enumerate(items, start=1):
