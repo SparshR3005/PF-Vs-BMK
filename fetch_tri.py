@@ -22,6 +22,13 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 PAGE = "https://www.niftyindices.com/reports/historical-data"
 ENDPOINT = "https://www.niftyindices.com/BackPage/getTotalReturnIndexString"
+# Composite/hybrid/debt indices are standalone TR series that are NOT served by the
+# TRI endpoint above (it 200s with an EMPTY body for them — confirmed on the first
+# run). They come through the historical index-values endpoint instead, which takes
+# the identical cinfo payload and returns {"d": "[...]"} rows carrying CLOSE /
+# HistoricalDate (parse_rows + the field-tolerant rows_to_doc already handle both).
+# Use the ROUTED path (/BackPage/..., no .aspx): the old Backpage.aspx path walls.
+ENDPOINT_HIST = "https://www.niftyindices.com/BackPage/getHistoricaldatatabletoString"
 OUT_DIR = Path("data/tri")
 START_DATE = "01-Jan-1999"          # DD-MMM-YYYY, endpoint format
 MIN_ROWS = 200                       # a real series has thousands; guards against []/wall
@@ -99,33 +106,43 @@ INDEX_MAP = {
     "NIFTY_INDIA_DIGITAL":  {"name": "NIFTY INDIA DIGITAL",        "file": "NIFTY_INDIA_DIGITAL.json"},
     "NIFTY_TRANSPORT":      {"name": "NIFTY TRANSPORTATION & LOGISTICS", "file": "NIFTY_TRANSPORT.json"},
     # --- hybrid composite (Phase A) ---
-    # These are ALREADY total-return composite indices (Nifty 50 TR blended with a
-    # fixed-income index), used to benchmark aggressive/balanced/conservative hybrid,
-    # balanced-advantage/dynamic-allocation and equity-savings funds. They are almost
-    # certainly served by this same getTotalReturnIndexString endpoint (they carry a
-    # TotalReturnsIndex series), but the exact canonical spelling is unverified here,
-    # so each entry lists candidate `names` tried in order on an EMPTY result — the
-    # factsheet title ("... Index") first, then the bare form. If ALL candidates log
-    # "EMPTY result", the name is still wrong OR these only come via the historical-
-    # values endpoint (getHistoricaldatatabtoString); adjust and re-run. Verified
-    # names as printed on the NSE factsheets (May 2026):
+    # ALREADY total-return composite indices (Nifty 50 TR blended with a fixed-income
+    # index) used to benchmark aggressive/balanced/conservative hybrid, balanced-
+    # advantage/dynamic-allocation and equity-savings funds. The first live run proved
+    # these are NOT on getTotalReturnIndexString (it 200s with an EMPTY body for them);
+    # they are served by ENDPOINT_HIST (getHistoricaldatatabletoString), which returns
+    # CLOSE/HistoricalDate rows — the index level of a TR composite IS its TR value.
+    # niftyindices spells the ratio with a COLON on the factsheet ("65:35") and a
+    # HYPHEN in the index-page URL ("65-35"), so both are tried; whichever the endpoint
+    # accepts wins on the first non-EMPTY response (EMPTY costs one cheap request, not
+    # a full retry cycle). Factsheet names verified May 2026:
     #   niftyindices.com/Factsheet/Factsheet_NIFTY_Hybrid_Indices.pdf  (the 65:35 etc.)
     #   niftyindices.com/Factsheet/Nifty_ESI_Factsheet.pdf             (Equity Savings)
     # DELIBERATELY OPTIONAL (absent from REQUIRED_KEYS): a composite miss keeps its
     # last-good file and is flagged stale, and NEVER aborts the equity run.
     "NIFTY_HYBRID_65_35":   {"name": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
+                             "endpoint": ENDPOINT_HIST,
                              "names": ["NIFTY 50 Hybrid Composite Debt 65:35 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 65:35"],
+                                       "NIFTY 50 Hybrid Composite Debt 65:35",
+                                       "NIFTY 50 Hybrid Composite Debt 65-35 Index",
+                                       "NIFTY 50 Hybrid Composite Debt 65-35"],
                              "file": "NIFTY_HYBRID_65_35.json"},
     "NIFTY_HYBRID_50_50":   {"name": "NIFTY 50 Hybrid Composite Debt 50:50 Index",
+                             "endpoint": ENDPOINT_HIST,
                              "names": ["NIFTY 50 Hybrid Composite Debt 50:50 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 50:50"],
+                                       "NIFTY 50 Hybrid Composite Debt 50:50",
+                                       "NIFTY 50 Hybrid Composite Debt 50-50 Index",
+                                       "NIFTY 50 Hybrid Composite Debt 50-50"],
                              "file": "NIFTY_HYBRID_50_50.json"},
     "NIFTY_HYBRID_15_85":   {"name": "NIFTY 50 Hybrid Composite Debt 15:85 Index",
+                             "endpoint": ENDPOINT_HIST,
                              "names": ["NIFTY 50 Hybrid Composite Debt 15:85 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 15:85"],
+                                       "NIFTY 50 Hybrid Composite Debt 15:85",
+                                       "NIFTY 50 Hybrid Composite Debt 15-85 Index",
+                                       "NIFTY 50 Hybrid Composite Debt 15-85"],
                              "file": "NIFTY_HYBRID_15_85.json"},
     "NIFTY_EQ_SAVINGS":     {"name": "NIFTY Equity Savings Index",
+                             "endpoint": ENDPOINT_HIST,
                              "names": ["NIFTY Equity Savings Index",
                                        "NIFTY Equity Savings"],
                              "file": "NIFTY_EQ_SAVINGS.json"},
@@ -226,7 +243,7 @@ def has_akamai(context) -> bool:
     return "ak_bmsc" in names
 
 
-def _fetch_one_name(page, context, name: str, end: str):
+def _fetch_one_name(page, context, name: str, end: str, endpoint: str = ENDPOINT):
     """Fetch a single canonical name. Returns (rows, "empty"|"fail").
     rows is a non-empty list on success; on failure rows is None and the second
     element is "empty" (endpoint answered [] -> wrong name, try the next candidate)
@@ -244,7 +261,7 @@ def _fetch_one_name(page, context, name: str, end: str):
                 print("    [%s] attempt %d: no ak_bmsc yet" % (name, attempt))
                 time.sleep(2 * attempt)
                 continue
-            res = page.evaluate(JS_FETCH, [ENDPOINT, payload])
+            res = page.evaluate(JS_FETCH, [endpoint, payload])
             rows = parse_rows(res)
             if rows is None:
                 snippet = (res.get("text", "") or "")[:80].replace("\n", " ")
@@ -271,15 +288,16 @@ def _fetch_one_name(page, context, name: str, end: str):
     return None, "fail"
 
 
-def fetch_index(page, context, names, end: str):
+def fetch_index(page, context, names, end: str, endpoint: str = ENDPOINT):
     """Try each candidate spelling until one returns a usable series. Equity indices
-    pass a single name (list-of-one) and behave exactly as before. Composite indices
-    pass ["... Index", "..."] so an unverified suffix self-corrects on the first run
-    instead of silently skipping the index."""
+    pass a single name (list-of-one) on the default TRI endpoint and behave exactly as
+    before. Composite indices pass several spellings AND an alternate endpoint, so an
+    unverified name/endpoint self-corrects on the first run instead of silently
+    skipping the index."""
     if isinstance(names, str):
         names = [names]
     for name in names:
-        rows, why = _fetch_one_name(page, context, name, end)
+        rows, why = _fetch_one_name(page, context, name, end, endpoint)
         if rows:
             if name != names[0]:
                 print("    [%s] matched via candidate spelling %r" % (names[0], name))
@@ -314,7 +332,7 @@ def _row_date(row):
     raise KeyError("no known date field")
 
 
-def rows_to_doc(key: str, name: str, rows: list) -> dict:
+def rows_to_doc(key: str, name: str, rows: list, endpoint: str = ENDPOINT) -> dict:
     series = {}
     for row in rows:
         try:
@@ -330,7 +348,7 @@ def rows_to_doc(key: str, name: str, rows: list) -> dict:
     return {
         "key": key,
         "index": name,
-        "source": "niftyindices.com getTotalReturnIndexString",
+        "source": "niftyindices.com " + endpoint.rsplit("/", 1)[-1],
         "fetched_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "count": len(ordered),
         "start": dates[0] if dates else None,
@@ -509,14 +527,15 @@ def main():
             for index, (key, meta) in enumerate(items, start=1):
                 name = meta["name"]
                 filename = meta["file"]
-                names = meta.get("names") or [name]   # composites carry alt spellings
+                names = meta.get("names") or [name]        # composites carry alt spellings
+                endpoint = meta.get("endpoint", ENDPOINT)   # composites use the hist endpoint
                 print(f"[{index}/{len(items)}] {name} ({key})")
-                rows = fetch_index(page, context, names, end)
+                rows = fetch_index(page, context, names, end, endpoint)
                 if not rows:
                     failures.append(f"{name}: fetch failed")
                     continue
 
-                doc = rows_to_doc(key, name, rows)
+                doc = rows_to_doc(key, name, rows, endpoint)
                 problem = validate_series(doc)
                 if problem:
                     failures.append(f"{name}: {problem}")
