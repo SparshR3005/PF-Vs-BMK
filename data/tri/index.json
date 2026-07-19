@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-07-19T05:27:48Z",
+  "generated_utc": "2026-07-19T13:42:49Z",
   "indices": [
     {
       "key": "NIFTY50",
@@ -351,6 +351,42 @@
       "start": "2005-04-01",
       "end": "2026-07-17",
       "fresh": true
+    },
+    {
+      "key": "NIFTY_HYBRID_65_35",
+      "index": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
+      "file": "NIFTY_HYBRID_65_35.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_HYBRID_50_50",
+      "index": "NIFTY 50 Hybrid Composite Debt 50:50 Index",
+      "file": "NIFTY_HYBRID_50_50.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_HYBRID_15_85",
+      "index": "NIFTY 50 Hybrid Composite Debt 15:85 Index",
+      "file": "NIFTY_HYBRID_15_85.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_EQ_SAVINGS",
+      "index": "NIFTY Equity Savings Index",
+      "file": "NIFTY_EQ_SAVINGS.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
     }
   ]
 }
