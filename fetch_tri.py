@@ -79,7 +79,7 @@ INDEX_MAP = {
     "NIFTY_PSU_BANK":       {"name": "NIFTY PSU BANK",             "file": "NIFTY_PSU_BANK.json"},
     "NIFTY_IT":             {"name": "NIFTY IT",                   "file": "NIFTY_IT.json"},
     "NIFTY_PHARMA":         {"name": "NIFTY PHARMA",               "file": "NIFTY_PHARMA.json"},
-    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE INDEX",     "file": "NIFTY_HEALTHCARE.json"},
+    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE",           "file": "NIFTY_HEALTHCARE.json"},
     "NIFTY_FMCG":           {"name": "NIFTY FMCG",                 "file": "NIFTY_FMCG.json"},
     "NIFTY_CONSUMPTION":    {"name": "NIFTY INDIA CONSUMPTION",    "file": "NIFTY_CONSUMPTION.json"},
     "NIFTY_CONSUMER_DUR":   {"name": "NIFTY CONSUMER DURABLES",    "file": "NIFTY_CONSUMER_DUR.json"},
