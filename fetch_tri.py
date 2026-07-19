@@ -122,43 +122,35 @@ INDEX_MAP = {
     # --- hybrid composite (Phase A) ---
     # ALREADY total-return composite indices (Nifty 50 TR blended with a fixed-income
     # index) used to benchmark aggressive/balanced/conservative hybrid, balanced-
-    # advantage/dynamic-allocation and equity-savings funds. The first live run proved
-    # these are NOT on getTotalReturnIndexString (it 200s with an EMPTY body for them);
-    # they are served by ENDPOINT_HIST (getHistoricaldatatabletoString), which returns
-    # CLOSE/HistoricalDate rows — the index level of a TR composite IS its TR value.
-    # niftyindices spells the ratio with a COLON on the factsheet ("65:35") and a
-    # HYPHEN in the index-page URL ("65-35"), so both are tried; whichever the endpoint
-    # accepts wins on the first non-EMPTY response (EMPTY costs one cheap request, not
-    # a full retry cycle). Factsheet names verified May 2026:
-    #   niftyindices.com/Factsheet/Factsheet_NIFTY_Hybrid_Indices.pdf  (the 65:35 etc.)
-    #   niftyindices.com/Factsheet/Nifty_ESI_Factsheet.pdf             (Equity Savings)
+    # advantage/dynamic-allocation and equity-savings funds. Diagnostics established:
+    #   * the request wrapper is `cinfo` (a flat body 302-redirects to a wall);
+    #   * niftyindices matches the index name in UPPERCASE — every working equity name
+    #     in this map is uppercase, and the Title-Case spellings returned a clean [].
+    # So names below are uppercase (colon ratios, no "Index" suffix), matching the
+    # equity convention. fetch_composite() probes BOTH endpoints (the TRI endpoint
+    # first — if it serves these, the whole series comes in one call like equity; else
+    # the historical-values endpoint, chunked) and logs the raw response either way.
     # DELIBERATELY OPTIONAL (absent from REQUIRED_KEYS): a composite miss keeps its
     # last-good file and is flagged stale, and NEVER aborts the equity run.
-    "NIFTY_HYBRID_65_35":   {"name": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
-                             "endpoint": ENDPOINT_HIST,
-                             "names": ["NIFTY 50 Hybrid Composite Debt 65:35 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 65:35",
-                                       "NIFTY 50 Hybrid Composite Debt 65-35 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 65-35"],
+    "NIFTY_HYBRID_65_35":   {"name": "NIFTY 50 HYBRID COMPOSITE DEBT 65:35",
+                             "composite": True,
+                             "names": ["NIFTY 50 HYBRID COMPOSITE DEBT 65:35",
+                                       "NIFTY 50 HYBRID COMPOSITE DEBT 65:35 INDEX"],
                              "file": "NIFTY_HYBRID_65_35.json"},
-    "NIFTY_HYBRID_50_50":   {"name": "NIFTY 50 Hybrid Composite Debt 50:50 Index",
-                             "endpoint": ENDPOINT_HIST,
-                             "names": ["NIFTY 50 Hybrid Composite Debt 50:50 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 50:50",
-                                       "NIFTY 50 Hybrid Composite Debt 50-50 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 50-50"],
+    "NIFTY_HYBRID_50_50":   {"name": "NIFTY 50 HYBRID COMPOSITE DEBT 50:50",
+                             "composite": True,
+                             "names": ["NIFTY 50 HYBRID COMPOSITE DEBT 50:50",
+                                       "NIFTY 50 HYBRID COMPOSITE DEBT 50:50 INDEX"],
                              "file": "NIFTY_HYBRID_50_50.json"},
-    "NIFTY_HYBRID_15_85":   {"name": "NIFTY 50 Hybrid Composite Debt 15:85 Index",
-                             "endpoint": ENDPOINT_HIST,
-                             "names": ["NIFTY 50 Hybrid Composite Debt 15:85 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 15:85",
-                                       "NIFTY 50 Hybrid Composite Debt 15-85 Index",
-                                       "NIFTY 50 Hybrid Composite Debt 15-85"],
+    "NIFTY_HYBRID_15_85":   {"name": "NIFTY 50 HYBRID COMPOSITE DEBT 15:85",
+                             "composite": True,
+                             "names": ["NIFTY 50 HYBRID COMPOSITE DEBT 15:85",
+                                       "NIFTY 50 HYBRID COMPOSITE DEBT 15:85 INDEX"],
                              "file": "NIFTY_HYBRID_15_85.json"},
-    "NIFTY_EQ_SAVINGS":     {"name": "NIFTY Equity Savings Index",
-                             "endpoint": ENDPOINT_HIST,
-                             "names": ["NIFTY Equity Savings Index",
-                                       "NIFTY Equity Savings"],
+    "NIFTY_EQ_SAVINGS":     {"name": "NIFTY EQUITY SAVINGS",
+                             "composite": True,
+                             "names": ["NIFTY EQUITY SAVINGS",
+                                       "NIFTY EQUITY SAVINGS INDEX"],
                              "file": "NIFTY_EQ_SAVINGS.json"},
 }
 
@@ -199,12 +191,6 @@ def build_payload(name: str, start: str, end: str) -> str:
         name, start, end, name,
     )
     return json.dumps({"cinfo": cinfo})
-
-
-def build_payload_flat(name: str, start: str, end: str) -> str:
-    # Some niftyindices deployments take the historical-values request as a flat body
-    # rather than the cinfo-wrapped string the TRI endpoint uses. Tried by the probe.
-    return json.dumps({"name": name, "startDate": start, "endDate": end, "indexName": name})
 
 
 def parse_rows(res: dict):
@@ -351,23 +337,17 @@ def _ddmon(d: date) -> str:
     return d.strftime("%d-%b-%Y")
 
 
-# (label, payload builder, date format) combinations the probe will try, best-first.
-HIST_REQUEST_VARIANTS = [
-    ("cinfo/dd-mon-yyyy", build_payload,      "%d-%b-%Y"),
-    ("flat/dd-mon-yyyy",  build_payload_flat, "%d-%b-%Y"),
-    ("flat/dd-mm-yyyy",   build_payload_flat, "%d-%m-%Y"),
-    ("cinfo/dd-mm-yyyy",  build_payload,      "%d-%m-%Y"),
-    ("flat/yyyy-mm-dd",   build_payload_flat, "%Y-%m-%d"),
-]
+# Encoding is settled by diagnostics: the `cinfo`-wrapped body (same as the TRI
+# endpoint) with DD-Mon-YYYY dates. A flat body 302-redirects to a wall.
+COMPOSITE_ENDPOINTS = [ENDPOINT, ENDPOINT_HIST]   # try TRI (one-call) before HIST (chunked)
 
 
-def _hist_window(page, context, endpoint, name, start_d, end_d, budget,
-                 builder=build_payload, fmt="%d-%b-%Y"):
-    """Fetch one [start_d, end_d] window with prime+retry, using the resolved request
-    encoding. Returns a rows list (possibly empty) or None on hard failure. Decrements
-    `budget` per real request. Primes only when the Akamai cookie is missing or after a
-    wall, so a long chunk loop reuses one session. Logs the wall/redirect case so it is
-    never silently conflated with a genuine empty window."""
+def _hist_window(page, context, endpoint, name, start_d, end_d, budget):
+    """Fetch one [start_d, end_d] window with prime+retry, cinfo-encoded. Returns a rows
+    list (possibly empty) or None on hard failure. Decrements `budget` per real request.
+    Primes only when the Akamai cookie is missing or after a wall, so a long chunk loop
+    reuses one session. Logs the wall/redirect case so it is never silently conflated
+    with a genuine empty window."""
     for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
         if budget[0] <= 0:
             return []
@@ -378,7 +358,7 @@ def _hist_window(page, context, endpoint, name, start_d, end_d, budget,
                 time.sleep(2 * attempt)
                 continue
             budget[0] -= 1
-            payload = builder(name, start_d.strftime(fmt), end_d.strftime(fmt))
+            payload = build_payload(name, _ddmon(start_d), _ddmon(end_d))
             res = page.evaluate(JS_FETCH, [endpoint, payload])
             rows = parse_rows(res)
             if rows is None:                    # wall/redirect -> log, re-prime and retry
@@ -399,46 +379,47 @@ def _hist_window(page, context, endpoint, name, start_d, end_d, budget,
     return None
 
 
-def _probe_hist(page, context, endpoint, names, end_d):
-    """One-time resolver + diagnostic. Over a recent ~120-day window (which a healthy
-    endpoint answers with ~80 rows), try each candidate name against each request
-    encoding, logging the RAW response every time. Returns (name, builder, fmt) for the
-    first combo that yields real rows, or None. If none work, the logged raw bodies
-    show exactly what the endpoint said so the contract can be fixed without guessing."""
+def _probe_composite(page, context, names, end_d):
+    """One-time resolver + diagnostic. Over a recent ~120-day window, try every
+    (endpoint, name) pair with the cinfo encoding, logging the RAW response each time.
+    Returns (endpoint, name) for the first pair that yields real rows, or None. Trying
+    the TRI endpoint first means a composite that lives there is pulled in a single call
+    (like equity); otherwise the historical-values endpoint is used with chunking."""
     probe_start = end_d - timedelta(days=120)
-    for name in names:
-        for label, builder, fmt in HIST_REQUEST_VARIANTS:
+    for endpoint in COMPOSITE_ENDPOINTS:
+        tag = endpoint.rsplit("/", 1)[-1]
+        for name in names:
             try:
                 if not has_akamai(context):
                     prime(page, reload=False)
-                payload = builder(name, probe_start.strftime(fmt), end_d.strftime(fmt))
+                payload = build_payload(name, _ddmon(probe_start), _ddmon(end_d))
                 res = page.evaluate(JS_FETCH, [endpoint, payload])
             except Exception as exc:
-                print("    [PROBE] name=%r %s -> evaluate error: %s" % (name, label, exc))
+                print("    [PROBE] %s name=%r -> evaluate error: %s" % (tag, name, exc))
                 continue
             text = (res.get("text", "") or "")
             rows = parse_rows(res)
             n = len(rows) if isinstance(rows, list) else -1
-            print("    [PROBE] name=%r %-18s status=%s redir=%s textlen=%d parsed=%s raw=%r"
-                  % (name, label, res.get("status"), res.get("redirected"),
-                     len(text), n, text[:200].replace("\n", " ")))
+            print("    [PROBE] %s name=%r status=%s redir=%s textlen=%d parsed=%s raw=%r"
+                  % (tag, name, res.get("status"), res.get("redirected"),
+                     len(text), n, text[:180].replace("\n", " ")))
             if isinstance(rows, list) and len(rows) >= 5:
-                print("    [PROBE] SELECTED name=%r encoding=%s" % (name, label))
-                return name, builder, fmt
+                print("    [PROBE] SELECTED endpoint=%s name=%r" % (tag, name))
+                return endpoint, name
             time.sleep(1)
     return None
 
 
-def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out, builder, fmt):
-    """Recursively pull [start_d, end_d] using the resolved encoding, halving the window
-    whenever the endpoint TRUNCATES it, down to the ~1-month floor. Truncation is
-    detected by DATE, not row count: a capped response returns the most-recent rows, so
-    its earliest date won't reach back to the window start. Robust to any cap size. An
-    empty window is accepted as-is (pre-inception / real gap won't split into existence).
-    Per-window diagnostics are logged so the endpoint's true cap is visible from one run."""
+def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out):
+    """Recursively pull [start_d, end_d], halving the window whenever the endpoint
+    TRUNCATES it, down to the ~1-month floor. Truncation is detected by DATE, not row
+    count: a capped response returns the most-recent rows, so its earliest date won't
+    reach back to the window start. Robust to any cap size. An empty window is accepted
+    as-is (pre-inception / real gap won't split into existence). Per-window diagnostics
+    are logged so the endpoint's true cap is visible from one run."""
     if start_d > end_d or budget[0] <= 0:
         return
-    rows = _hist_window(page, context, endpoint, name, start_d, end_d, budget, builder, fmt)
+    rows = _hist_window(page, context, endpoint, name, start_d, end_d, budget)
     if rows is None:
         rows = []
     earliest = None
@@ -457,29 +438,35 @@ def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out, bu
         out.extend(rows)
         return
     mid = start_d + timedelta(days=span // 2)
-    _collect_hist(page, context, endpoint, name, start_d, mid, budget, out, builder, fmt)
-    _collect_hist(page, context, endpoint, name, mid + timedelta(days=1), end_d, budget, out, builder, fmt)
+    _collect_hist(page, context, endpoint, name, start_d, mid, budget, out)
+    _collect_hist(page, context, endpoint, name, mid + timedelta(days=1), end_d, budget, out)
 
 
-def fetch_index_hist(page, context, names, endpoint, start_d, end_d):
-    """Resolve the working name + request encoding via the probe, then collect the full
-    range in self-splitting windows. Returns merged rows (dedup happens later in
-    rows_to_doc, keyed by date) or None if nothing the probe tried was recognised."""
-    resolved = _probe_hist(page, context, endpoint, names, end_d)
+def fetch_composite(page, context, names, start_d, end_d):
+    """Probe both endpoints for a working (endpoint, name), then fetch accordingly:
+    the TRI endpoint returns the whole series in one call; the historical-values
+    endpoint truncates, so it is pulled in self-splitting windows. Returns
+    (rows, endpoint_used) or (None, None) if nothing the probe tried was recognised."""
+    resolved = _probe_composite(page, context, names, end_d)
     if not resolved:
-        return None
-    name, builder, fmt = resolved
+        return None, None
+    endpoint, name = resolved
+    if endpoint == ENDPOINT:
+        # TRI endpoint: one call for the full range, exactly like the equity path.
+        rows = fetch_index(page, context, [name], _ddmon(end_d), ENDPOINT)
+        return rows, endpoint
+    # Historical-values endpoint: chunked, truncation-aware.
     budget = [HIST_MAX_CALLS]
     out = []
     cur = start_d
     while cur <= end_d and budget[0] > 0:
         win_end = min(end_d, cur + timedelta(days=HIST_TOP_WINDOW_DAYS - 1))
-        _collect_hist(page, context, endpoint, name, cur, win_end, budget, out, builder, fmt)
+        _collect_hist(page, context, endpoint, name, cur, win_end, budget, out)
         cur = win_end + timedelta(days=1)
     if budget[0] <= 0:
         print("    [%s] hit per-index call budget (%d); publishing what was collected"
               % (names[0], HIST_MAX_CALLS))
-    return out or None
+    return (out or None), endpoint
 
 
 # The equity TRI endpoint returns rows keyed Date / TotalReturnsIndex. The hybrid
@@ -702,19 +689,19 @@ def main():
                 name = meta["name"]
                 filename = meta["file"]
                 names = meta.get("names") or [name]        # composites carry alt spellings
-                endpoint = meta.get("endpoint", ENDPOINT)   # composites use the hist endpoint
                 print(f"[{index}/{len(items)}] {name} ({key})")
-                if endpoint == ENDPOINT:
-                    rows = fetch_index(page, context, names, end, endpoint)
+                if meta.get("composite"):
+                    # Probe both endpoints; fetch full (TRI) or chunked (historical).
+                    rows, used_endpoint = fetch_composite(page, context, names,
+                                                          START_DATE_HIST, today_ist())
                 else:
-                    # Historical endpoint truncates big ranges -> pull in windows.
-                    rows = fetch_index_hist(page, context, names, endpoint,
-                                            START_DATE_HIST, today_ist())
+                    rows = fetch_index(page, context, names, end, ENDPOINT)
+                    used_endpoint = ENDPOINT
                 if not rows:
                     failures.append(f"{name}: fetch failed")
                     continue
 
-                doc = rows_to_doc(key, name, rows, endpoint)
+                doc = rows_to_doc(key, name, rows, used_endpoint)
                 problem = validate_series(doc)
                 if problem:
                     failures.append(f"{name}: {problem}")
