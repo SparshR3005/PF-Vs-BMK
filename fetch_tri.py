@@ -201,6 +201,12 @@ def build_payload(name: str, start: str, end: str) -> str:
     return json.dumps({"cinfo": cinfo})
 
 
+def build_payload_flat(name: str, start: str, end: str) -> str:
+    # Some niftyindices deployments take the historical-values request as a flat body
+    # rather than the cinfo-wrapped string the TRI endpoint uses. Tried by the probe.
+    return json.dumps({"name": name, "startDate": start, "endDate": end, "indexName": name})
+
+
 def parse_rows(res: dict):
     """Return list rows, [] for empty result, or None if wall/redirect/garbage."""
     if res.get("status") != 200 or res.get("redirected"):
@@ -328,15 +334,40 @@ def fetch_index(page, context, names, end: str, endpoint: str = ENDPOINT):
 # The equity path above is untouched; only INDEX_MAP entries carrying an alternate
 # `endpoint` come through here.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Composite / hybrid indices: chunked fetch against the historical-values endpoint.
+# That endpoint truncates large ranges, so we pull the series in windows and merge.
+# The equity path above is untouched; only INDEX_MAP entries carrying an alternate
+# `endpoint` come through here.
+#
+# The endpoint's exact request contract is version-dependent in the wild (some
+# deployments want the TRI endpoint's `cinfo`-wrapped string, others a flat body;
+# the date token format also varies). Rather than hard-code one, a one-time probe
+# tries a small matrix on a recent window, LOGS the raw response for each so a
+# failure is fully diagnosable from the Actions log, and adopts whichever encoding
+# actually returns rows. That encoding is then reused for the whole series.
+# ---------------------------------------------------------------------------
 def _ddmon(d: date) -> str:
     return d.strftime("%d-%b-%Y")
 
 
-def _hist_window(page, context, endpoint, name, start_d, end_d, budget):
-    """Fetch one [start_d, end_d] window with prime+retry. Returns a rows list
-    (possibly empty) or None on hard failure. Decrements `budget` (a 1-element list)
-    per real request so a pathological cap can't run forever. Primes only when the
-    Akamai cookie is missing or after a wall, so a long chunk loop reuses one session."""
+# (label, payload builder, date format) combinations the probe will try, best-first.
+HIST_REQUEST_VARIANTS = [
+    ("cinfo/dd-mon-yyyy", build_payload,      "%d-%b-%Y"),
+    ("flat/dd-mon-yyyy",  build_payload_flat, "%d-%b-%Y"),
+    ("flat/dd-mm-yyyy",   build_payload_flat, "%d-%m-%Y"),
+    ("cinfo/dd-mm-yyyy",  build_payload,      "%d-%m-%Y"),
+    ("flat/yyyy-mm-dd",   build_payload_flat, "%Y-%m-%d"),
+]
+
+
+def _hist_window(page, context, endpoint, name, start_d, end_d, budget,
+                 builder=build_payload, fmt="%d-%b-%Y"):
+    """Fetch one [start_d, end_d] window with prime+retry, using the resolved request
+    encoding. Returns a rows list (possibly empty) or None on hard failure. Decrements
+    `budget` per real request. Primes only when the Akamai cookie is missing or after a
+    wall, so a long chunk loop reuses one session. Logs the wall/redirect case so it is
+    never silently conflated with a genuine empty window."""
     for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
         if budget[0] <= 0:
             return []
@@ -347,10 +378,15 @@ def _hist_window(page, context, endpoint, name, start_d, end_d, budget):
                 time.sleep(2 * attempt)
                 continue
             budget[0] -= 1
-            payload = build_payload(name, _ddmon(start_d), _ddmon(end_d))
+            payload = builder(name, start_d.strftime(fmt), end_d.strftime(fmt))
             res = page.evaluate(JS_FETCH, [endpoint, payload])
             rows = parse_rows(res)
-            if rows is None:                    # wall/redirect -> re-prime and retry
+            if rows is None:                    # wall/redirect -> log, re-prime and retry
+                snippet = (res.get("text", "") or "")[:80].replace("\n", " ")
+                print("    [%s] window %s..%s attempt %d: wall/redirect "
+                      "(status=%s redir=%s) %r"
+                      % (name, start_d, end_d, attempt, res.get("status"),
+                         res.get("redirected"), snippet))
                 time.sleep(2 * attempt)
                 continue
             return rows                          # [] is a valid answer (empty window)
@@ -363,17 +399,46 @@ def _hist_window(page, context, endpoint, name, start_d, end_d, budget):
     return None
 
 
-def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out):
-    """Recursively pull [start_d, end_d], halving the window whenever the endpoint
-    TRUNCATES it, down to the ~1-month floor. Truncation is detected by DATE, not row
-    count: a capped response returns the most-recent rows, so its earliest date won't
-    reach back to the window start. That is robust to any cap size (a row-count floor
-    could silently accept a mid-window shortfall). An empty window is accepted as-is
-    (pre-inception / real gap won't split into existence). Per-window diagnostics are
-    logged so the endpoint's true cap is visible from one run."""
+def _probe_hist(page, context, endpoint, names, end_d):
+    """One-time resolver + diagnostic. Over a recent ~120-day window (which a healthy
+    endpoint answers with ~80 rows), try each candidate name against each request
+    encoding, logging the RAW response every time. Returns (name, builder, fmt) for the
+    first combo that yields real rows, or None. If none work, the logged raw bodies
+    show exactly what the endpoint said so the contract can be fixed without guessing."""
+    probe_start = end_d - timedelta(days=120)
+    for name in names:
+        for label, builder, fmt in HIST_REQUEST_VARIANTS:
+            try:
+                if not has_akamai(context):
+                    prime(page, reload=False)
+                payload = builder(name, probe_start.strftime(fmt), end_d.strftime(fmt))
+                res = page.evaluate(JS_FETCH, [endpoint, payload])
+            except Exception as exc:
+                print("    [PROBE] name=%r %s -> evaluate error: %s" % (name, label, exc))
+                continue
+            text = (res.get("text", "") or "")
+            rows = parse_rows(res)
+            n = len(rows) if isinstance(rows, list) else -1
+            print("    [PROBE] name=%r %-18s status=%s redir=%s textlen=%d parsed=%s raw=%r"
+                  % (name, label, res.get("status"), res.get("redirected"),
+                     len(text), n, text[:200].replace("\n", " ")))
+            if isinstance(rows, list) and len(rows) >= 5:
+                print("    [PROBE] SELECTED name=%r encoding=%s" % (name, label))
+                return name, builder, fmt
+            time.sleep(1)
+    return None
+
+
+def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out, builder, fmt):
+    """Recursively pull [start_d, end_d] using the resolved encoding, halving the window
+    whenever the endpoint TRUNCATES it, down to the ~1-month floor. Truncation is
+    detected by DATE, not row count: a capped response returns the most-recent rows, so
+    its earliest date won't reach back to the window start. Robust to any cap size. An
+    empty window is accepted as-is (pre-inception / real gap won't split into existence).
+    Per-window diagnostics are logged so the endpoint's true cap is visible from one run."""
     if start_d > end_d or budget[0] <= 0:
         return
-    rows = _hist_window(page, context, endpoint, name, start_d, end_d, budget)
+    rows = _hist_window(page, context, endpoint, name, start_d, end_d, budget, builder, fmt)
     if rows is None:
         rows = []
     earliest = None
@@ -392,32 +457,24 @@ def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out):
         out.extend(rows)
         return
     mid = start_d + timedelta(days=span // 2)
-    _collect_hist(page, context, endpoint, name, start_d, mid, budget, out)
-    _collect_hist(page, context, endpoint, name, mid + timedelta(days=1), end_d, budget, out)
+    _collect_hist(page, context, endpoint, name, start_d, mid, budget, out, builder, fmt)
+    _collect_hist(page, context, endpoint, name, mid + timedelta(days=1), end_d, budget, out, builder, fmt)
 
 
 def fetch_index_hist(page, context, names, endpoint, start_d, end_d):
-    """Resolve the working spelling on a cheap recent window, then collect the full
+    """Resolve the working name + request encoding via the probe, then collect the full
     range in self-splitting windows. Returns merged rows (dedup happens later in
-    rows_to_doc, keyed by date) or None if no candidate name is recognised."""
-    budget = [HIST_MAX_CALLS]
-    probe_start = end_d - timedelta(days=45)
-    name = None
-    for cand in names:
-        r = _hist_window(page, context, endpoint, cand, probe_start, end_d, budget)
-        if r:                                    # non-empty -> this spelling is recognised
-            name = cand
-            if cand != names[0]:
-                print("    [%s] matched via candidate spelling %r" % (names[0], cand))
-            break
-        print("    [%s] probe empty/failed on %r -> next spelling" % (names[0], cand))
-    if not name:
+    rows_to_doc, keyed by date) or None if nothing the probe tried was recognised."""
+    resolved = _probe_hist(page, context, endpoint, names, end_d)
+    if not resolved:
         return None
+    name, builder, fmt = resolved
+    budget = [HIST_MAX_CALLS]
     out = []
     cur = start_d
     while cur <= end_d and budget[0] > 0:
         win_end = min(end_d, cur + timedelta(days=HIST_TOP_WINDOW_DAYS - 1))
-        _collect_hist(page, context, endpoint, name, cur, win_end, budget, out)
+        _collect_hist(page, context, endpoint, name, cur, win_end, budget, out, builder, fmt)
         cur = win_end + timedelta(days=1)
     if budget[0] <= 0:
         print("    [%s] hit per-index call budget (%d); publishing what was collected"
