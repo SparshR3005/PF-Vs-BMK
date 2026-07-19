@@ -14,7 +14,7 @@ import math
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,6 +35,20 @@ MIN_ROWS = 200                       # a real series has thousands; guards again
 MAX_STALE_DAYS = 7
 PER_INDEX_ATTEMPTS = 4
 NAV_TIMEOUT_MS = 45000
+
+# --- composite (historical-endpoint) fetch tuning ---
+# The historical index-values endpoint truncates large date ranges (a 27-year ask
+# came back with 6 rows on the first run), so composites must be pulled in windows.
+# jugaad-data proves calendar-month windows always work; larger windows are faster
+# when the endpoint honours them. We therefore try a ~1-year window first and let it
+# SELF-SPLIT (halving toward the monthly floor) whenever a window looks truncated —
+# so the code adapts to the endpoint's real cap instead of hard-coding a guess, and
+# the per-window row counts are logged so that cap is visible after a single run.
+START_DATE_HIST      = date(2006, 1, 1)   # covers all NSE hybrid/ES inceptions with headroom
+HIST_TOP_WINDOW_DAYS = 366                # first-try window per step; splits if truncated
+HIST_MIN_WINDOW_DAYS = 32                 # never split below ~1 month (jugaad-data's floor)
+HIST_GAP_TOLERANCE_DAYS = 10              # earliest row must reach within this of the window start
+HIST_MAX_CALLS       = 400                # per-index backstop so a tiny cap can't blow the budget
 
 # Soft completeness gate: the run fails (and commits nothing) only if one of these
 # broad-market indices is missing/invalid — they are the fallbacks every equity
@@ -308,6 +322,109 @@ def fetch_index(page, context, names, end: str, endpoint: str = ENDPOINT):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Composite / hybrid indices: chunked fetch against the historical-values endpoint.
+# That endpoint truncates large ranges, so we pull the series in windows and merge.
+# The equity path above is untouched; only INDEX_MAP entries carrying an alternate
+# `endpoint` come through here.
+# ---------------------------------------------------------------------------
+def _ddmon(d: date) -> str:
+    return d.strftime("%d-%b-%Y")
+
+
+def _hist_window(page, context, endpoint, name, start_d, end_d, budget):
+    """Fetch one [start_d, end_d] window with prime+retry. Returns a rows list
+    (possibly empty) or None on hard failure. Decrements `budget` (a 1-element list)
+    per real request so a pathological cap can't run forever. Primes only when the
+    Akamai cookie is missing or after a wall, so a long chunk loop reuses one session."""
+    for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
+        if budget[0] <= 0:
+            return []
+        try:
+            if attempt > 1 or not has_akamai(context):
+                prime(page, reload=(attempt > 1))
+            if not has_akamai(context):
+                time.sleep(2 * attempt)
+                continue
+            budget[0] -= 1
+            payload = build_payload(name, _ddmon(start_d), _ddmon(end_d))
+            res = page.evaluate(JS_FETCH, [endpoint, payload])
+            rows = parse_rows(res)
+            if rows is None:                    # wall/redirect -> re-prime and retry
+                time.sleep(2 * attempt)
+                continue
+            return rows                          # [] is a valid answer (empty window)
+        except PWTimeout as exc:
+            print("    [%s] window %s..%s timeout: %s" % (name, start_d, end_d, exc))
+            time.sleep(2 * attempt)
+        except Exception as exc:
+            print("    [%s] window %s..%s error: %s" % (name, start_d, end_d, exc))
+            time.sleep(2 * attempt)
+    return None
+
+
+def _collect_hist(page, context, endpoint, name, start_d, end_d, budget, out):
+    """Recursively pull [start_d, end_d], halving the window whenever the endpoint
+    TRUNCATES it, down to the ~1-month floor. Truncation is detected by DATE, not row
+    count: a capped response returns the most-recent rows, so its earliest date won't
+    reach back to the window start. That is robust to any cap size (a row-count floor
+    could silently accept a mid-window shortfall). An empty window is accepted as-is
+    (pre-inception / real gap won't split into existence). Per-window diagnostics are
+    logged so the endpoint's true cap is visible from one run."""
+    if start_d > end_d or budget[0] <= 0:
+        return
+    rows = _hist_window(page, context, endpoint, name, start_d, end_d, budget)
+    if rows is None:
+        rows = []
+    earliest = None
+    for r in rows:
+        try:
+            dt = datetime.strptime(_row_date(r), "%Y-%m-%d").date()
+            if earliest is None or dt < earliest:
+                earliest = dt
+        except Exception:
+            continue
+    span = (end_d - start_d).days + 1
+    reached_back = earliest is not None and (earliest - start_d).days <= HIST_GAP_TOLERANCE_DAYS
+    print("    [%s] %s..%s span=%dd rows=%d earliest=%s reached_back=%s"
+          % (name, start_d, end_d, span, len(rows), earliest, reached_back))
+    if not rows or span <= HIST_MIN_WINDOW_DAYS or reached_back:
+        out.extend(rows)
+        return
+    mid = start_d + timedelta(days=span // 2)
+    _collect_hist(page, context, endpoint, name, start_d, mid, budget, out)
+    _collect_hist(page, context, endpoint, name, mid + timedelta(days=1), end_d, budget, out)
+
+
+def fetch_index_hist(page, context, names, endpoint, start_d, end_d):
+    """Resolve the working spelling on a cheap recent window, then collect the full
+    range in self-splitting windows. Returns merged rows (dedup happens later in
+    rows_to_doc, keyed by date) or None if no candidate name is recognised."""
+    budget = [HIST_MAX_CALLS]
+    probe_start = end_d - timedelta(days=45)
+    name = None
+    for cand in names:
+        r = _hist_window(page, context, endpoint, cand, probe_start, end_d, budget)
+        if r:                                    # non-empty -> this spelling is recognised
+            name = cand
+            if cand != names[0]:
+                print("    [%s] matched via candidate spelling %r" % (names[0], cand))
+            break
+        print("    [%s] probe empty/failed on %r -> next spelling" % (names[0], cand))
+    if not name:
+        return None
+    out = []
+    cur = start_d
+    while cur <= end_d and budget[0] > 0:
+        win_end = min(end_d, cur + timedelta(days=HIST_TOP_WINDOW_DAYS - 1))
+        _collect_hist(page, context, endpoint, name, cur, win_end, budget, out)
+        cur = win_end + timedelta(days=1)
+    if budget[0] <= 0:
+        print("    [%s] hit per-index call budget (%d); publishing what was collected"
+              % (names[0], HIST_MAX_CALLS))
+    return out or None
+
+
 # The equity TRI endpoint returns rows keyed Date / TotalReturnsIndex. The hybrid
 # composite indices carry a TotalReturnsIndex too, but if any variant is instead
 # served with a plain closing-value field we still want to parse it rather than
@@ -321,7 +438,7 @@ DATE_FIELDS = ("Date", "HistoricalDate", "Index Date", "TIMESTAMP")
 def _row_value(row):
     for field in VALUE_FIELDS:
         if field in row and row[field] not in (None, ""):
-            return float(row[field])
+            return float(str(row[field]).replace(",", "").strip())
     raise KeyError("no known value field")
 
 
@@ -530,7 +647,12 @@ def main():
                 names = meta.get("names") or [name]        # composites carry alt spellings
                 endpoint = meta.get("endpoint", ENDPOINT)   # composites use the hist endpoint
                 print(f"[{index}/{len(items)}] {name} ({key})")
-                rows = fetch_index(page, context, names, end, endpoint)
+                if endpoint == ENDPOINT:
+                    rows = fetch_index(page, context, names, end, endpoint)
+                else:
+                    # Historical endpoint truncates big ranges -> pull in windows.
+                    rows = fetch_index_hist(page, context, names, endpoint,
+                                            START_DATE_HIST, today_ist())
                 if not rows:
                     failures.append(f"{name}: fetch failed")
                     continue
