@@ -98,6 +98,37 @@ INDEX_MAP = {
     "NIFTY_INDIA_MFG":      {"name": "NIFTY INDIA MANUFACTURING",  "file": "NIFTY_INDIA_MFG.json"},
     "NIFTY_INDIA_DIGITAL":  {"name": "NIFTY INDIA DIGITAL",        "file": "NIFTY_INDIA_DIGITAL.json"},
     "NIFTY_TRANSPORT":      {"name": "NIFTY TRANSPORTATION & LOGISTICS", "file": "NIFTY_TRANSPORT.json"},
+    # --- hybrid composite (Phase A) ---
+    # These are ALREADY total-return composite indices (Nifty 50 TR blended with a
+    # fixed-income index), used to benchmark aggressive/balanced/conservative hybrid,
+    # balanced-advantage/dynamic-allocation and equity-savings funds. They are almost
+    # certainly served by this same getTotalReturnIndexString endpoint (they carry a
+    # TotalReturnsIndex series), but the exact canonical spelling is unverified here,
+    # so each entry lists candidate `names` tried in order on an EMPTY result — the
+    # factsheet title ("... Index") first, then the bare form. If ALL candidates log
+    # "EMPTY result", the name is still wrong OR these only come via the historical-
+    # values endpoint (getHistoricaldatatabtoString); adjust and re-run. Verified
+    # names as printed on the NSE factsheets (May 2026):
+    #   niftyindices.com/Factsheet/Factsheet_NIFTY_Hybrid_Indices.pdf  (the 65:35 etc.)
+    #   niftyindices.com/Factsheet/Nifty_ESI_Factsheet.pdf             (Equity Savings)
+    # DELIBERATELY OPTIONAL (absent from REQUIRED_KEYS): a composite miss keeps its
+    # last-good file and is flagged stale, and NEVER aborts the equity run.
+    "NIFTY_HYBRID_65_35":   {"name": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
+                             "names": ["NIFTY 50 Hybrid Composite Debt 65:35 Index",
+                                       "NIFTY 50 Hybrid Composite Debt 65:35"],
+                             "file": "NIFTY_HYBRID_65_35.json"},
+    "NIFTY_HYBRID_50_50":   {"name": "NIFTY 50 Hybrid Composite Debt 50:50 Index",
+                             "names": ["NIFTY 50 Hybrid Composite Debt 50:50 Index",
+                                       "NIFTY 50 Hybrid Composite Debt 50:50"],
+                             "file": "NIFTY_HYBRID_50_50.json"},
+    "NIFTY_HYBRID_15_85":   {"name": "NIFTY 50 Hybrid Composite Debt 15:85 Index",
+                             "names": ["NIFTY 50 Hybrid Composite Debt 15:85 Index",
+                                       "NIFTY 50 Hybrid Composite Debt 15:85"],
+                             "file": "NIFTY_HYBRID_15_85.json"},
+    "NIFTY_EQ_SAVINGS":     {"name": "NIFTY Equity Savings Index",
+                             "names": ["NIFTY Equity Savings Index",
+                                       "NIFTY Equity Savings"],
+                             "file": "NIFTY_EQ_SAVINGS.json"},
 }
 
 # In-page fetch: runs in the real renderer, inherits cookies + fingerprint.
@@ -195,7 +226,12 @@ def has_akamai(context) -> bool:
     return "ak_bmsc" in names
 
 
-def fetch_index(page, context, name: str, end: str):
+def _fetch_one_name(page, context, name: str, end: str):
+    """Fetch a single canonical name. Returns (rows, "empty"|"fail").
+    rows is a non-empty list on success; on failure rows is None and the second
+    element is "empty" (endpoint answered [] -> wrong name, try the next candidate)
+    or "fail" (walls/timeouts exhausted -> a later candidate is unlikely to help,
+    but is still attempted so a transient wall doesn't strand an index)."""
     payload = build_payload(name, START_DATE, end)
     for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
         # The whole attempt — navigation, cookie check and in-page fetch — runs inside
@@ -217,14 +253,14 @@ def fetch_index(page, context, name: str, end: str):
                 time.sleep(2 * attempt)
                 continue
             if len(rows) == 0:
-                print("    [%s] EMPTY result -> likely wrong canonical name; skipping" % name)
-                return None
+                print("    [%s] EMPTY result -> likely wrong canonical name" % name)
+                return None, "empty"
             if len(rows) < MIN_ROWS:
                 print("    [%s] attempt %d: only %d rows (<%d), retrying"
                       % (name, attempt, len(rows), MIN_ROWS))
                 time.sleep(2 * attempt)
                 continue
-            return rows
+            return rows, "ok"
         except PWTimeout as exc:
             print("    [%s] attempt %d: browser timeout: %s" % (name, attempt, exc))
             time.sleep(2 * attempt)
@@ -232,15 +268,58 @@ def fetch_index(page, context, name: str, end: str):
             print("    [%s] attempt %d: browser error: %s" % (name, attempt, exc))
             time.sleep(2 * attempt)
     print("    [%s] FAILED after %d attempts" % (name, PER_INDEX_ATTEMPTS))
+    return None, "fail"
+
+
+def fetch_index(page, context, names, end: str):
+    """Try each candidate spelling until one returns a usable series. Equity indices
+    pass a single name (list-of-one) and behave exactly as before. Composite indices
+    pass ["... Index", "..."] so an unverified suffix self-corrects on the first run
+    instead of silently skipping the index."""
+    if isinstance(names, str):
+        names = [names]
+    for name in names:
+        rows, why = _fetch_one_name(page, context, name, end)
+        if rows:
+            if name != names[0]:
+                print("    [%s] matched via candidate spelling %r" % (names[0], name))
+            return rows
+        # "empty" -> the name was wrong; a different candidate may work.
+        # "fail"  -> walls/timeouts; try the next candidate too, in case the
+        #            primary spelling coincided with a bad window.
     return None
+
+
+# The equity TRI endpoint returns rows keyed Date / TotalReturnsIndex. The hybrid
+# composite indices carry a TotalReturnsIndex too, but if any variant is instead
+# served with a plain closing-value field we still want to parse it rather than
+# silently produce an empty series. Equity is unaffected: TotalReturnsIndex / Date
+# are tried FIRST, so existing behaviour is byte-identical.
+VALUE_FIELDS = ("TotalReturnsIndex", "totalReturnsIndex",
+                "INDEX_VALUE", "CLOSE", "Close", "closingValue", "Closing Index Value")
+DATE_FIELDS = ("Date", "HistoricalDate", "Index Date", "TIMESTAMP")
+
+
+def _row_value(row):
+    for field in VALUE_FIELDS:
+        if field in row and row[field] not in (None, ""):
+            return float(row[field])
+    raise KeyError("no known value field")
+
+
+def _row_date(row):
+    for field in DATE_FIELDS:
+        if field in row and row[field]:
+            return to_iso(row[field])
+    raise KeyError("no known date field")
 
 
 def rows_to_doc(key: str, name: str, rows: list) -> dict:
     series = {}
     for row in rows:
         try:
-            iso_date = to_iso(row["Date"])
-            tri_value = float(row["TotalReturnsIndex"])
+            iso_date = _row_date(row)
+            tri_value = _row_value(row)
             if math.isfinite(tri_value) and tri_value > 0:
                 series[iso_date] = tri_value
         except (KeyError, TypeError, ValueError):
@@ -430,8 +509,9 @@ def main():
             for index, (key, meta) in enumerate(items, start=1):
                 name = meta["name"]
                 filename = meta["file"]
+                names = meta.get("names") or [name]   # composites carry alt spellings
                 print(f"[{index}/{len(items)}] {name} ({key})")
-                rows = fetch_index(page, context, name, end)
+                rows = fetch_index(page, context, names, end)
                 if not rows:
                     failures.append(f"{name}: fetch failed")
                     continue

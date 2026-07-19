@@ -60,8 +60,11 @@ try {
   extractConst("SECTOR_KEYWORDS"),
   extractConst("BENCH_FUNDS"),
   extractConst("FLEXI_OVERRIDES"),
+  extractConst("HYBRID_CRISIL_OVERRIDES"),
   extractConst("RENAME_WORD_ALIASES"),
   'const FALLBACK_KEY = "NIFTY500";',
+  'const CRISIL_NOTE = "NSE equivalent of the fund\\u2019s CRISIL benchmark";',
+  'const HYBRID_KEYS = new Set(["AGGR_HYBRID","BAL_HYBRID","BAF_DAA","CONS_HYBRID","EQ_SAVINGS"]);',
   extractFn("normName"),
   extractFn("hasWord"),
   extractFn("stripRenameNote"),
@@ -70,8 +73,11 @@ try {
   extractFn("bigrams"),
   extractFn("similarity"),
   extractFn("normCategory"),
+  extractFn("hybridCategoryKey"),
   extractFn("categoryKey"),
   extractFn("isUnsupportedCategory"),
+  extractFn("isMultiAssetCategory"),
+  extractFn("hybridCrisilNote"),
   extractFn("claimedCategoryFromName"),
   extractFn("resolveBenchmarkKey"),
   ].join("\n");
@@ -85,7 +91,8 @@ let A;
 try {
   A = new Function(SCOPE + `; return {
     matchKey, similarity, stripRenameNote, applyRenameAliases, categoryKey,
-    isUnsupportedCategory, claimedCategoryFromName, resolveBenchmarkKey, BENCH_FUNDS
+    isUnsupportedCategory, isMultiAssetCategory, claimedCategoryFromName,
+    resolveBenchmarkKey, BENCH_FUNDS
   };`)();
 } catch (e) {
   console.log("  FAIL  could not evaluate index.html's matching machinery: " + e.message);
@@ -146,16 +153,53 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
     ok("rejects junk category " + JSON.stringify(junk), A.isUnsupportedCategory(junk));
   });
 
-  // Real categories this tool cannot benchmark against an equity TRI.
+  // Categories this tool still cannot benchmark (debt / index / FoF), plus the two
+  // hybrid sub-categories deliberately excluded for now: arbitrage (return ≈ a
+  // liquid fund, so an "alpha" is uninformative) and multi-asset (Phase B).
   ["Hybrid Scheme - Multi Asset Allocation", "Hybrid Scheme - Arbitrage Fund",
-   "Hybrid Scheme - Aggressive Hybrid Fund", "Hybrid Scheme - Balanced Hybrid Fund",
-   "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage",
-   "Hybrid Scheme - Equity Savings", "Hybrid Scheme - Conservative Hybrid Fund",
    "Debt Scheme - Medium Duration Fund",
    "Debt Scheme - Gilt Fund with 10 year constant duration",
    "Other Scheme - Index Funds", "Other Scheme - FoF Overseas"].forEach(cat => {
     ok("rejects non-equity " + JSON.stringify(cat), A.isUnsupportedCategory(cat));
   });
+
+  // Phase A: mainstream hybrid sub-categories are now SUPPORTED and map to the
+  // standard NSE composite for that category (all names verified vs NSE factsheets).
+  const HYB = [
+    ["Hybrid Scheme - Aggressive Hybrid Fund", "AGGR_HYBRID", "NIFTY_HYBRID_65_35"],
+    ["Hybrid Scheme - Balanced Hybrid Fund", "BAL_HYBRID", "NIFTY_HYBRID_50_50"],
+    ["Hybrid Scheme - Conservative Hybrid Fund", "CONS_HYBRID", "NIFTY_HYBRID_15_85"],
+    ["Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage", "BAF_DAA", "NIFTY_HYBRID_50_50"],
+    ["Hybrid Scheme - Equity Savings", "EQ_SAVINGS", "NIFTY_EQ_SAVINGS"],
+  ];
+  HYB.forEach(([cat, key, benchKey]) => {
+    ok("supports hybrid " + JSON.stringify(cat), !A.isUnsupportedCategory(cat));
+    ok("hybrid " + key + " routes to " + benchKey, A.categoryKey(cat) === key, A.categoryKey(cat));
+    ok(benchKey + " is a real benchmark", !!A.BENCH_FUNDS[benchKey]);
+  });
+  // BAF must NOT be mis-read as a bare Balanced Hybrid (token order matters).
+  ok("Balanced Advantage is BAF_DAA, not BAL_HYBRID",
+     A.categoryKey("Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage") === "BAF_DAA");
+  // MFAPI punctuation drift must not defeat routing (token match, not exact).
+  ok("hybrid routes despite '-' spacing drift",
+     A.categoryKey("Hybrid Scheme-Aggressive Hybrid Fund") === "AGGR_HYBRID");
+  // Multi-asset is flagged for the "supported soon" message, not a hard rejection tone.
+  ok("multi-asset flagged for friendly message",
+     A.isMultiAssetCategory("Hybrid Scheme - Multi Asset Allocation"));
+  ok("arbitrage is NOT treated as multi-asset",
+     !A.isMultiAssetCategory("Hybrid Scheme - Arbitrage Fund"));
+
+  // A hybrid fund officially on a CRISIL twin: same NSE composite, flagged approx + note.
+  const sbi = A.resolveBenchmarkKey("SBI Balanced Advantage Fund - Direct Growth",
+                                    "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage");
+  ok("CRISIL fund maps to NSE composite but approx+note",
+     sbi.key === "NIFTY_HYBRID_50_50" && sbi.approx === true && /CRISIL/.test(sbi.note || ""),
+     JSON.stringify(sbi));
+  // A non-CRISIL hybrid stays exact (no approx note).
+  const hdfc = A.resolveBenchmarkKey("HDFC Balanced Advantage Fund - Direct Growth",
+                                     "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage");
+  ok("non-CRISIL hybrid is exact (no note)",
+     hdfc.key === "NIFTY_HYBRID_50_50" && hdfc.approx === false && !hdfc.note, JSON.stringify(hdfc));
 
   ok("exact match, not substring: 'Large & Mid Cap' is not read as LARGE_CAP",
      A.categoryKey(C_LARGEMID) === "LARGE_MID");
@@ -308,12 +352,23 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
            .map(f => f.replace(/\.json$/, ""))
       : []);
   ok("data/tri contains committed TRI files to fall back on", SHIPPED.size > 0);
+  // Hybrid composites (Phase A) deliberately have fb:null and NO committed file
+  // until the fetcher's first successful run. A missing hybrid benchmark must fail
+  // to NO comparison (honest) rather than degrade to a pure-equity index of a
+  // different risk profile — so, unlike equity/sector keys, they are ALLOWED to be
+  // unbacked pre-first-fetch. Verify that intent so this exemption can't silently
+  // mask a genuinely stranded equity benchmark.
+  const INTENTIONALLY_UNBACKED = new Set(
+    ["NIFTY_HYBRID_65_35", "NIFTY_HYBRID_50_50", "NIFTY_HYBRID_15_85", "NIFTY_EQ_SAVINGS"]);
+  ok("hybrid composites are intentionally fb:null (fail to no-comparison)",
+     [...INTENTIONALLY_UNBACKED].every(k => A.BENCH_FUNDS[k] && A.BENCH_FUNDS[k].fb === null));
   const stranded = keys.filter(k => {
+    if (INTENTIONALLY_UNBACKED.has(k)) return false;   // by-design, asserted above
     let cur = k, guard = 0;
     while (cur && guard++ < 6) { if (SHIPPED.has(cur)) return false; cur = A.BENCH_FUNDS[cur].fb; }
     return true;
   });
-  ok("every benchmark degrades to an existing TRI before the first fetch",
+  ok("every equity/sector benchmark degrades to an existing TRI before the first fetch",
      stranded.length === 0, stranded.join(","));
 })();
 

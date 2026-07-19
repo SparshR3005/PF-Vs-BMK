@@ -519,6 +519,22 @@ const FLEXI_OVERRIDES = [
   { name: "jm flexicap",            key: "NIFTY500" },
   { name: "quant flexi cap",        key: "NIFTY500" },
 ];
+/* Hybrid funds whose OFFICIAL benchmark is a CRISIL hybrid index rather than the
+   NSE composite. We still compare against the NSE composite for the category (the
+   investable, nightly-scraped equivalent) but flag it approx with a note, per the
+   "use NSE, mark it" decision. This is a VERIFIED SUBSET — extend as you confirm
+   each fund against its factsheet/SID. Since SEBI's Tier-1 rules (2021) many funds
+   moved to the NSE composite, so the DEFAULT (exact NSE match, no note) is correct
+   for most; an omission here only drops the note, never changes the benchmark. */
+const HYBRID_CRISIL_OVERRIDES = [
+  "sbi balanced advantage",            // CRISIL Hybrid 50+50 - Moderate Index
+  "invesco india aggressive hybrid",   // CRISIL Hybrid 35+65 - Aggressive Index
+];
+const CRISIL_NOTE = "NSE equivalent of the fund's CRISIL benchmark";
+const HYBRID_KEYS = new Set(["AGGR_HYBRID","BAL_HYBRID","BAF_DAA","CONS_HYBRID","EQ_SAVINGS"]);
+function hybridCrisilNote(normName){
+  return HYBRID_CRISIL_OVERRIDES.some(sub => normName.includes(sub)) ? CRISIL_NOTE : null;
+}
 /* Sector routing is NAME-based and must stay that way: MFAPI collapses every
    sector fund into the single category "Equity Scheme - Sectoral/ Thematic" and
    never says WHICH sector, so the category guard cannot help here.
@@ -573,6 +589,17 @@ const CATEGORY_KEY_BENCH = {
   CONTRA:    "NIFTY500",
   DIV_YIELD: "NIFTY500",
   ELSS:      "NIFTY500",
+  // --- hybrid (Phase A) : standard NSE composite per SEBI sub-category ---
+  // AGGR/BAL/CONS use the fixed-ratio composites; Dynamic-AA / Balanced-Advantage
+  // funds vary their live allocation but are OFFICIALLY benchmarked to the 50:50
+  // composite (HDFC, Axis, Kotak, Baroda BNP, Bank of India, ICICI Pru, ...), so
+  // this is the disclosed yardstick, not a guess. Funds on a CRISIL hybrid twin
+  // instead are flagged via HYBRID_CRISIL_OVERRIDES (approx + note).
+  AGGR_HYBRID: "NIFTY_HYBRID_65_35",   // Aggressive Hybrid (65-80% equity)
+  BAL_HYBRID:  "NIFTY_HYBRID_50_50",   // Balanced Hybrid (40-60% equity)
+  BAF_DAA:     "NIFTY_HYBRID_50_50",   // Dynamic Asset Allocation / Balanced Advantage
+  CONS_HYBRID: "NIFTY_HYBRID_15_85",   // Conservative Hybrid (10-25% equity)
+  EQ_SAVINGS:  "NIFTY_EQ_SAVINGS",     // Equity Savings
 };
 // Name-based fallback, used only when the category is Sectoral/Thematic or absent.
 // Longest match first — "large & mid" must beat both "large cap" and "mid cap".
@@ -645,6 +672,17 @@ const BENCH_FUNDS = {
   NIFTY_INDIA_MFG:      { label:"Nifty India Manufacturing TRI",  fb:"NIFTY500" },
   NIFTY_INDIA_DIGITAL:  { label:"Nifty India Digital TRI",        fb:"NIFTY_IT" },
   NIFTY_TRANSPORT:      { label:"Nifty Transportation & Logistics TRI", fb:"NIFTY500" },
+  // --- hybrid composite (Phase A) ---
+  // fb:null on purpose. A sector index degrades to a broad-market proxy because
+  // both are pure equity; a hybrid must NOT. Swapping (say) a 15:85 conservative
+  // benchmark for a pure-equity index — or even for a 50:50 — reports a wildly
+  // different "alpha" against a different risk profile. If the composite TRI file
+  // is missing, resolveBenchmarkTri returns null and the holding shows its own
+  // XIRR with NO spread, which is honest, rather than a confidently-wrong one.
+  NIFTY_HYBRID_65_35:   { label:"Nifty 50 Hybrid Composite Debt 65:35 TRI", fb:null },
+  NIFTY_HYBRID_50_50:   { label:"Nifty 50 Hybrid Composite Debt 50:50 TRI", fb:null },
+  NIFTY_HYBRID_15_85:   { label:"Nifty 50 Hybrid Composite Debt 15:85 TRI", fb:null },
+  NIFTY_EQ_SAVINGS:     { label:"Nifty Equity Savings TRI",                 fb:null },
 };
 
 function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
@@ -692,13 +730,42 @@ const CATEGORY_CANON = {
 function normCategory(category){
   return String(category||"").toLowerCase().replace(/\s+/g," ").trim();
 }
+/* Hybrid sub-category -> key. Reached ONLY for "Hybrid Scheme - ..." categories.
+   Token matching (not exact) is deliberate and SAFE here: unlike equity cap-tiers
+   ("mid cap" is a substring of "large & mid cap"), no hybrid sub-category name is a
+   substring of another, and MFAPI's punctuation varies ("- " vs "-", "or" vs "/").
+   Order matters only for balanced-advantage/dynamic vs bare "balanced": check the
+   dynamic/advantage tokens BEFORE "balanced" so a BAF isn't read as Balanced Hybrid.
+   Arbitrage and Multi Asset return null on purpose — arbitrage is excluded (its
+   return ≈ a liquid fund, so an "alpha" is uninformative) and multi-asset is Phase
+   B (a synthesized per-fund equity+debt+gold blend, not a single NSE index). */
+function hybridCategoryKey(norm){
+  if(norm.includes("equity savings")) return "EQ_SAVINGS";
+  if(norm.includes("arbitrage")) return null;                 // excluded by design
+  if(norm.includes("multi asset")) return null;               // Phase B (synthesized)
+  if(norm.includes("balanced advantage") || norm.includes("dynamic asset allocation")) return "BAF_DAA";
+  if(norm.includes("aggressive")) return "AGGR_HYBRID";
+  if(norm.includes("conservative")) return "CONS_HYBRID";
+  if(norm.includes("balanced")) return "BAL_HYBRID";
+  return null;                                                // unknown hybrid sub-type: fail closed
+}
 // Canonical SEBI category key, or null when the category is absent, junk, or a
-// type this tool cannot benchmark against an equity TRI (debt/hybrid/index/FoF).
+// type this tool cannot benchmark (arbitrage / multi-asset-for-now / debt / FoF).
 function categoryKey(category){
-  return CATEGORY_CANON[normCategory(category)] || null;
+  const norm = normCategory(category);
+  const exact = CATEGORY_CANON[norm];
+  if(exact) return exact;
+  if(norm.startsWith("hybrid")) return hybridCategoryKey(norm);
+  return null;
 }
 function isUnsupportedCategory(category){
   return categoryKey(category) === null;
+}
+// Multi-asset is a genuine category we intend to support (Phase B), so its
+// rejection message should say "not yet" rather than "can't be benchmarked".
+function isMultiAssetCategory(category){
+  const norm = normCategory(category);
+  return norm.startsWith("hybrid") && norm.includes("multi asset");
 }
 // Cap-tier categories a fund NAME can be checked against. Sectoral/Thematic is
 // excluded on purpose: MFAPI collapses every sector into one string and never says
@@ -746,7 +813,11 @@ const NON_EQUITY_NAME_TOKENS = [
   "liquid","overnight","gilt","money market","ultra short","low duration",
   "short duration","medium duration","long duration","banking and psu",
   "corporate bond","credit risk","debt","duration","floater","dynamic bond","bond",
-  "hybrid","balanced","arbitrage","equity savings","multi asset","asset allocation",
+  // "hybrid"/"balanced"/"equity savings" are now SUPPORTED (Phase A) and removed
+  // from this block so they appear in the pick list. "arbitrage" (excluded) and
+  // "multi asset"/"asset allocation" (Phase B) stay blocked. The category gate in
+  // computeScheme() remains authoritative for anything a name doesn't reveal.
+  "arbitrage","multi asset","asset allocation",
   "gold","silver","commodit","fund of fund","fof","overseas","international","global",
   "index fund","exchange traded","etf","retirement","children","pension",
 ];
@@ -772,7 +843,12 @@ function resolveBenchmarkKey(schemeName, category){
   // Authoritative: exact SEBI category -> benchmark. Correct by construction, not
   // by list order — the previous cat.includes() chain only got Large & Mid Cap
   // right because "large & mid" happened to be listed before "mid cap".
-  if(catKey && CATEGORY_KEY_BENCH[catKey]) return { key:CATEGORY_KEY_BENCH[catKey], approx:false };
+  if(catKey && CATEGORY_KEY_BENCH[catKey]){
+    // Hybrid funds officially on a CRISIL twin: same NSE composite, flagged approx.
+    const crisil = HYBRID_KEYS.has(catKey) ? hybridCrisilNote(n) : null;
+    if(crisil) return { key:CATEGORY_KEY_BENCH[catKey], approx:true, note:crisil };
+    return { key:CATEGORY_KEY_BENCH[catKey], approx:false };
+  }
 
   // Category absent/unrecognised: fall back to the name. computeScheme() rejects
   // unsupported categories before this runs, so this is for name-only paths.
@@ -1396,20 +1472,28 @@ async function computeScheme(spec){
   // on the next hydrate instead of being frozen forever. spec.category is only a
   // fallback for the rare case the API omits it.
   const category=detail.category||spec.category||"";
-  // A Nifty equity TRI cannot fairly benchmark debt/hybrid/gold/arbitrage/index
-  // funds. Reject with a clear message instead of silently comparing against
-  // Nifty 500, which would produce a meaningless (and misleading) alpha.
+  // Debt / arbitrage / gold / index / FoF still can't be fairly benchmarked here.
+  // Reject with a clear message rather than silently comparing against Nifty 500,
+  // which would produce a meaningless (and misleading) alpha. Equity and mainstream
+  // hybrid (aggressive/balanced/conservative/BAF/equity-savings) now pass this gate.
   if(isUnsupportedCategory(category)){
     const shown=(category||"").trim();
+    // Multi Asset is a real category we plan to support (Phase B: a synthesized
+    // per-fund equity+debt+gold blend). Say "not yet" rather than "can't".
+    if(isMultiAssetCategory(category)){
+      throw new Error(officialName+" is a Multi Asset Allocation fund. These are benchmarked "+
+        "against a bespoke equity + debt + gold/silver blend that varies by fund, which isn't "+
+        "wired up yet — support is planned. For now it can't be added.");
+    }
     // MFAPI's category field is dirty on legacy records ("1", "1099 Days",
     // "Growth", "Income", "IDF", "Payout"). Those aren't a scheme type the user
     // can act on, so say so plainly instead of quoting the junk back at them.
     const looksJunk = !shown || !/scheme|elss/i.test(shown);
     throw new Error(looksJunk
       ? officialName+" doesn't report a recognisable SEBI scheme category"+(shown?' (its category reads "'+shown+'")':"")+
-        ", so it can't be benchmarked here. This tool only compares actively-managed equity funds against a Nifty equity TRI."
+        ", so it can't be benchmarked here. This tool compares equity and mainstream hybrid funds against a matching Nifty TRI."
       : officialName+' is a "'+shown+'" scheme; '+
-        "this tool only benchmarks actively-managed equity funds against a Nifty equity TRI, so it can't be compared here.");
+        "this tool compares equity and mainstream hybrid funds against a matching Nifty TRI, so it can't be compared here.");
   }
   // Wrong-fund guard: if the name the user supplied CLAIMS a cap tier that
   // contradicts the resolved fund's real SEBI category, we resolved the wrong
@@ -1475,6 +1559,7 @@ async function computeScheme(spec){
     fundValueDate:fundLast,navStaleDays,cmpValueDate,fund:fundFull,fundCmp,benchCmp,cmpFirst,cmpCount,
     fundSkipped:(fundFull&&fundFull.skipped)?fundFull.skipped.length:0,
     benchLabel:benchInfo?benchInfo.label:null,benchApprox:benchInfo?benchInfo.approx:false,
+    benchNote: (benchInfo && bk.note) ? bk.note : null,
     cmpShorter:!!(benchCmp&&cmpCount<fundFull.placed)
   };
 }
@@ -1647,7 +1732,7 @@ function render(){
     }
     const v=schemeView(s),band=perfBand(v.alpha),f=s.fund,b=s.benchCmp;
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
-    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market proxy':'category proxy')+')</span></div>';}
+    if(s.benchLabel&&b){const noteTxt=s.benchNote?s.benchNote:(s.benchApprox?'broad-market proxy':'category proxy');bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+escapeHtml(noteTxt)+')</span></div>';}
     else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category proxy · no overlapping data)</span></div>';}
     const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark proxy by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a. (XIRR spread)</div>';
     // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
