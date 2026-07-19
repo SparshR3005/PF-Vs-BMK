@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-07-17T18:20:33Z",
+  "generated_utc": "2026-07-19T05:27:48Z",
   "indices": [
     {
       "key": "NIFTY50",
@@ -183,12 +183,12 @@
     },
     {
       "key": "NIFTY_HEALTHCARE",
-      "index": "NIFTY HEALTHCARE INDEX",
+      "index": "NIFTY HEALTHCARE",
       "file": "NIFTY_HEALTHCARE.json",
-      "count": 0,
-      "start": null,
-      "end": null,
-      "fresh": false
+      "count": 5281,
+      "start": "2005-04-01",
+      "end": "2026-07-17",
+      "fresh": true
     },
     {
       "key": "NIFTY_FMCG",
