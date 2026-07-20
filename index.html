@@ -242,7 +242,7 @@
 <div class="wrap">
   <div class="eyebrow">SIP Performance · Nifty TRI Benchmark</div>
   <h1>Are your funds beating the index?</h1>
-  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted XIRR next to the matching Nifty Total Return Index over the same window — so you know whether active selection is earning its fee.</p>
+  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted XIRR next to the matching Nifty Total Return Index over the same window — so you can see whether active management beat a low-cost index fund.</p>
 
   <div id="triBanner" class="tri-banner" style="display:none;"></div>
 
@@ -267,7 +267,6 @@
       <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.csv">
       <span class="status" id="pmStatus" style="margin:0;"></span>
     </div>
-    <div class="hintline">Portfolios are saved in this browser automatically. Import accepts the template's columns: Scheme, Plan, Start (YYYY-MM-DD), End (optional), Monthly.</div>
     <div class="privacy-note">
       <span><b>Privacy:</b> portfolio inputs are stored only in this browser under this website's origin. A person opening the same link on another device or browser does not receive these portfolios.</span>
       <button class="btn small" id="eraseLocalBtn" style="border-color:var(--muted);color:var(--muted);">Erase browser data</button>
@@ -1635,6 +1634,11 @@ function render(){
   const errorCount = schemes.filter(s=>s.error).length;
   const port=portfolioMetrics();
   const alphaBand=perfBand(port?port.alpha:null);
+  // Show the separate comparable-fund figure ONLY when a SIP predates its TRI, so
+  // the comparable window is genuinely shorter than the full window. Otherwise the
+  // comparable fund XIRR equals the full-period fund XIRR and is a pure duplicate
+  // (same rule the Excel export already applies via showComparableFundXirr).
+  const anyShorter = schemes.some(sipBeganBeforeTri);
   if(port){
     $("summaryCard").style.display="block";
     $("summaryGrid").innerHTML=`
@@ -1644,7 +1648,7 @@ function render(){
     <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>
     <div class="stat"><div class="k">Absolute return</div><div class="v ${signClass(port.absReturn)}">${pct(port.absReturn)}</div></div>
     <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${signClass(port.xirr)}">${pct(port.xirr)}</div></div>
-    <div class="stat"><div class="k">Comparable fund XIRR</div><div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div></div>
+    ${anyShorter?`<div class="stat"><div class="k">Comparable fund XIRR</div><div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div></div>`:''}
     <div class="stat"><div class="k">Benchmark XIRR</div><div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div></div>
     <div class="stat"><div class="k">XIRR spread vs benchmark</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div><div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
   }else{
@@ -1666,18 +1670,17 @@ function render(){
     }
     const v=schemeView(s),band=perfBand(v.alpha),f=s.fund,b=s.benchCmp;
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
-    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market proxy':'category proxy')+')</span></div>';}
-    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category proxy · no overlapping data)</span></div>';}
-    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark proxy by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a. (XIRR spread)</div>';
+    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market benchmark':'category benchmark')+')</span></div>';}
+    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category benchmark · no overlapping data)</span></div>';}
+    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a. (XIRR spread)</div>';
     // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
     let notes="";
     if(s.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+s.navStaleDays+' days ago ('+fmtDate(s.fundValueDate)+') — value may be stale/suspended</div>';
     if(s.fundSkipped>0) notes+='<div class="bmk-line approx">'+s.fundSkipped+' SIP month(s) skipped — no NAV within 7 days (holiday, data gap, or suspension)</div>';
     const gainCell='<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span><div class="sub2">'+pct(v.absR)+'</div>';
-    const compCell=b?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'—';
+    const compCell=b?(anyShorter?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'<span>'+pct(v.bxCmp)+'</span>'):'—';
     rows+=`<tr>
       <td><div class="fund-name">${escapeHtml(s.name)}</div>
-          <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''} · valued ${fmtDate(s.fundValueDate)}</div>
           ${bmkLine}${verdict}${notes}</td>
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
       <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
@@ -1691,10 +1694,10 @@ function render(){
       <td class="num">${inr(port.invested)}</td><td class="num">${inr(port.current)}</td>
       <td class="num"><span class="${signClass(port.gain)}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
       <td class="num"><span class="${signClass(port.xirr)}" style="font-weight:600;">${pct(port.xirr)}</span></td>
-      <td class="num">${port.anyBench?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':'—'}</td>
+      <td class="num">${port.anyBench?(anyShorter?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':pct(port.benchXirr)):'—'}</td>
       <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
   }
-  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span></th><th style="text-align:right;">XIRR spread</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">XIRR spread</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
   wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
     const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
@@ -1719,7 +1722,7 @@ function render(){
     }
   });
   $("foot").style.display="block";
-  $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows, so the portfolio totals equal the sum of the rows. Benchmark = a category-appropriate Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends, chosen from the scheme's category/name — a <b>proxy</b>, not necessarily the fund's officially disclosed benchmark. The <b>XIRR spread</b> is the fund's money-weighted XIRR minus the benchmark's over the same installments; it is a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). Because index TRI inception dates differ, the spread is measured only over the months where both the fund and its TRI have data; a shorter window is flagged per holding. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
+  $("foot").innerHTML="Benchmark = a category-matched Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends — a stand-in for the fund's officially disclosed benchmark, not necessarily the exact one. The <b>XIRR spread</b> is the fund's money-weighted XIRR minus the benchmark's over the same installments: a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
   // Re-scope the freshness banner to the benchmarks THIS portfolio actually uses.
   checkTriFreshness();
 }
@@ -1987,7 +1990,7 @@ $("templateBtn").addEventListener("click",()=>{
     // so names drift while codes don't. When Code is present, import resolves
     // exactly and skips name matching entirely. The example row carries a real
     // code so the column doesn't read as "leave this blank".
-    const rows=[["Scheme","Plan","Start","End","Monthly","Code"]];
+    const rows=[["Scheme","Plan","Start","End (optional)","Monthly","Code (optional)"]];
     if(schemes.length) schemes.forEach(s=>rows.push([s.name,s.plan||detectPlanFromName(s.name)||"",s.startStr,s.endStr||"",s.amount,s.code]));
     else rows.push(["Parag Parikh Flexi Cap Fund - Direct Plan - Growth","Direct","2022-01-01","",5000,"122639"]);
     const ws=XLSX.utils.aoa_to_sheet(rows);ws["!cols"]=[{wch:52},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10}];
