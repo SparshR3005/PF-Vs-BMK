@@ -336,7 +336,7 @@
     <div class="hintline" id="importPreviewSummary"></div>
     <div class="scroll-x" style="margin-top:12px;">
       <table class="preview-table">
-        <thead><tr><th>Import</th><th>Excel row</th><th>Input scheme</th><th>Input plan</th><th>Resolved scheme</th><th>Start</th><th>Monthly</th><th>Status</th></tr></thead>
+        <thead><tr><th>Import</th><th>#</th><th>Input scheme</th><th>Input plan</th><th>Resolved scheme</th><th>Start</th><th>Monthly</th><th>Status</th></tr></thead>
         <tbody id="importPreviewBody"></tbody>
       </table>
     </div>
@@ -857,8 +857,21 @@ async function resolveBenchmarkTri(key, approxIn){
    of the footer's cheerful "refreshed automatically each market day".
    Silent no-op if the manifest is absent (comparisons still work). ------- */
 const TRI_STALE_DAYS = 6;   // tolerate a weekend + one holiday before warning
+// The set of TRI file keys the CURRENTLY LOADED portfolio actually maps its
+// holdings to (following .fb fallbacks). The freshness banner is scoped to this
+// set so a stale index nobody is comparing against never raises a warning.
+// A benchmark only matters here once a user's uploaded/added scheme uses it.
+function inUseBenchKeys(){
+  const s = new Set();
+  schemes.forEach(x=>{ if(x && x.benchKey) s.add(x.benchKey); });
+  return s;
+}
 async function checkTriFreshness(){
+  const el = $("triBanner");
   try{
+    // No holding in the active portfolio uses any benchmark → nothing to warn about.
+    const inUse = inUseBenchKeys();
+    if(!inUse.size){ if(el) el.style.display = "none"; return; }
     const res = await fetch(`${TRI_DIR}/index.json`, {cache:"no-store"});
     if(!res.ok) return;
     const m = await res.json();
@@ -867,17 +880,18 @@ async function checkTriFreshness(){
     const today = new Date();
     const label = x => (BENCH_FUNDS[x.key] && BENCH_FUNDS[x.key].label) || x.index || x.key;
     // Check EACH benchmark independently — a single current index must not mask stale ones.
+    // Only benchmarks the loaded portfolio actually compares against are considered.
     const stale = [];
     list.forEach(x=>{
+      if(!inUse.has(x.key)) return;   // this index isn't used for any comparison → ignore
       const d = x.end ? parseInput(x.end) : null;
       const age = d ? Math.floor(daysBetween(d, today)) : null;
       if(x.fresh===false || age===null || age > TRI_STALE_DAYS) stale.push({ name: label(x), age });
     });
-    if(!stale.length) return;   // every benchmark is current
+    if(!stale.length){ if(el) el.style.display = "none"; return; }   // every in-use benchmark is current
     stale.sort((a,b)=>(b.age==null?1e9:b.age)-(a.age==null?1e9:a.age));
     const shown = stale.slice(0,5).map(s=> s.name + (s.age!=null ? " ("+s.age+"d)" : " (no data)")).join(", ");
     const extra = stale.length>5 ? " +"+(stale.length-5)+" more" : "";
-    const el = $("triBanner");
     if(el){
       el.style.display = "block";
       el.innerHTML = "⚠ "+stale.length+" benchmark "+(stale.length===1?"series is":"series are")
@@ -1475,6 +1489,9 @@ async function computeScheme(spec){
     fundValueDate:fundLast,navStaleDays,cmpValueDate,fund:fundFull,fundCmp,benchCmp,cmpFirst,cmpCount,
     fundSkipped:(fundFull&&fundFull.skipped)?fundFull.skipped.length:0,
     benchLabel:benchInfo?benchInfo.label:null,benchApprox:benchInfo?benchInfo.approx:false,
+    // The TRI file key actually resolved for this holding (after any .fb fallback).
+    // Used to scope the freshness banner to benchmarks the portfolio really uses.
+    benchKey:benchInfo?benchInfo.key:null,
     cmpShorter:!!(benchCmp&&cmpCount<fundFull.placed)
   };
 }
@@ -1607,7 +1624,9 @@ function render(){
   if(!schemes.length){
     wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
-    $("updateNavBtn").style.display="none";return;
+    $("updateNavBtn").style.display="none";
+    checkTriFreshness();   // no holdings → no in-use benchmark → banner hides itself
+    return;
   }
   $("toolbar").style.display="flex";
   // Refresh is only meaningful once there's something to re-value. Shown here (and
@@ -1701,6 +1720,8 @@ function render(){
   });
   $("foot").style.display="block";
   $("foot").innerHTML="SIP instalments use the first published NAV on or after the scheduled date (maximum seven calendar days), and the cash-flow date is that actual NAV date. Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows, so the portfolio totals equal the sum of the rows. Benchmark = a category-appropriate Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends, chosen from the scheme's category/name — a <b>proxy</b>, not necessarily the fund's officially disclosed benchmark. The <b>XIRR spread</b> is the fund's money-weighted XIRR minus the benchmark's over the same installments; it is a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). Because index TRI inception dates differ, the spread is measured only over the months where both the fund and its TRI have data; a shorter window is flagged per holding. Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
+  // Re-scope the freshness banner to the benchmarks THIS portfolio actually uses.
+  checkTriFreshness();
 }
 
 /* ---- clear ---- */
@@ -2197,7 +2218,7 @@ function renderImportPreview(){
          </select>`
       : escapeHtml(r.resolvedName||'—');
     tr.innerHTML=`<td><input type="checkbox" data-preview-i="${i}" ${r.checked?'checked':''} ${r.importable?'':'disabled'}></td>
-      <td class="num">${r.rowNum}</td><td>${escapeHtml(r.inputName)}</td><td>${escapeHtml(r.inputPlan||'—')}</td>
+      <td class="num">${i+1}</td><td>${escapeHtml(r.inputName)}</td><td>${escapeHtml(r.inputPlan||'—')}</td>
       <td>${resolvedCell}</td><td class="mono">${escapeHtml(r.startStr||'—')}</td><td class="num">${r.amount?inr(r.amount):'—'}</td>
       <td class="${r.statusClass}">${escapeHtml(r.message)}</td>`;body.appendChild(tr);
   });
@@ -2267,7 +2288,7 @@ $("importConfirmBtn").addEventListener("click",async()=>{
       const sch=await computeScheme(r.spec);
       if(hydrationGeneration!==opGen || store.active!==opPortfolio){aborted=true;break;}
       schemes.push(sch);imported++;render();
-    }catch(e){failed.push(`row ${r.rowNum}: ${e.message}`);}
+    }catch(e){failed.push(`${r.resolvedName||r.inputName||('#'+(i+1))}: ${e.message}`);}
   }
   if(!aborted) saveActive();          // only persist if we're still on the same portfolio
   render();$("importConfirmBtn").disabled=false;$("importCancelBtn").disabled=false;closeImportModal();
@@ -2338,10 +2359,12 @@ $("importFile").addEventListener("change",function(){
         importPreviewRows.push(await resolveImportRow(aoa[r],r+1,col));
       }
       const seen=new Map(),existing=new Set(schemes.map(s=>signature(s)));
-      importPreviewRows.forEach(r=>{
+      // Reference the visible sequence number (the "#" column, 1-based position in
+      // this list) rather than the Excel row, which is no longer shown to the user.
+      importPreviewRows.forEach((r,i)=>{
         if(!r.importable)return;const sig=signature(r.spec);
-        if(seen.has(sig)){r.statusClass="warn";r.message+=(r.message==="Ready"?"":" ")+` Duplicate of Excel row ${seen.get(sig)}; it will remain a separate holding if selected.`;}
-        else seen.set(sig,r.rowNum);
+        if(seen.has(sig)){r.statusClass="warn";r.message+=(r.message==="Ready"?"":" ")+` Duplicate of #${seen.get(sig)}; it will remain a separate holding if selected.`;}
+        else seen.set(sig,i+1);
         if(existing.has(sig)){r.statusClass="warn";r.checked=false;r.message+=(r.message==="Ready"?"":" ")+" Identical holding already exists in this portfolio; unchecked to prevent accidental re-import.";}
       });
       $("pmStatus").textContent="";renderImportPreview();
