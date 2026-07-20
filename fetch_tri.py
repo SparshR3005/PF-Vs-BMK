@@ -14,51 +14,20 @@ import math
 import re
 import sys
 import time
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 PAGE = "https://www.niftyindices.com/reports/historical-data"
-CHARTING_PAGE = "https://www.niftyindices.com/market-data/advanced-charting"
 ENDPOINT = "https://www.niftyindices.com/BackPage/getTotalReturnIndexString"
-# Historical Index Data endpoint. NSE's report page explicitly treats fixed-income
-# indices (except the clean-price 10-year G-Sec) as total-return indices, so their
-# CLOSE field is a valid TRI level. Unlike the equity-only endpoint above, this is
-# the correct source for debt aggregate indices.
-ENDPOINT_HIST = "https://www.niftyindices.com/BackPage/getHistoricaldatatabletoString"
-# Hybrid/composite/equity-savings indices sit in a separate NSE index family. They
-# are tried on the Historical Index Data report first; the Advanced Charting request
-# below is retained only as a diagnostic fallback because earlier site versions
-# returned a clean [] for these names on the report endpoint:
-#   POST /Backpage/getHistoricaldataDBtoString
-#   body: {"cinfo":"{'name':'','startDate':'..','endDate':'..',
-#                    'historicaltype' :'2','DataType' : 'HR'}"}
-#   the index is taken from the page's ?Iname=<index> referer, with name left EMPTY.
-# So composites are fetched by navigating to advanced-charting?Iname=<index> and
-# POSTing this body. Response is {"d":"[...]"} rows (parse_rows handles the wrapper;
-# rows_to_doc is field-tolerant). Path casing is as captured ("Backpage").
-ENDPOINT_CHART = "https://www.niftyindices.com/Backpage/getHistoricaldataDBtoString"
 OUT_DIR = Path("data/tri")
 START_DATE = "01-Jan-1999"          # DD-MMM-YYYY, endpoint format
 MIN_ROWS = 200                       # a real series has thousands; guards against []/wall
 MAX_STALE_DAYS = 7
 PER_INDEX_ATTEMPTS = 4
 NAV_TIMEOUT_MS = 45000
-
-# --- historical-report fetch tuning ---
-# The historical-values report can truncate a large date range. Start with a broad
-# window and SELF-SPLIT (halving toward a monthly floor) whenever the earliest row
-# does not reach the requested start. After the first full publish, only a verified
-# overlap plus new dates is fetched, keeping nightly runs bounded.
-START_DATE_HIST      = date(2001, 9, 3)   # base date of the fixed-income aggregate family
-HIST_TOP_WINDOW_DAYS = 5 * 366            # first-try window; self-splits if truncated
-HIST_MIN_WINDOW_DAYS = 32                 # never split below ~1 month (jugaad-data's floor)
-HIST_GAP_TOLERANCE_DAYS = 10              # earliest row must reach within this of the window start
-HIST_MAX_CALLS       = 400                # per-index backstop so a tiny cap can't blow the budget
-HIST_INCREMENTAL_OVERLAP_DAYS = 45          # refetch this much history to verify continuity
 
 # Soft completeness gate: the run fails (and commits nothing) only if one of these
 # broad-market indices is missing/invalid — they are the fallbacks every equity
@@ -110,7 +79,7 @@ INDEX_MAP = {
     "NIFTY_PSU_BANK":       {"name": "NIFTY PSU BANK",             "file": "NIFTY_PSU_BANK.json"},
     "NIFTY_IT":             {"name": "NIFTY IT",                   "file": "NIFTY_IT.json"},
     "NIFTY_PHARMA":         {"name": "NIFTY PHARMA",               "file": "NIFTY_PHARMA.json"},
-    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE",           "file": "NIFTY_HEALTHCARE.json"},
+    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE INDEX",     "file": "NIFTY_HEALTHCARE.json"},
     "NIFTY_FMCG":           {"name": "NIFTY FMCG",                 "file": "NIFTY_FMCG.json"},
     "NIFTY_CONSUMPTION":    {"name": "NIFTY INDIA CONSUMPTION",    "file": "NIFTY_CONSUMPTION.json"},
     "NIFTY_CONSUMER_DUR":   {"name": "NIFTY CONSUMER DURABLES",    "file": "NIFTY_CONSUMER_DUR.json"},
@@ -129,106 +98,6 @@ INDEX_MAP = {
     "NIFTY_INDIA_MFG":      {"name": "NIFTY INDIA MANUFACTURING",  "file": "NIFTY_INDIA_MFG.json"},
     "NIFTY_INDIA_DIGITAL":  {"name": "NIFTY INDIA DIGITAL",        "file": "NIFTY_INDIA_DIGITAL.json"},
     "NIFTY_TRANSPORT":      {"name": "NIFTY TRANSPORTATION & LOGISTICS", "file": "NIFTY_TRANSPORT.json"},
-    # --- fixed income / debt category proxies ---
-    # These use the Historical Index Data endpoint. NSE states that all fixed-income
-    # indices except the 10-year clean-price series are total-return indices, so CLOSE
-    # is the total-return level. All remain optional: a debt miss must never abort or
-    # contaminate the mature equity run. Candidate spellings are deliberately supplied
-    # because the endpoint has historically been case/punctuation sensitive.
-    "NIFTY_1D_RATE":                  {"name": "Nifty 1D rate index",
-                                        "historical": True,
-                                        "names": ["Nifty 1D rate index", "NIFTY 1D RATE INDEX"],
-                                        "file": "NIFTY_1D_RATE.json"},
-    "NIFTY_LIQUID":                   {"name": "Nifty Liquid Index",
-                                        "historical": True,
-                                        "names": ["Nifty Liquid Index", "NIFTY LIQUID INDEX"],
-                                        "file": "NIFTY_LIQUID.json"},
-    "NIFTY_ULTRA_SHORT_DEBT":         {"name": "Nifty Ultra Short Duration Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Ultra Short Duration Debt Index", "NIFTY ULTRA SHORT DURATION DEBT INDEX"],
-                                        "file": "NIFTY_ULTRA_SHORT_DEBT.json"},
-    "NIFTY_LOW_DURATION_DEBT":        {"name": "Nifty Low Duration Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Low Duration Debt Index", "NIFTY LOW DURATION DEBT INDEX"],
-                                        "file": "NIFTY_LOW_DURATION_DEBT.json"},
-    "NIFTY_MONEY_MARKET":             {"name": "Nifty Money Market Index",
-                                        "historical": True,
-                                        "names": ["Nifty Money Market Index", "NIFTY MONEY MARKET INDEX"],
-                                        "file": "NIFTY_MONEY_MARKET.json"},
-    "NIFTY_SHORT_DURATION_DEBT":      {"name": "Nifty Short Duration Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Short Duration Debt Index", "NIFTY SHORT DURATION DEBT INDEX"],
-                                        "file": "NIFTY_SHORT_DURATION_DEBT.json"},
-    "NIFTY_MEDIUM_DURATION_DEBT":     {"name": "Nifty Medium Duration Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Medium Duration Debt Index", "NIFTY MEDIUM DURATION DEBT INDEX"],
-                                        "file": "NIFTY_MEDIUM_DURATION_DEBT.json"},
-    "NIFTY_MEDIUM_LONG_DURATION_DEBT":{"name": "Nifty Medium to Long Duration Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Medium to Long Duration Debt Index", "NIFTY MEDIUM TO LONG DURATION DEBT INDEX"],
-                                        "file": "NIFTY_MEDIUM_LONG_DURATION_DEBT.json"},
-    "NIFTY_LONG_DURATION_DEBT":       {"name": "Nifty Long Duration Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Long Duration Debt Index", "NIFTY LONG DURATION DEBT INDEX"],
-                                        "file": "NIFTY_LONG_DURATION_DEBT.json"},
-    "NIFTY_COMPOSITE_DEBT":           {"name": "Nifty Composite Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Composite Debt Index", "NIFTY COMPOSITE DEBT INDEX"],
-                                        "file": "NIFTY_COMPOSITE_DEBT.json"},
-    "NIFTY_CORPORATE_BOND":           {"name": "Nifty Corporate Bond Index",
-                                        "historical": True,
-                                        "names": ["Nifty Corporate Bond Index", "NIFTY CORPORATE BOND INDEX"],
-                                        "file": "NIFTY_CORPORATE_BOND.json"},
-    "NIFTY_CREDIT_RISK_BOND":         {"name": "Nifty Credit Risk Bond Index",
-                                        "historical": True,
-                                        "names": ["Nifty Credit Risk Bond Index", "NIFTY CREDIT RISK BOND INDEX"],
-                                        "file": "NIFTY_CREDIT_RISK_BOND.json"},
-    "NIFTY_BANKING_PSU_DEBT":         {"name": "Nifty Banking & PSU Debt Index",
-                                        "historical": True,
-                                        "names": ["Nifty Banking & PSU Debt Index", "NIFTY BANKING & PSU DEBT INDEX"],
-                                        "file": "NIFTY_BANKING_PSU_DEBT.json"},
-    "NIFTY_ALL_DURATION_GSEC":        {"name": "Nifty All Duration G-Sec Index",
-                                        "historical": True,
-                                        "names": ["Nifty All Duration G-Sec Index", "NIFTY ALL DURATION G-SEC INDEX"],
-                                        "file": "NIFTY_ALL_DURATION_GSEC.json"},
-    "NIFTY_10Y_BENCHMARK_GSEC":       {"name": "Nifty 10 yr Benchmark G-Sec",
-                                        "historical": True,
-                                        "names": ["Nifty 10 yr Benchmark G-Sec", "NIFTY 10 YR BENCHMARK G-SEC"],
-                                        "file": "NIFTY_10Y_BENCHMARK_GSEC.json"},
-    # --- hybrid composite (Phase A) ---
-    # Multi Asset / Hybrid family — fetched via the Advanced Charting endpoint by
-    # navigating to advanced-charting?Iname=<name> (see ENDPOINT_CHART note). `names`
-    # are Iname candidates tried in order; the 65:35 Iname is confirmed from the live
-    # page, the others follow the same pattern with a suffix-less fallback (the site's
-    # own dropdown is inconsistent about the "Index" suffix). fetch_composite() logs
-    # the raw response per candidate, so a wrong spelling is visible immediately.
-    # DELIBERATELY OPTIONAL (absent from REQUIRED_KEYS): a composite miss keeps its
-    # last-good file and is flagged stale, and NEVER aborts the equity run.
-    "NIFTY_HYBRID_65_35":   {"name": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
-                             "historical": True, "chart_fallback": True,
-                             "names": ["Nifty 50 Hybrid Composite Debt 65:35 Index",
-                                       "NIFTY 50 HYBRID COMPOSITE DEBT 65:35 INDEX",
-                                       "Nifty 50 Hybrid Composite Debt 65:35"],
-                             "file": "NIFTY_HYBRID_65_35.json"},
-    "NIFTY_HYBRID_50_50":   {"name": "NIFTY 50 Hybrid Composite Debt 50:50 Index",
-                             "historical": True, "chart_fallback": True,
-                             "names": ["Nifty 50 Hybrid Composite Debt 50:50 Index",
-                                       "NIFTY 50 HYBRID COMPOSITE DEBT 50:50 INDEX",
-                                       "Nifty 50 Hybrid Composite Debt 50:50"],
-                             "file": "NIFTY_HYBRID_50_50.json"},
-    "NIFTY_HYBRID_15_85":   {"name": "NIFTY 50 Hybrid Composite Debt 15:85 Index",
-                             "historical": True, "chart_fallback": True,
-                             "names": ["Nifty 50 Hybrid Composite Debt 15:85 Index",
-                                       "NIFTY 50 HYBRID COMPOSITE DEBT 15:85 INDEX",
-                                       "Nifty 50 Hybrid Composite Debt 15:85"],
-                             "file": "NIFTY_HYBRID_15_85.json"},
-    "NIFTY_EQ_SAVINGS":     {"name": "Nifty Equity Savings",
-                             "historical": True, "chart_fallback": True,
-                             "names": ["Nifty Equity Savings",
-                                       "NIFTY EQUITY SAVINGS",
-                                       "Nifty Equity Savings Index",
-                                       "NIFTY EQUITY SAVINGS INDEX"],
-                             "file": "NIFTY_EQ_SAVINGS.json"},
 }
 
 # In-page fetch: runs in the real renderer, inherits cookies + fingerprint.
@@ -270,15 +139,6 @@ def build_payload(name: str, start: str, end: str) -> str:
     return json.dumps({"cinfo": cinfo})
 
 
-def build_payload_chart(start: str, end: str) -> str:
-    # Exact body the Advanced Charting widget POSTs (captured live): name is left
-    # EMPTY — the index is taken from the page's ?Iname=<index> referer — and two
-    # extra fields are required. Spacing is kept as the site sends it.
-    cinfo = ("{'name':'','startDate':'%s','endDate':'%s',"
-             "'historicaltype' :'2','DataType' : 'HR'}") % (start, end)
-    return json.dumps({"cinfo": cinfo})
-
-
 def parse_rows(res: dict):
     """Return list rows, [] for empty result, or None if wall/redirect/garbage."""
     if res.get("status") != 200 or res.get("redirected"):
@@ -296,8 +156,6 @@ def parse_rows(res: dict):
                 rows = json.loads(d)
             elif isinstance(d, list):
                 rows = d
-            elif isinstance(outer.get("data"), list):
-                rows = outer.get("data")
             else:
                 rows = None
         else:
@@ -317,11 +175,11 @@ def to_iso(value: str) -> str:
     raise ValueError(f"Unsupported date format: {text!r}")
 
 
-def prime(page, reload: bool, url: str = PAGE):
+def prime(page, reload: bool):
     if reload:
         page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
     else:
-        page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        page.goto(PAGE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except PWTimeout:
@@ -337,12 +195,7 @@ def has_akamai(context) -> bool:
     return "ak_bmsc" in names
 
 
-def _fetch_one_name(page, context, name: str, end: str, endpoint: str = ENDPOINT):
-    """Fetch a single canonical name. Returns (rows, "empty"|"fail").
-    rows is a non-empty list on success; on failure rows is None and the second
-    element is "empty" (endpoint answered [] -> wrong name, try the next candidate)
-    or "fail" (walls/timeouts exhausted -> a later candidate is unlikely to help,
-    but is still attempted so a transient wall doesn't strand an index)."""
+def fetch_index(page, context, name: str, end: str):
     payload = build_payload(name, START_DATE, end)
     for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
         # The whole attempt — navigation, cookie check and in-page fetch — runs inside
@@ -355,7 +208,7 @@ def _fetch_one_name(page, context, name: str, end: str, endpoint: str = ENDPOINT
                 print("    [%s] attempt %d: no ak_bmsc yet" % (name, attempt))
                 time.sleep(2 * attempt)
                 continue
-            res = page.evaluate(JS_FETCH, [endpoint, payload])
+            res = page.evaluate(JS_FETCH, [ENDPOINT, payload])
             rows = parse_rows(res)
             if rows is None:
                 snippet = (res.get("text", "") or "")[:80].replace("\n", " ")
@@ -364,14 +217,14 @@ def _fetch_one_name(page, context, name: str, end: str, endpoint: str = ENDPOINT
                 time.sleep(2 * attempt)
                 continue
             if len(rows) == 0:
-                print("    [%s] EMPTY result -> likely wrong canonical name" % name)
-                return None, "empty"
+                print("    [%s] EMPTY result -> likely wrong canonical name; skipping" % name)
+                return None
             if len(rows) < MIN_ROWS:
                 print("    [%s] attempt %d: only %d rows (<%d), retrying"
                       % (name, attempt, len(rows), MIN_ROWS))
                 time.sleep(2 * attempt)
                 continue
-            return rows, "ok"
+            return rows
         except PWTimeout as exc:
             print("    [%s] attempt %d: browser timeout: %s" % (name, attempt, exc))
             time.sleep(2 * attempt)
@@ -379,264 +232,15 @@ def _fetch_one_name(page, context, name: str, end: str, endpoint: str = ENDPOINT
             print("    [%s] attempt %d: browser error: %s" % (name, attempt, exc))
             time.sleep(2 * attempt)
     print("    [%s] FAILED after %d attempts" % (name, PER_INDEX_ATTEMPTS))
-    return None, "fail"
-
-
-def fetch_index(page, context, names, end: str, endpoint: str = ENDPOINT):
-    """Try each candidate spelling until one returns a usable equity TRI series."""
-    if isinstance(names, str):
-        names = [names]
-    for name in names:
-        rows, why = _fetch_one_name(page, context, name, end, endpoint)
-        if rows:
-            if name != names[0]:
-                print("    [%s] matched via candidate spelling %r" % (names[0], name))
-            return rows
-        # "empty" -> the name was wrong; a different candidate may work.
-        # "fail"  -> walls/timeouts; try the next candidate too, in case the
-        #            primary spelling coincided with a bad window.
     return None
 
 
-# ---------------------------------------------------------------------------
-# Historical index values use the same wrapped cinfo contract as the equity TRI
-# endpoint, but can truncate a large date range. The collector therefore probes the
-# canonical name and self-splits only when the returned history does not reach the
-# requested start date.
-# ---------------------------------------------------------------------------
-def _ddmon(d: date) -> str:
-    return d.strftime("%d-%b-%Y")
-
-
-# ---------------------------------------------------------------------------
-# Fixed-income and hybrid indices: Historical Index Data endpoint.
-# The endpoint can truncate large ranges, so the same self-splitting collector used
-# by the chart fallback is applied here. Crucially, the payload includes BOTH name
-# and indexName; omitting indexName has produced clean-but-empty responses in prior
-# site versions.
-# ---------------------------------------------------------------------------
-def _historical_window(page, context, name, start_d, end_d, budget):
-    for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
-        if budget[0] <= 0:
-            return []
-        try:
-            if attempt > 1 or not has_akamai(context):
-                prime(page, reload=False, url=PAGE)
-            if not has_akamai(context):
-                time.sleep(2 * attempt)
-                continue
-            budget[0] -= 1
-            payload = build_payload(name, _ddmon(start_d), _ddmon(end_d))
-            res = page.evaluate(JS_FETCH, [ENDPOINT_HIST, payload])
-            rows = parse_rows(res)
-            if rows is None:
-                snippet = (res.get("text", "") or "")[:100].replace("\n", " ")
-                print("    [HIST %s] %s..%s attempt %d: wall/garbage status=%s redir=%s %r"
-                      % (name, start_d, end_d, attempt, res.get("status"),
-                         res.get("redirected"), snippet))
-                time.sleep(2 * attempt)
-                continue
-            return rows
-        except PWTimeout as exc:
-            print("    [HIST %s] %s..%s timeout: %s" % (name, start_d, end_d, exc))
-            time.sleep(2 * attempt)
-        except Exception as exc:
-            print("    [HIST %s] %s..%s error: %s" % (name, start_d, end_d, exc))
-            time.sleep(2 * attempt)
-    return None
-
-
-def _probe_historical(page, context, names, end_d):
-    probe_start = end_d - timedelta(days=120)
-    for name in names:
-        budget = [1]
-        rows = _historical_window(page, context, name, probe_start, end_d, budget)
-        n = len(rows) if isinstance(rows, list) else -1
-        print("    [HIST PROBE] name=%r parsed=%s" % (name, n))
-        if isinstance(rows, list) and len(rows) >= 5:
-            print("    [HIST PROBE] SELECTED name=%r" % name)
-            return name
-        time.sleep(1)
-    return None
-
-
-def fetch_historical_index(page, context, names, start_d, end_d):
-    if isinstance(names, str):
-        names = [names]
-    selected = _probe_historical(page, context, names, end_d)
-    if not selected:
-        return None, None
-    budget = [HIST_MAX_CALLS]
-    out = []
-    window_fetch = lambda s, e: _historical_window(page, context, selected, s, e, budget)
-    cur = start_d
-    while cur <= end_d and budget[0] > 0:
-        win_end = min(end_d, cur + timedelta(days=HIST_TOP_WINDOW_DAYS - 1))
-        _collect_range(window_fetch, cur, win_end, budget, out)
-        cur = win_end + timedelta(days=1)
-    if budget[0] <= 0:
-        print("    [%s] hit historical call budget (%d); publishing what was collected"
-              % (selected, HIST_MAX_CALLS))
-    return (out or None), ENDPOINT_HIST
-
-
-# ---------------------------------------------------------------------------
-# Composite / hybrid indices: fetched via the Advanced Charting endpoint.
-# The index is selected by navigating to advanced-charting?Iname=<name> (the request
-# body leaves `name` empty and the endpoint reads the index from that referer). The
-# endpoint may truncate large ranges, so the series is pulled in self-splitting
-# windows and merged (same truncation-by-date logic as before).
-# ---------------------------------------------------------------------------
-def _iname_url(iname: str) -> str:
-    return CHARTING_PAGE + "?Iname=" + quote_plus(iname)
-
-
-def _chart_window(page, context, iname_url, start_d, end_d, budget):
-    """Fetch one [start_d, end_d] window from the charting endpoint. The page must be
-    on iname_url (its referer selects the index); we (re)navigate there on the first
-    attempt and after any wall. Returns a rows list (maybe empty) or None on hard fail."""
-    for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
-        if budget[0] <= 0:
-            return []
-        try:
-            if attempt > 1 or not has_akamai(context):
-                prime(page, reload=False, url=iname_url)
-            if not has_akamai(context):
-                time.sleep(2 * attempt)
-                continue
-            budget[0] -= 1
-            payload = build_payload_chart(_ddmon(start_d), _ddmon(end_d))
-            res = page.evaluate(JS_FETCH, [ENDPOINT_CHART, payload])
-            rows = parse_rows(res)
-            if rows is None:
-                snippet = (res.get("text", "") or "")[:80].replace("\n", " ")
-                print("    window %s..%s attempt %d: wall/redirect (status=%s redir=%s) %r"
-                      % (start_d, end_d, attempt, res.get("status"),
-                         res.get("redirected"), snippet))
-                time.sleep(2 * attempt)
-                continue
-            return rows
-        except PWTimeout as exc:
-            print("    window %s..%s timeout: %s" % (start_d, end_d, exc))
-            time.sleep(2 * attempt)
-        except Exception as exc:
-            print("    window %s..%s error: %s" % (start_d, end_d, exc))
-            time.sleep(2 * attempt)
-    return None
-
-
-def _probe_chart(page, context, inames, end_d):
-    """Resolver + diagnostic. For each Iname candidate, navigate to its charting page
-    and fetch a recent ~120-day window, LOGGING the raw response. Return (iname, url)
-    for the first candidate that yields real rows, else None. The raw log makes a wrong
-    Iname or an unexpected response shape visible from one run."""
-    probe_start = end_d - timedelta(days=120)
-    for iname in inames:
-        url = _iname_url(iname)
-        try:
-            prime(page, reload=False, url=url)
-            payload = build_payload_chart(_ddmon(probe_start), _ddmon(end_d))
-            res = page.evaluate(JS_FETCH, [ENDPOINT_CHART, payload])
-        except Exception as exc:
-            print("    [PROBE] Iname=%r -> evaluate error: %s" % (iname, exc))
-            continue
-        text = (res.get("text", "") or "")
-        rows = parse_rows(res)
-        n = len(rows) if isinstance(rows, list) else -1
-        print("    [PROBE] Iname=%r status=%s redir=%s textlen=%d parsed=%s raw=%r"
-              % (iname, res.get("status"), res.get("redirected"),
-                 len(text), n, text[:220].replace("\n", " ")))
-        if isinstance(rows, list) and len(rows) >= 5:
-            print("    [PROBE] SELECTED Iname=%r" % iname)
-            return iname, url
-        time.sleep(1)
-    return None
-
-
-def _collect_range(window_fetch, start_d, end_d, budget, out):
-    """Recursively pull [start_d, end_d] via window_fetch(start, end), halving the
-    window whenever the endpoint TRUNCATES it (earliest returned date doesn't reach the
-    window start), down to the ~1-month floor. Empty windows are accepted as-is. Robust
-    to any cap size; per-window diagnostics are logged."""
-    if start_d > end_d or budget[0] <= 0:
-        return
-    rows = window_fetch(start_d, end_d)
-    if rows is None:
-        rows = []
-    earliest = None
-    for r in rows:
-        try:
-            dt = datetime.strptime(_row_date(r), "%Y-%m-%d").date()
-            if earliest is None or dt < earliest:
-                earliest = dt
-        except Exception:
-            continue
-    span = (end_d - start_d).days + 1
-    reached_back = earliest is not None and (earliest - start_d).days <= HIST_GAP_TOLERANCE_DAYS
-    print("    %s..%s span=%dd rows=%d earliest=%s reached_back=%s"
-          % (start_d, end_d, span, len(rows), earliest, reached_back))
-    if not rows or span <= HIST_MIN_WINDOW_DAYS or reached_back:
-        out.extend(rows)
-        return
-    mid = start_d + timedelta(days=span // 2)
-    _collect_range(window_fetch, start_d, mid, budget, out)
-    _collect_range(window_fetch, mid + timedelta(days=1), end_d, budget, out)
-
-
-def fetch_composite(page, context, inames, start_d, end_d):
-    """Resolve the working Iname via the probe, then collect the full range in
-    self-splitting windows off that charting page. Returns (rows, ENDPOINT_CHART) or
-    (None, None) if no candidate was recognised."""
-    resolved = _probe_chart(page, context, inames, end_d)
-    if not resolved:
-        return None, None
-    iname, url = resolved
-    prime(page, reload=False, url=url)          # ensure we're on the selected index page
-    budget = [HIST_MAX_CALLS]
-    out = []
-    window_fetch = lambda s, e: _chart_window(page, context, url, s, e, budget)
-    cur = start_d
-    while cur <= end_d and budget[0] > 0:
-        win_end = min(end_d, cur + timedelta(days=HIST_TOP_WINDOW_DAYS - 1))
-        _collect_range(window_fetch, cur, win_end, budget, out)
-        cur = win_end + timedelta(days=1)
-    if budget[0] <= 0:
-        print("    [%s] hit per-index call budget (%d); publishing what was collected"
-              % (inames[0], HIST_MAX_CALLS))
-    return (out or None), ENDPOINT_CHART
-
-
-# The equity TRI endpoint returns rows keyed Date / TotalReturnsIndex. The hybrid
-# composite indices carry a TotalReturnsIndex too, but if any variant is instead
-# served with a plain closing-value field we still want to parse it rather than
-# silently produce an empty series. Equity is unaffected: TotalReturnsIndex / Date
-# are tried FIRST, so existing behaviour is byte-identical.
-VALUE_FIELDS = ("TotalReturnsIndex", "totalReturnsIndex",
-                "CLOSE_INDEX_VAL", "EOD_CLOSE_INDEX_VAL", "INDEX_VAL",
-                "INDEX_VALUE", "CLOSE", "Close", "closingValue", "Closing Index Value")
-DATE_FIELDS = ("Date", "HistoricalDate", "EOD_TIMESTAMP", "TIMESTAMP", "Index Date")
-
-
-def _row_value(row):
-    for field in VALUE_FIELDS:
-        if field in row and row[field] not in (None, ""):
-            return float(str(row[field]).replace(",", "").strip())
-    raise KeyError("no known value field")
-
-
-def _row_date(row):
-    for field in DATE_FIELDS:
-        if field in row and row[field]:
-            return to_iso(row[field])
-    raise KeyError("no known date field")
-
-
-def rows_to_doc(key: str, name: str, rows: list, endpoint: str = ENDPOINT) -> dict:
+def rows_to_doc(key: str, name: str, rows: list) -> dict:
     series = {}
     for row in rows:
         try:
-            iso_date = _row_date(row)
-            tri_value = _row_value(row)
+            iso_date = to_iso(row["Date"])
+            tri_value = float(row["TotalReturnsIndex"])
             if math.isfinite(tri_value) and tri_value > 0:
                 series[iso_date] = tri_value
         except (KeyError, TypeError, ValueError):
@@ -647,7 +251,7 @@ def rows_to_doc(key: str, name: str, rows: list, endpoint: str = ENDPOINT) -> di
     return {
         "key": key,
         "index": name,
-        "source": "niftyindices.com " + endpoint.rsplit("/", 1)[-1],
+        "source": "niftyindices.com getTotalReturnIndexString",
         "fetched_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "count": len(ordered),
         "start": dates[0] if dates else None,
@@ -664,11 +268,11 @@ def rows_to_doc(key: str, name: str, rows: list, endpoint: str = ENDPOINT) -> di
 MAX_DAILY_MOVE = 0.35
 
 
-def validate_series(doc: dict, min_rows: int = MIN_ROWS):
+def validate_series(doc: dict):
     """Return an error string if the series looks corrupt, else ''."""
     series = doc.get("series") or {}
-    if len(series) < min_rows:
-        return f"only {len(series)} valid rows (<{min_rows})"
+    if len(series) < MIN_ROWS:
+        return f"only {len(series)} valid rows (<{MIN_ROWS})"
 
     items = list(series.items())          # already date-sorted by rows_to_doc
     prev_date, prev_val = None, None
@@ -785,51 +389,6 @@ def continuity_problem(new_doc: dict, old_doc) -> str:
     return ""
 
 
-def historical_fetch_start(old_doc):
-    """Full history on first fetch; thereafter refetch a short overlap plus new days."""
-    if not old_doc or not old_doc.get("end"):
-        return START_DATE_HIST
-    try:
-        prior_end = datetime.strptime(old_doc["end"], "%Y-%m-%d").date()
-    except (TypeError, ValueError):
-        return START_DATE_HIST
-    return max(START_DATE_HIST, prior_end - timedelta(days=HIST_INCREMENTAL_OVERLAP_DAYS))
-
-
-def incremental_overlap_problem(slice_doc: dict, old_doc) -> str:
-    """Verify an incremental historical slice against committed values before merge."""
-    if not old_doc:
-        return ""
-    old_series = old_doc.get("series") or {}
-    new_series = slice_doc.get("series") or {}
-    common = sorted(set(old_series).intersection(new_series))
-    if len(common) < 5:
-        return (f"only {len(common)} overlapping dates with committed history; "
-                "cannot verify the incremental slice")
-    for d in common:
-        ov, nv = old_series[d], new_series[d]
-        if ov and abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
-            return (f"overlap value on {d} changed {ov:.2f} -> {nv:.2f} "
-                    f"(>{CONT_VALUE_TOLERANCE:.0%})")
-    return ""
-
-
-def merge_incremental_doc(slice_doc: dict, old_doc) -> dict:
-    """Merge a verified recent slice into the last-good complete document."""
-    if not old_doc:
-        return slice_doc
-    merged = dict(old_doc.get("series") or {})
-    merged.update(slice_doc.get("series") or {})
-    ordered = dict(sorted(merged.items()))
-    dates = list(ordered)
-    out = dict(slice_doc)
-    out["series"] = ordered
-    out["count"] = len(ordered)
-    out["start"] = dates[0] if dates else None
-    out["end"] = dates[-1] if dates else None
-    return out
-
-
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     end = today_ist().strftime("%d-%b-%Y")
@@ -871,49 +430,25 @@ def main():
             for index, (key, meta) in enumerate(items, start=1):
                 name = meta["name"]
                 filename = meta["file"]
-                path = OUT_DIR / filename
-                old_doc = read_existing_doc(path)
-                names = meta.get("names") or [name]
                 print(f"[{index}/{len(items)}] {name} ({key})")
-                if meta.get("historical"):
-                    hist_start = historical_fetch_start(old_doc)
-                    rows, used_endpoint = fetch_historical_index(
-                        page, context, names, hist_start, today_ist())
-                    # Hybrid pages retain the Advanced Charting fallback as a diagnostic.
-                    # Debt indices deliberately do not: the report page is their stated
-                    # total-return source.
-                    if not rows and meta.get("chart_fallback"):
-                        rows, used_endpoint = fetch_composite(
-                            page, context, names, hist_start, today_ist())
-                else:
-                    rows = fetch_index(page, context, names, end, ENDPOINT)
-                    used_endpoint = ENDPOINT
+                rows = fetch_index(page, context, name, end)
                 if not rows:
                     failures.append(f"{name}: fetch failed")
                     continue
 
-                slice_doc = rows_to_doc(key, name, rows, used_endpoint)
-                slice_min_rows = 5 if meta.get("historical") and old_doc else MIN_ROWS
-                problem = validate_series(slice_doc, min_rows=slice_min_rows)
+                doc = rows_to_doc(key, name, rows)
+                problem = validate_series(doc)
                 if problem:
                     failures.append(f"{name}: {problem}")
                     continue
-                if not is_fresh(slice_doc):
-                    failures.append(f"{name}: stale end date {slice_doc['end']}")
-                    continue
 
-                if meta.get("historical") and old_doc:
-                    overlap_problem = incremental_overlap_problem(slice_doc, old_doc)
-                    if overlap_problem:
-                        failures.append(f"{name}: incremental check failed — {overlap_problem}")
-                        continue
-                    doc = merge_incremental_doc(slice_doc, old_doc)
-                else:
-                    doc = slice_doc
+                if not is_fresh(doc):
+                    failures.append(f"{name}: stale end date {doc['end']}")
+                    continue
 
                 # Continuity gate: never let a validated-but-truncated/mismatched
                 # series overwrite good committed history (see continuity_problem).
-                cont = continuity_problem(doc, old_doc)
+                cont = continuity_problem(doc, read_existing_doc(OUT_DIR / filename))
                 if cont:
                     failures.append(f"{name}: continuity check failed — {cont}")
                     continue

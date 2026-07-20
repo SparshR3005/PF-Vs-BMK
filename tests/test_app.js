@@ -163,10 +163,6 @@ function extractFn(name) {
   ok("#10 export label no longer says PORTFOLIO ALPHA", !/PORTFOLIO ALPHA/.test(HTML));
   ok("#10 export label says XIRR SPREAD", /XIRR SPREAD VS BENCHMARK PROXY/.test(HTML));
   ok("#10 'SEBI-standard benchmark' claim removed", !/SEBI-standard/.test(HTML));
-  ok("debt/hybrid retains the intended benchmark label before its data file exists",
-     /intendedBench=BENCH_FUNDS\[bk\.key\]/.test(HTML) && /benchDataMissing:!benchInfo/.test(HTML));
-  ok("missing benchmark data is distinguished from no overlapping dates",
-     /benchmark data unavailable/.test(HTML));
   ok("#2 buildInsights takes holdings explicitly",
      /function buildInsights\(port, holdings\)/.test(HTML));
 })();

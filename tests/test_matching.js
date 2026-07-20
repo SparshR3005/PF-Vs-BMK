@@ -5,9 +5,9 @@
  *
  * Run:  node tests/test_matching.js
  *
- * Category strings asserted here are either observed MFAPI values or official SEBI
- * category labels. Benchmark names are pinned to the NSE benchmark-code list; the
- * v4 lesson was that an unverified claim drifts from reality.
+ * Every category string asserted here was read from a LIVE MFAPI response, not
+ * assumed. Where a test encodes a benchmark choice, the AMC source is cited in a
+ * comment — the v4 lesson was that an unverified claim drifts from reality.
  *
  * These extract the real functions out of index.html by name (never a copy), so a
  * test can't keep passing after the shipped code changes underneath it.
@@ -60,13 +60,8 @@ try {
   extractConst("SECTOR_KEYWORDS"),
   extractConst("BENCH_FUNDS"),
   extractConst("FLEXI_OVERRIDES"),
-  extractConst("HYBRID_CRISIL_OVERRIDES"),
   extractConst("RENAME_WORD_ALIASES"),
   'const FALLBACK_KEY = "NIFTY500";',
-  'const CRISIL_NOTE = "NSE equivalent of the fund\\u2019s CRISIL benchmark";',
-  'const HYBRID_KEYS = new Set(["AGGR_HYBRID","BAL_HYBRID","BAF_DAA","CONS_HYBRID","EQ_SAVINGS"]);',
-  'const DEBT_KEYS = new Set(["DEBT_OVERNIGHT","DEBT_LIQUID","DEBT_ULTRA_SHORT","DEBT_LOW_DURATION","DEBT_MONEY_MARKET","DEBT_SHORT","DEBT_MEDIUM","DEBT_MEDIUM_LONG","DEBT_LONG","DEBT_DYNAMIC","DEBT_CORPORATE","DEBT_CREDIT_RISK","DEBT_BANKING_PSU","DEBT_GILT","DEBT_GILT_10Y"]);',
-  'const DEBT_PROXY_NOTE = "Nifty category proxy; the scheme\'s disclosed Tier-1 benchmark may be a CRISIL or Nifty PRC variant";',
   extractFn("normName"),
   extractFn("hasWord"),
   extractFn("stripRenameNote"),
@@ -75,14 +70,8 @@ try {
   extractFn("bigrams"),
   extractFn("similarity"),
   extractFn("normCategory"),
-  extractFn("hybridCategoryKey"),
-  extractFn("debtCategoryKey"),
   extractFn("categoryKey"),
   extractFn("isUnsupportedCategory"),
-  extractFn("isMultiAssetCategory"),
-  extractFn("isFloatingRateCategory"),
-  extractFn("isSectoralDebtCategory"),
-  extractFn("hybridCrisilNote"),
   extractFn("claimedCategoryFromName"),
   extractFn("resolveBenchmarkKey"),
   ].join("\n");
@@ -96,9 +85,7 @@ let A;
 try {
   A = new Function(SCOPE + `; return {
     matchKey, similarity, stripRenameNote, applyRenameAliases, categoryKey,
-    debtCategoryKey, isUnsupportedCategory, isMultiAssetCategory,
-    isFloatingRateCategory, isSectoralDebtCategory, claimedCategoryFromName,
-    resolveBenchmarkKey, BENCH_FUNDS
+    isUnsupportedCategory, claimedCategoryFromName, resolveBenchmarkKey, BENCH_FUNDS
   };`)();
 } catch (e) {
   console.log("  FAIL  could not evaluate index.html's matching machinery: " + e.message);
@@ -159,91 +146,16 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
     ok("rejects junk category " + JSON.stringify(junk), A.isUnsupportedCategory(junk));
   });
 
-  // Categories still excluded: arbitrage and multi-asset hybrid; floating-rate and
-  // sectoral debt (no honest generic category proxy); passive/index and overseas FoF.
+  // Real categories this tool cannot benchmark against an equity TRI.
   ["Hybrid Scheme - Multi Asset Allocation", "Hybrid Scheme - Arbitrage Fund",
-   "Debt Scheme - Floater Fund", "Debt Scheme - Floating Interest Rates Fund",
-   "Debt Scheme - Sectoral Fund", "Other Scheme - Index Funds",
-   "Other Scheme - FoF Overseas"].forEach(cat => {
-    ok("rejects unsupported category " + JSON.stringify(cat), A.isUnsupportedCategory(cat));
+   "Hybrid Scheme - Aggressive Hybrid Fund", "Hybrid Scheme - Balanced Hybrid Fund",
+   "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage",
+   "Hybrid Scheme - Equity Savings", "Hybrid Scheme - Conservative Hybrid Fund",
+   "Debt Scheme - Medium Duration Fund",
+   "Debt Scheme - Gilt Fund with 10 year constant duration",
+   "Other Scheme - Index Funds", "Other Scheme - FoF Overseas"].forEach(cat => {
+    ok("rejects non-equity " + JSON.stringify(cat), A.isUnsupportedCategory(cat));
   });
-
-  // Debt support accepts both legacy MFAPI labels and the Feb-2026 SEBI labels.
-  const DEBT = [
-    ["Debt Scheme - Overnight Fund", "DEBT_OVERNIGHT", "NIFTY_1D_RATE"],
-    ["Debt Scheme - Liquid Fund", "DEBT_LIQUID", "NIFTY_LIQUID"],
-    ["Debt Scheme - Ultra Short Duration Fund", "DEBT_ULTRA_SHORT", "NIFTY_ULTRA_SHORT_DEBT"],
-    ["Debt Scheme - Ultra Short Term Fund", "DEBT_ULTRA_SHORT", "NIFTY_ULTRA_SHORT_DEBT"],
-    ["Debt Scheme - Low Duration Fund", "DEBT_LOW_DURATION", "NIFTY_LOW_DURATION_DEBT"],
-    ["Debt Scheme - Ultra Short to Short Term Fund", "DEBT_LOW_DURATION", "NIFTY_LOW_DURATION_DEBT"],
-    ["Debt Scheme - Money Market Fund", "DEBT_MONEY_MARKET", "NIFTY_MONEY_MARKET"],
-    ["Debt Scheme - Short Duration Fund", "DEBT_SHORT", "NIFTY_SHORT_DURATION_DEBT"],
-    ["Debt Scheme - Short Term Fund", "DEBT_SHORT", "NIFTY_SHORT_DURATION_DEBT"],
-    ["Debt Scheme - Medium Duration Fund", "DEBT_MEDIUM", "NIFTY_MEDIUM_DURATION_DEBT"],
-    ["Debt Scheme - Medium Term Fund", "DEBT_MEDIUM", "NIFTY_MEDIUM_DURATION_DEBT"],
-    ["Debt Scheme - Medium to Long Duration Fund", "DEBT_MEDIUM_LONG", "NIFTY_MEDIUM_LONG_DURATION_DEBT"],
-    ["Debt Scheme - Medium to Long Term Fund", "DEBT_MEDIUM_LONG", "NIFTY_MEDIUM_LONG_DURATION_DEBT"],
-    ["Debt Scheme - Long Duration Fund", "DEBT_LONG", "NIFTY_LONG_DURATION_DEBT"],
-    ["Debt Scheme - Long Term Fund", "DEBT_LONG", "NIFTY_LONG_DURATION_DEBT"],
-    ["Debt Scheme - Dynamic Bond", "DEBT_DYNAMIC", "NIFTY_COMPOSITE_DEBT"],
-    ["Debt Scheme - Dynamic Term Fund", "DEBT_DYNAMIC", "NIFTY_COMPOSITE_DEBT"],
-    ["Debt Scheme - Corporate Bond Fund", "DEBT_CORPORATE", "NIFTY_CORPORATE_BOND"],
-    ["Debt Scheme - Credit Risk Fund", "DEBT_CREDIT_RISK", "NIFTY_CREDIT_RISK_BOND"],
-    ["Debt Scheme - Banking and PSU Fund", "DEBT_BANKING_PSU", "NIFTY_BANKING_PSU_DEBT"],
-    ["Debt Scheme - Banking and PSU Debt Fund", "DEBT_BANKING_PSU", "NIFTY_BANKING_PSU_DEBT"],
-    ["Debt Scheme - Gilt Fund", "DEBT_GILT", "NIFTY_ALL_DURATION_GSEC"],
-    ["Debt Scheme - Gilt Fund with 10 year constant duration", "DEBT_GILT_10Y", "NIFTY_10Y_BENCHMARK_GSEC"],
-    ["Debt Scheme - 10-year Constant Maturity Gilt Fund", "DEBT_GILT_10Y", "NIFTY_10Y_BENCHMARK_GSEC"],
-  ];
-  DEBT.forEach(([cat, key, benchKey]) => {
-    ok("supports debt " + JSON.stringify(cat), !A.isUnsupportedCategory(cat));
-    ok("debt " + key + " routes to " + benchKey, A.categoryKey(cat) === key, A.categoryKey(cat));
-    ok(benchKey + " is a real benchmark", !!A.BENCH_FUNDS[benchKey]);
-    const resolved = A.resolveBenchmarkKey("Representative Debt Fund", cat);
-    ok("debt proxy is visibly approximate", resolved.key === benchKey && resolved.approx === true && /category proxy/i.test(resolved.note || ""), JSON.stringify(resolved));
-  });
-  ok("floating-rate category has a targeted unsupported flag",
-     A.isFloatingRateCategory("Debt Scheme - Floating Interest Rates Fund"));
-  ok("sectoral-debt category has a targeted unsupported flag",
-     A.isSectoralDebtCategory("Debt Scheme - Sectoral Fund"));
-
-  // Phase A: mainstream hybrid sub-categories are now SUPPORTED and map to the
-  // standard NSE composite for that category (all names verified vs NSE factsheets).
-  const HYB = [
-    ["Hybrid Scheme - Aggressive Hybrid Fund", "AGGR_HYBRID", "NIFTY_HYBRID_65_35"],
-    ["Hybrid Scheme - Balanced Hybrid Fund", "BAL_HYBRID", "NIFTY_HYBRID_50_50"],
-    ["Hybrid Scheme - Conservative Hybrid Fund", "CONS_HYBRID", "NIFTY_HYBRID_15_85"],
-    ["Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage", "BAF_DAA", "NIFTY_HYBRID_50_50"],
-    ["Hybrid Scheme - Equity Savings", "EQ_SAVINGS", "NIFTY_EQ_SAVINGS"],
-  ];
-  HYB.forEach(([cat, key, benchKey]) => {
-    ok("supports hybrid " + JSON.stringify(cat), !A.isUnsupportedCategory(cat));
-    ok("hybrid " + key + " routes to " + benchKey, A.categoryKey(cat) === key, A.categoryKey(cat));
-    ok(benchKey + " is a real benchmark", !!A.BENCH_FUNDS[benchKey]);
-  });
-  // BAF must NOT be mis-read as a bare Balanced Hybrid (token order matters).
-  ok("Balanced Advantage is BAF_DAA, not BAL_HYBRID",
-     A.categoryKey("Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage") === "BAF_DAA");
-  // MFAPI punctuation drift must not defeat routing (token match, not exact).
-  ok("hybrid routes despite '-' spacing drift",
-     A.categoryKey("Hybrid Scheme-Aggressive Hybrid Fund") === "AGGR_HYBRID");
-  // Multi-asset is flagged for the "supported soon" message, not a hard rejection tone.
-  ok("multi-asset flagged for friendly message",
-     A.isMultiAssetCategory("Hybrid Scheme - Multi Asset Allocation"));
-  ok("arbitrage is NOT treated as multi-asset",
-     !A.isMultiAssetCategory("Hybrid Scheme - Arbitrage Fund"));
-
-  // A hybrid fund officially on a CRISIL twin: same NSE composite, flagged approx + note.
-  const sbi = A.resolveBenchmarkKey("SBI Balanced Advantage Fund - Direct Growth",
-                                    "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage");
-  ok("CRISIL fund maps to NSE composite but approx+note",
-     sbi.key === "NIFTY_HYBRID_50_50" && sbi.approx === true && /CRISIL/.test(sbi.note || ""),
-     JSON.stringify(sbi));
-  // A non-CRISIL hybrid stays exact (no approx note).
-  const hdfc = A.resolveBenchmarkKey("HDFC Balanced Advantage Fund - Direct Growth",
-                                     "Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage");
-  ok("non-CRISIL hybrid is exact (no note)",
-     hdfc.key === "NIFTY_HYBRID_50_50" && hdfc.approx === false && !hdfc.note, JSON.stringify(hdfc));
 
   ok("exact match, not substring: 'Large & Mid Cap' is not read as LARGE_CAP",
      A.categoryKey(C_LARGEMID) === "LARGE_MID");
@@ -396,27 +308,12 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
            .map(f => f.replace(/\.json$/, ""))
       : []);
   ok("data/tri contains committed TRI files to fall back on", SHIPPED.size > 0);
-  // Hybrid composites and debt indices deliberately have fb:null and no committed
-  // file until their first successful fetch. Missing fixed-income data must fail to
-  // NO comparison rather than degrade to an equity index or a different duration /
-  // credit bucket.
-  const INTENTIONALLY_UNBACKED = new Set([
-    "NIFTY_HYBRID_65_35", "NIFTY_HYBRID_50_50", "NIFTY_HYBRID_15_85", "NIFTY_EQ_SAVINGS",
-    "NIFTY_1D_RATE", "NIFTY_LIQUID", "NIFTY_ULTRA_SHORT_DEBT", "NIFTY_LOW_DURATION_DEBT",
-    "NIFTY_MONEY_MARKET", "NIFTY_SHORT_DURATION_DEBT", "NIFTY_MEDIUM_DURATION_DEBT",
-    "NIFTY_MEDIUM_LONG_DURATION_DEBT", "NIFTY_LONG_DURATION_DEBT", "NIFTY_COMPOSITE_DEBT",
-    "NIFTY_CORPORATE_BOND", "NIFTY_CREDIT_RISK_BOND", "NIFTY_BANKING_PSU_DEBT",
-    "NIFTY_ALL_DURATION_GSEC", "NIFTY_10Y_BENCHMARK_GSEC"
-  ]);
-  ok("hybrid/debt benchmarks are intentionally fb:null (fail to no-comparison)",
-     [...INTENTIONALLY_UNBACKED].every(k => A.BENCH_FUNDS[k] && A.BENCH_FUNDS[k].fb === null));
   const stranded = keys.filter(k => {
-    if (INTENTIONALLY_UNBACKED.has(k)) return false;   // by-design, asserted above
     let cur = k, guard = 0;
     while (cur && guard++ < 6) { if (SHIPPED.has(cur)) return false; cur = A.BENCH_FUNDS[cur].fb; }
     return true;
   });
-  ok("every equity/sector benchmark degrades to an existing TRI before the first fetch",
+  ok("every benchmark degrades to an existing TRI before the first fetch",
      stranded.length === 0, stranded.join(","));
 })();
 
