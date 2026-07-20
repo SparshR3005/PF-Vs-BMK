@@ -320,7 +320,7 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
 // ==================================================== import template
 (function testTemplate() {
   ok("template keeps the Code column",
-     /\["Scheme","Plan","Start","End","Monthly","Code"\]/.test(HTML));
+     /\["Scheme","Plan","Start","End \(optional\)","Monthly","Code \(optional\)"\]/.test(HTML));
   ok("template example row carries a real code (not blank)",
      /"Parag Parikh Flexi Cap Fund - Direct Plan - Growth","Direct","2022-01-01","",5000,"122639"/.test(HTML));
   ok("template ships a guidance sheet", /"How to fill"/.test(HTML));
