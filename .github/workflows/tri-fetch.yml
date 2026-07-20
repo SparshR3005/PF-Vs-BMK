@@ -16,11 +16,10 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    # Raised from 25: the index set grew from 17 to 39. Happy path is ~4-6 min, but
-    # each index allows 4 attempts with backoff, so a few slow/walled indices can
-    # push a run well past 25. A timeout kills the job and commits nothing, so the
-    # ceiling must have real headroom.
-    timeout-minutes: 45
+    # The set now includes 39 equity series plus 19 fixed-income/hybrid report
+    # series. The first successful historical backfill is much heavier than later
+    # incremental runs, so retain enough headroom for Akamai retries and splitting.
+    timeout-minutes: 90
     steps:
       # Actions are pinned to commit SHAs (not floating tags) so a compromised or
       # retagged upstream release can't silently change what runs against a token

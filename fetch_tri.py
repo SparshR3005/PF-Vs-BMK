@@ -24,10 +24,15 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 PAGE = "https://www.niftyindices.com/reports/historical-data"
 CHARTING_PAGE = "https://www.niftyindices.com/market-data/advanced-charting"
 ENDPOINT = "https://www.niftyindices.com/BackPage/getTotalReturnIndexString"
-# The hybrid/composite/equity-savings indices are a SEPARATE NSE index family
-# (Multi Asset / Hybrid), NOT served by the two endpoints above — both answer with a
-# clean [] for them. Their history is served by the site's Advanced Charting widget,
-# whose network call (captured from the live page) is:
+# Historical Index Data endpoint. NSE's report page explicitly treats fixed-income
+# indices (except the clean-price 10-year G-Sec) as total-return indices, so their
+# CLOSE field is a valid TRI level. Unlike the equity-only endpoint above, this is
+# the correct source for debt aggregate indices.
+ENDPOINT_HIST = "https://www.niftyindices.com/BackPage/getHistoricaldatatabletoString"
+# Hybrid/composite/equity-savings indices sit in a separate NSE index family. They
+# are tried on the Historical Index Data report first; the Advanced Charting request
+# below is retained only as a diagnostic fallback because earlier site versions
+# returned a clean [] for these names on the report endpoint:
 #   POST /Backpage/getHistoricaldataDBtoString
 #   body: {"cinfo":"{'name':'','startDate':'..','endDate':'..',
 #                    'historicaltype' :'2','DataType' : 'HR'}"}
@@ -43,19 +48,17 @@ MAX_STALE_DAYS = 7
 PER_INDEX_ATTEMPTS = 4
 NAV_TIMEOUT_MS = 45000
 
-# --- composite (historical-endpoint) fetch tuning ---
-# The historical index-values endpoint truncates large date ranges (a 27-year ask
-# came back with 6 rows on the first run), so composites must be pulled in windows.
-# jugaad-data proves calendar-month windows always work; larger windows are faster
-# when the endpoint honours them. We therefore try a ~1-year window first and let it
-# SELF-SPLIT (halving toward the monthly floor) whenever a window looks truncated —
-# so the code adapts to the endpoint's real cap instead of hard-coding a guess, and
-# the per-window row counts are logged so that cap is visible after a single run.
-START_DATE_HIST      = date(2006, 1, 1)   # covers all NSE hybrid/ES inceptions with headroom
-HIST_TOP_WINDOW_DAYS = 366                # first-try window per step; splits if truncated
+# --- historical-report fetch tuning ---
+# The historical-values report can truncate a large date range. Start with a broad
+# window and SELF-SPLIT (halving toward a monthly floor) whenever the earliest row
+# does not reach the requested start. After the first full publish, only a verified
+# overlap plus new dates is fetched, keeping nightly runs bounded.
+START_DATE_HIST      = date(2001, 9, 3)   # base date of the fixed-income aggregate family
+HIST_TOP_WINDOW_DAYS = 5 * 366            # first-try window; self-splits if truncated
 HIST_MIN_WINDOW_DAYS = 32                 # never split below ~1 month (jugaad-data's floor)
 HIST_GAP_TOLERANCE_DAYS = 10              # earliest row must reach within this of the window start
 HIST_MAX_CALLS       = 400                # per-index backstop so a tiny cap can't blow the budget
+HIST_INCREMENTAL_OVERLAP_DAYS = 45          # refetch this much history to verify continuity
 
 # Soft completeness gate: the run fails (and commits nothing) only if one of these
 # broad-market indices is missing/invalid — they are the fallbacks every equity
@@ -126,6 +129,72 @@ INDEX_MAP = {
     "NIFTY_INDIA_MFG":      {"name": "NIFTY INDIA MANUFACTURING",  "file": "NIFTY_INDIA_MFG.json"},
     "NIFTY_INDIA_DIGITAL":  {"name": "NIFTY INDIA DIGITAL",        "file": "NIFTY_INDIA_DIGITAL.json"},
     "NIFTY_TRANSPORT":      {"name": "NIFTY TRANSPORTATION & LOGISTICS", "file": "NIFTY_TRANSPORT.json"},
+    # --- fixed income / debt category proxies ---
+    # These use the Historical Index Data endpoint. NSE states that all fixed-income
+    # indices except the 10-year clean-price series are total-return indices, so CLOSE
+    # is the total-return level. All remain optional: a debt miss must never abort or
+    # contaminate the mature equity run. Candidate spellings are deliberately supplied
+    # because the endpoint has historically been case/punctuation sensitive.
+    "NIFTY_1D_RATE":                  {"name": "Nifty 1D rate index",
+                                        "historical": True,
+                                        "names": ["Nifty 1D rate index", "NIFTY 1D RATE INDEX"],
+                                        "file": "NIFTY_1D_RATE.json"},
+    "NIFTY_LIQUID":                   {"name": "Nifty Liquid Index",
+                                        "historical": True,
+                                        "names": ["Nifty Liquid Index", "NIFTY LIQUID INDEX"],
+                                        "file": "NIFTY_LIQUID.json"},
+    "NIFTY_ULTRA_SHORT_DEBT":         {"name": "Nifty Ultra Short Duration Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Ultra Short Duration Debt Index", "NIFTY ULTRA SHORT DURATION DEBT INDEX"],
+                                        "file": "NIFTY_ULTRA_SHORT_DEBT.json"},
+    "NIFTY_LOW_DURATION_DEBT":        {"name": "Nifty Low Duration Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Low Duration Debt Index", "NIFTY LOW DURATION DEBT INDEX"],
+                                        "file": "NIFTY_LOW_DURATION_DEBT.json"},
+    "NIFTY_MONEY_MARKET":             {"name": "Nifty Money Market Index",
+                                        "historical": True,
+                                        "names": ["Nifty Money Market Index", "NIFTY MONEY MARKET INDEX"],
+                                        "file": "NIFTY_MONEY_MARKET.json"},
+    "NIFTY_SHORT_DURATION_DEBT":      {"name": "Nifty Short Duration Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Short Duration Debt Index", "NIFTY SHORT DURATION DEBT INDEX"],
+                                        "file": "NIFTY_SHORT_DURATION_DEBT.json"},
+    "NIFTY_MEDIUM_DURATION_DEBT":     {"name": "Nifty Medium Duration Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Medium Duration Debt Index", "NIFTY MEDIUM DURATION DEBT INDEX"],
+                                        "file": "NIFTY_MEDIUM_DURATION_DEBT.json"},
+    "NIFTY_MEDIUM_LONG_DURATION_DEBT":{"name": "Nifty Medium to Long Duration Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Medium to Long Duration Debt Index", "NIFTY MEDIUM TO LONG DURATION DEBT INDEX"],
+                                        "file": "NIFTY_MEDIUM_LONG_DURATION_DEBT.json"},
+    "NIFTY_LONG_DURATION_DEBT":       {"name": "Nifty Long Duration Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Long Duration Debt Index", "NIFTY LONG DURATION DEBT INDEX"],
+                                        "file": "NIFTY_LONG_DURATION_DEBT.json"},
+    "NIFTY_COMPOSITE_DEBT":           {"name": "Nifty Composite Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Composite Debt Index", "NIFTY COMPOSITE DEBT INDEX"],
+                                        "file": "NIFTY_COMPOSITE_DEBT.json"},
+    "NIFTY_CORPORATE_BOND":           {"name": "Nifty Corporate Bond Index",
+                                        "historical": True,
+                                        "names": ["Nifty Corporate Bond Index", "NIFTY CORPORATE BOND INDEX"],
+                                        "file": "NIFTY_CORPORATE_BOND.json"},
+    "NIFTY_CREDIT_RISK_BOND":         {"name": "Nifty Credit Risk Bond Index",
+                                        "historical": True,
+                                        "names": ["Nifty Credit Risk Bond Index", "NIFTY CREDIT RISK BOND INDEX"],
+                                        "file": "NIFTY_CREDIT_RISK_BOND.json"},
+    "NIFTY_BANKING_PSU_DEBT":         {"name": "Nifty Banking & PSU Debt Index",
+                                        "historical": True,
+                                        "names": ["Nifty Banking & PSU Debt Index", "NIFTY BANKING & PSU DEBT INDEX"],
+                                        "file": "NIFTY_BANKING_PSU_DEBT.json"},
+    "NIFTY_ALL_DURATION_GSEC":        {"name": "Nifty All Duration G-Sec Index",
+                                        "historical": True,
+                                        "names": ["Nifty All Duration G-Sec Index", "NIFTY ALL DURATION G-SEC INDEX"],
+                                        "file": "NIFTY_ALL_DURATION_GSEC.json"},
+    "NIFTY_10Y_BENCHMARK_GSEC":       {"name": "Nifty 10 yr Benchmark G-Sec",
+                                        "historical": True,
+                                        "names": ["Nifty 10 yr Benchmark G-Sec", "NIFTY 10 YR BENCHMARK G-SEC"],
+                                        "file": "NIFTY_10Y_BENCHMARK_GSEC.json"},
     # --- hybrid composite (Phase A) ---
     # Multi Asset / Hybrid family — fetched via the Advanced Charting endpoint by
     # navigating to advanced-charting?Iname=<name> (see ENDPOINT_CHART note). `names`
@@ -136,24 +205,29 @@ INDEX_MAP = {
     # DELIBERATELY OPTIONAL (absent from REQUIRED_KEYS): a composite miss keeps its
     # last-good file and is flagged stale, and NEVER aborts the equity run.
     "NIFTY_HYBRID_65_35":   {"name": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
-                             "composite": True,
-                             "names": ["NIFTY 50 Hybrid Composite Debt 65:35 Index",
+                             "historical": True, "chart_fallback": True,
+                             "names": ["Nifty 50 Hybrid Composite Debt 65:35 Index",
+                                       "NIFTY 50 HYBRID COMPOSITE DEBT 65:35 INDEX",
                                        "Nifty 50 Hybrid Composite Debt 65:35"],
                              "file": "NIFTY_HYBRID_65_35.json"},
     "NIFTY_HYBRID_50_50":   {"name": "NIFTY 50 Hybrid Composite Debt 50:50 Index",
-                             "composite": True,
-                             "names": ["NIFTY 50 Hybrid Composite Debt 50:50 Index",
+                             "historical": True, "chart_fallback": True,
+                             "names": ["Nifty 50 Hybrid Composite Debt 50:50 Index",
+                                       "NIFTY 50 HYBRID COMPOSITE DEBT 50:50 INDEX",
                                        "Nifty 50 Hybrid Composite Debt 50:50"],
                              "file": "NIFTY_HYBRID_50_50.json"},
     "NIFTY_HYBRID_15_85":   {"name": "NIFTY 50 Hybrid Composite Debt 15:85 Index",
-                             "composite": True,
-                             "names": ["NIFTY 50 Hybrid Composite Debt 15:85 Index",
+                             "historical": True, "chart_fallback": True,
+                             "names": ["Nifty 50 Hybrid Composite Debt 15:85 Index",
+                                       "NIFTY 50 HYBRID COMPOSITE DEBT 15:85 INDEX",
                                        "Nifty 50 Hybrid Composite Debt 15:85"],
                              "file": "NIFTY_HYBRID_15_85.json"},
-    "NIFTY_EQ_SAVINGS":     {"name": "NIFTY Equity Savings Index",
-                             "composite": True,
-                             "names": ["NIFTY Equity Savings Index",
-                                       "Nifty Equity Savings"],
+    "NIFTY_EQ_SAVINGS":     {"name": "Nifty Equity Savings",
+                             "historical": True, "chart_fallback": True,
+                             "names": ["Nifty Equity Savings",
+                                       "NIFTY EQUITY SAVINGS",
+                                       "Nifty Equity Savings Index",
+                                       "NIFTY EQUITY SAVINGS INDEX"],
                              "file": "NIFTY_EQ_SAVINGS.json"},
 }
 
@@ -222,6 +296,8 @@ def parse_rows(res: dict):
                 rows = json.loads(d)
             elif isinstance(d, list):
                 rows = d
+            elif isinstance(outer.get("data"), list):
+                rows = outer.get("data")
             else:
                 rows = None
         else:
@@ -307,11 +383,7 @@ def _fetch_one_name(page, context, name: str, end: str, endpoint: str = ENDPOINT
 
 
 def fetch_index(page, context, names, end: str, endpoint: str = ENDPOINT):
-    """Try each candidate spelling until one returns a usable series. Equity indices
-    pass a single name (list-of-one) on the default TRI endpoint and behave exactly as
-    before. Composite indices pass several spellings AND an alternate endpoint, so an
-    unverified name/endpoint self-corrects on the first run instead of silently
-    skipping the index."""
+    """Try each candidate spelling until one returns a usable equity TRI series."""
     if isinstance(names, str):
         names = [names]
     for name in names:
@@ -327,26 +399,85 @@ def fetch_index(page, context, names, end: str, endpoint: str = ENDPOINT):
 
 
 # ---------------------------------------------------------------------------
-# Composite / hybrid indices: chunked fetch against the historical-values endpoint.
-# That endpoint truncates large ranges, so we pull the series in windows and merge.
-# The equity path above is untouched; only INDEX_MAP entries carrying an alternate
-# `endpoint` come through here.
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Composite / hybrid indices: chunked fetch against the historical-values endpoint.
-# That endpoint truncates large ranges, so we pull the series in windows and merge.
-# The equity path above is untouched; only INDEX_MAP entries carrying an alternate
-# `endpoint` come through here.
-#
-# The endpoint's exact request contract is version-dependent in the wild (some
-# deployments want the TRI endpoint's `cinfo`-wrapped string, others a flat body;
-# the date token format also varies). Rather than hard-code one, a one-time probe
-# tries a small matrix on a recent window, LOGS the raw response for each so a
-# failure is fully diagnosable from the Actions log, and adopts whichever encoding
-# actually returns rows. That encoding is then reused for the whole series.
+# Historical index values use the same wrapped cinfo contract as the equity TRI
+# endpoint, but can truncate a large date range. The collector therefore probes the
+# canonical name and self-splits only when the returned history does not reach the
+# requested start date.
 # ---------------------------------------------------------------------------
 def _ddmon(d: date) -> str:
     return d.strftime("%d-%b-%Y")
+
+
+# ---------------------------------------------------------------------------
+# Fixed-income and hybrid indices: Historical Index Data endpoint.
+# The endpoint can truncate large ranges, so the same self-splitting collector used
+# by the chart fallback is applied here. Crucially, the payload includes BOTH name
+# and indexName; omitting indexName has produced clean-but-empty responses in prior
+# site versions.
+# ---------------------------------------------------------------------------
+def _historical_window(page, context, name, start_d, end_d, budget):
+    for attempt in range(1, PER_INDEX_ATTEMPTS + 1):
+        if budget[0] <= 0:
+            return []
+        try:
+            if attempt > 1 or not has_akamai(context):
+                prime(page, reload=False, url=PAGE)
+            if not has_akamai(context):
+                time.sleep(2 * attempt)
+                continue
+            budget[0] -= 1
+            payload = build_payload(name, _ddmon(start_d), _ddmon(end_d))
+            res = page.evaluate(JS_FETCH, [ENDPOINT_HIST, payload])
+            rows = parse_rows(res)
+            if rows is None:
+                snippet = (res.get("text", "") or "")[:100].replace("\n", " ")
+                print("    [HIST %s] %s..%s attempt %d: wall/garbage status=%s redir=%s %r"
+                      % (name, start_d, end_d, attempt, res.get("status"),
+                         res.get("redirected"), snippet))
+                time.sleep(2 * attempt)
+                continue
+            return rows
+        except PWTimeout as exc:
+            print("    [HIST %s] %s..%s timeout: %s" % (name, start_d, end_d, exc))
+            time.sleep(2 * attempt)
+        except Exception as exc:
+            print("    [HIST %s] %s..%s error: %s" % (name, start_d, end_d, exc))
+            time.sleep(2 * attempt)
+    return None
+
+
+def _probe_historical(page, context, names, end_d):
+    probe_start = end_d - timedelta(days=120)
+    for name in names:
+        budget = [1]
+        rows = _historical_window(page, context, name, probe_start, end_d, budget)
+        n = len(rows) if isinstance(rows, list) else -1
+        print("    [HIST PROBE] name=%r parsed=%s" % (name, n))
+        if isinstance(rows, list) and len(rows) >= 5:
+            print("    [HIST PROBE] SELECTED name=%r" % name)
+            return name
+        time.sleep(1)
+    return None
+
+
+def fetch_historical_index(page, context, names, start_d, end_d):
+    if isinstance(names, str):
+        names = [names]
+    selected = _probe_historical(page, context, names, end_d)
+    if not selected:
+        return None, None
+    budget = [HIST_MAX_CALLS]
+    out = []
+    window_fetch = lambda s, e: _historical_window(page, context, selected, s, e, budget)
+    cur = start_d
+    while cur <= end_d and budget[0] > 0:
+        win_end = min(end_d, cur + timedelta(days=HIST_TOP_WINDOW_DAYS - 1))
+        _collect_range(window_fetch, cur, win_end, budget, out)
+        cur = win_end + timedelta(days=1)
+    if budget[0] <= 0:
+        print("    [%s] hit historical call budget (%d); publishing what was collected"
+              % (selected, HIST_MAX_CALLS))
+    return (out or None), ENDPOINT_HIST
 
 
 # ---------------------------------------------------------------------------
@@ -533,11 +664,11 @@ def rows_to_doc(key: str, name: str, rows: list, endpoint: str = ENDPOINT) -> di
 MAX_DAILY_MOVE = 0.35
 
 
-def validate_series(doc: dict):
+def validate_series(doc: dict, min_rows: int = MIN_ROWS):
     """Return an error string if the series looks corrupt, else ''."""
     series = doc.get("series") or {}
-    if len(series) < MIN_ROWS:
-        return f"only {len(series)} valid rows (<{MIN_ROWS})"
+    if len(series) < min_rows:
+        return f"only {len(series)} valid rows (<{min_rows})"
 
     items = list(series.items())          # already date-sorted by rows_to_doc
     prev_date, prev_val = None, None
@@ -654,6 +785,51 @@ def continuity_problem(new_doc: dict, old_doc) -> str:
     return ""
 
 
+def historical_fetch_start(old_doc):
+    """Full history on first fetch; thereafter refetch a short overlap plus new days."""
+    if not old_doc or not old_doc.get("end"):
+        return START_DATE_HIST
+    try:
+        prior_end = datetime.strptime(old_doc["end"], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return START_DATE_HIST
+    return max(START_DATE_HIST, prior_end - timedelta(days=HIST_INCREMENTAL_OVERLAP_DAYS))
+
+
+def incremental_overlap_problem(slice_doc: dict, old_doc) -> str:
+    """Verify an incremental historical slice against committed values before merge."""
+    if not old_doc:
+        return ""
+    old_series = old_doc.get("series") or {}
+    new_series = slice_doc.get("series") or {}
+    common = sorted(set(old_series).intersection(new_series))
+    if len(common) < 5:
+        return (f"only {len(common)} overlapping dates with committed history; "
+                "cannot verify the incremental slice")
+    for d in common:
+        ov, nv = old_series[d], new_series[d]
+        if ov and abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
+            return (f"overlap value on {d} changed {ov:.2f} -> {nv:.2f} "
+                    f"(>{CONT_VALUE_TOLERANCE:.0%})")
+    return ""
+
+
+def merge_incremental_doc(slice_doc: dict, old_doc) -> dict:
+    """Merge a verified recent slice into the last-good complete document."""
+    if not old_doc:
+        return slice_doc
+    merged = dict(old_doc.get("series") or {})
+    merged.update(slice_doc.get("series") or {})
+    ordered = dict(sorted(merged.items()))
+    dates = list(ordered)
+    out = dict(slice_doc)
+    out["series"] = ordered
+    out["count"] = len(ordered)
+    out["start"] = dates[0] if dates else None
+    out["end"] = dates[-1] if dates else None
+    return out
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     end = today_ist().strftime("%d-%b-%Y")
@@ -695,12 +871,20 @@ def main():
             for index, (key, meta) in enumerate(items, start=1):
                 name = meta["name"]
                 filename = meta["file"]
-                names = meta.get("names") or [name]        # composites carry alt spellings
+                path = OUT_DIR / filename
+                old_doc = read_existing_doc(path)
+                names = meta.get("names") or [name]
                 print(f"[{index}/{len(items)}] {name} ({key})")
-                if meta.get("composite"):
-                    # Probe both endpoints; fetch full (TRI) or chunked (historical).
-                    rows, used_endpoint = fetch_composite(page, context, names,
-                                                          START_DATE_HIST, today_ist())
+                if meta.get("historical"):
+                    hist_start = historical_fetch_start(old_doc)
+                    rows, used_endpoint = fetch_historical_index(
+                        page, context, names, hist_start, today_ist())
+                    # Hybrid pages retain the Advanced Charting fallback as a diagnostic.
+                    # Debt indices deliberately do not: the report page is their stated
+                    # total-return source.
+                    if not rows and meta.get("chart_fallback"):
+                        rows, used_endpoint = fetch_composite(
+                            page, context, names, hist_start, today_ist())
                 else:
                     rows = fetch_index(page, context, names, end, ENDPOINT)
                     used_endpoint = ENDPOINT
@@ -708,19 +892,28 @@ def main():
                     failures.append(f"{name}: fetch failed")
                     continue
 
-                doc = rows_to_doc(key, name, rows, used_endpoint)
-                problem = validate_series(doc)
+                slice_doc = rows_to_doc(key, name, rows, used_endpoint)
+                slice_min_rows = 5 if meta.get("historical") and old_doc else MIN_ROWS
+                problem = validate_series(slice_doc, min_rows=slice_min_rows)
                 if problem:
                     failures.append(f"{name}: {problem}")
                     continue
-
-                if not is_fresh(doc):
-                    failures.append(f"{name}: stale end date {doc['end']}")
+                if not is_fresh(slice_doc):
+                    failures.append(f"{name}: stale end date {slice_doc['end']}")
                     continue
+
+                if meta.get("historical") and old_doc:
+                    overlap_problem = incremental_overlap_problem(slice_doc, old_doc)
+                    if overlap_problem:
+                        failures.append(f"{name}: incremental check failed — {overlap_problem}")
+                        continue
+                    doc = merge_incremental_doc(slice_doc, old_doc)
+                else:
+                    doc = slice_doc
 
                 # Continuity gate: never let a validated-but-truncated/mismatched
                 # series overwrite good committed history (see continuity_problem).
-                cont = continuity_problem(doc, read_existing_doc(OUT_DIR / filename))
+                cont = continuity_problem(doc, old_doc)
                 if cont:
                     failures.append(f"{name}: continuity check failed — {cont}")
                     continue

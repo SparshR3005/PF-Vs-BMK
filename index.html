@@ -532,6 +532,13 @@ const HYBRID_CRISIL_OVERRIDES = [
 ];
 const CRISIL_NOTE = "NSE equivalent of the fund's CRISIL benchmark";
 const HYBRID_KEYS = new Set(["AGGR_HYBRID","BAL_HYBRID","BAF_DAA","CONS_HYBRID","EQ_SAVINGS"]);
+const DEBT_KEYS = new Set([
+  "DEBT_OVERNIGHT","DEBT_LIQUID","DEBT_ULTRA_SHORT","DEBT_LOW_DURATION",
+  "DEBT_MONEY_MARKET","DEBT_SHORT","DEBT_MEDIUM","DEBT_MEDIUM_LONG",
+  "DEBT_LONG","DEBT_DYNAMIC","DEBT_CORPORATE","DEBT_CREDIT_RISK",
+  "DEBT_BANKING_PSU","DEBT_GILT","DEBT_GILT_10Y"
+]);
+const DEBT_PROXY_NOTE = "Nifty category proxy; the scheme's disclosed Tier-1 benchmark may be a CRISIL or Nifty PRC variant";
 function hybridCrisilNote(normName){
   return HYBRID_CRISIL_OVERRIDES.some(sub => normName.includes(sub)) ? CRISIL_NOTE : null;
 }
@@ -600,6 +607,26 @@ const CATEGORY_KEY_BENCH = {
   BAF_DAA:     "NIFTY_HYBRID_50_50",   // Dynamic Asset Allocation / Balanced Advantage
   CONS_HYBRID: "NIFTY_HYBRID_15_85",   // Conservative Hybrid (10-25% equity)
   EQ_SAVINGS:  "NIFTY_EQ_SAVINGS",     // Equity Savings
+
+  // --- debt: category-level Nifty fixed-income total-return proxies ---
+  // Debt funds may disclose a CRISIL benchmark or a Nifty PRC variant based on
+  // their Potential Risk Class. MFAPI does not expose that fund-level benchmark/PRC,
+  // so these are intentionally marked approximate in resolveBenchmarkKey().
+  DEBT_OVERNIGHT:    "NIFTY_1D_RATE",
+  DEBT_LIQUID:       "NIFTY_LIQUID",
+  DEBT_ULTRA_SHORT:  "NIFTY_ULTRA_SHORT_DEBT",
+  DEBT_LOW_DURATION: "NIFTY_LOW_DURATION_DEBT",
+  DEBT_MONEY_MARKET: "NIFTY_MONEY_MARKET",
+  DEBT_SHORT:        "NIFTY_SHORT_DURATION_DEBT",
+  DEBT_MEDIUM:       "NIFTY_MEDIUM_DURATION_DEBT",
+  DEBT_MEDIUM_LONG:  "NIFTY_MEDIUM_LONG_DURATION_DEBT",
+  DEBT_LONG:         "NIFTY_LONG_DURATION_DEBT",
+  DEBT_DYNAMIC:      "NIFTY_COMPOSITE_DEBT",
+  DEBT_CORPORATE:    "NIFTY_CORPORATE_BOND",
+  DEBT_CREDIT_RISK:  "NIFTY_CREDIT_RISK_BOND",
+  DEBT_BANKING_PSU:  "NIFTY_BANKING_PSU_DEBT",
+  DEBT_GILT:         "NIFTY_ALL_DURATION_GSEC",
+  DEBT_GILT_10Y:     "NIFTY_10Y_BENCHMARK_GSEC",
 };
 // Name-based fallback, used only when the category is Sectoral/Thematic or absent.
 // Longest match first — "large & mid" must beat both "large cap" and "mid cap".
@@ -683,6 +710,26 @@ const BENCH_FUNDS = {
   NIFTY_HYBRID_50_50:   { label:"Nifty 50 Hybrid Composite Debt 50:50 TRI", fb:null },
   NIFTY_HYBRID_15_85:   { label:"Nifty 50 Hybrid Composite Debt 15:85 TRI", fb:null },
   NIFTY_EQ_SAVINGS:     { label:"Nifty Equity Savings TRI",                 fb:null },
+
+  // --- debt category proxies ---
+  // fb:null is deliberate: a missing debt series must not silently fall back to an
+  // equity index or to a different duration/credit bucket. Show fund XIRR without a
+  // spread until the correct fixed-income TRI has been fetched.
+  NIFTY_1D_RATE:                  { label:"Nifty 1D Rate Index TRI",                         fb:null },
+  NIFTY_LIQUID:                   { label:"Nifty Liquid Index TRI",                          fb:null },
+  NIFTY_ULTRA_SHORT_DEBT:         { label:"Nifty Ultra Short Duration Debt Index TRI",       fb:null },
+  NIFTY_LOW_DURATION_DEBT:        { label:"Nifty Low Duration Debt Index TRI",               fb:null },
+  NIFTY_MONEY_MARKET:             { label:"Nifty Money Market Index TRI",                    fb:null },
+  NIFTY_SHORT_DURATION_DEBT:      { label:"Nifty Short Duration Debt Index TRI",             fb:null },
+  NIFTY_MEDIUM_DURATION_DEBT:     { label:"Nifty Medium Duration Debt Index TRI",            fb:null },
+  NIFTY_MEDIUM_LONG_DURATION_DEBT:{ label:"Nifty Medium to Long Duration Debt Index TRI",    fb:null },
+  NIFTY_LONG_DURATION_DEBT:       { label:"Nifty Long Duration Debt Index TRI",              fb:null },
+  NIFTY_COMPOSITE_DEBT:           { label:"Nifty Composite Debt Index TRI",                  fb:null },
+  NIFTY_CORPORATE_BOND:           { label:"Nifty Corporate Bond Index TRI",                  fb:null },
+  NIFTY_CREDIT_RISK_BOND:         { label:"Nifty Credit Risk Bond Index TRI",                fb:null },
+  NIFTY_BANKING_PSU_DEBT:         { label:"Nifty Banking & PSU Debt Index TRI",              fb:null },
+  NIFTY_ALL_DURATION_GSEC:        { label:"Nifty All Duration G-Sec Index TRI",              fb:null },
+  NIFTY_10Y_BENCHMARK_GSEC:       { label:"Nifty 10 yr Benchmark G-Sec TRI",           fb:null },
 };
 
 function normName(s){ return String(s||"").toLowerCase().replace(/\s+/g," ").trim(); }
@@ -749,13 +796,42 @@ function hybridCategoryKey(norm){
   if(norm.includes("balanced")) return "BAL_HYBRID";
   return null;                                                // unknown hybrid sub-type: fail closed
 }
+/* Debt routing accepts both the pre-2026 SEBI labels ("Low Duration",
+   "Dynamic Bond", "Floater") and the Feb-2026 labels ("Ultra Short to Short
+   Term", "Dynamic Term", "Floating Interest Rates"). Specific phrases are tested
+   before broad ones so, for example, "medium to long" is not read as "medium".
+   Floating-rate and sectoral debt funds return null for now: the Nifty aggregate
+   family has no clean category-level floating-rate index, while sectoral debt needs
+   a sector-specific benchmark rather than one generic series. */
+function debtCategoryKey(norm){
+  if(norm.includes("sectoral")) return null;
+  if(norm.includes("floating interest") || norm.includes("floating rate") || norm.includes("floater")) return null;
+  if((norm.includes("10-year") || norm.includes("10 year")) && norm.includes("gilt")) return "DEBT_GILT_10Y";
+  if(norm.includes("overnight")) return "DEBT_OVERNIGHT";
+  if(norm.includes("liquid")) return "DEBT_LIQUID";
+  if(norm.includes("ultra short to short") || norm.includes("low duration")) return "DEBT_LOW_DURATION";
+  if(norm.includes("ultra short")) return "DEBT_ULTRA_SHORT";
+  if(norm.includes("money market")) return "DEBT_MONEY_MARKET";
+  if(norm.includes("medium to long")) return "DEBT_MEDIUM_LONG";
+  if(norm.includes("medium duration") || norm.includes("medium term")) return "DEBT_MEDIUM";
+  if(norm.includes("long duration") || norm.includes("long term")) return "DEBT_LONG";
+  if(norm.includes("short duration") || norm.includes("short term")) return "DEBT_SHORT";
+  if(norm.includes("dynamic bond") || norm.includes("dynamic term")) return "DEBT_DYNAMIC";
+  if(norm.includes("credit risk")) return "DEBT_CREDIT_RISK";
+  if(norm.includes("corporate bond")) return "DEBT_CORPORATE";
+  if(norm.includes("banking") && norm.includes("psu")) return "DEBT_BANKING_PSU";
+  if(norm.includes("gilt")) return "DEBT_GILT";
+  return null;
+}
 // Canonical SEBI category key, or null when the category is absent, junk, or a
-// type this tool cannot benchmark (arbitrage / multi-asset-for-now / debt / FoF).
+// type this tool cannot benchmark (arbitrage / multi-asset / floating-rate debt /
+// sectoral debt / passive / FoF).
 function categoryKey(category){
   const norm = normCategory(category);
   const exact = CATEGORY_CANON[norm];
   if(exact) return exact;
   if(norm.startsWith("hybrid")) return hybridCategoryKey(norm);
+  if(norm.startsWith("debt")) return debtCategoryKey(norm);
   return null;
 }
 function isUnsupportedCategory(category){
@@ -766,6 +842,14 @@ function isUnsupportedCategory(category){
 function isMultiAssetCategory(category){
   const norm = normCategory(category);
   return norm.startsWith("hybrid") && norm.includes("multi asset");
+}
+function isFloatingRateCategory(category){
+  const norm = normCategory(category);
+  return norm.startsWith("debt") && (norm.includes("floating interest") || norm.includes("floating rate") || norm.includes("floater"));
+}
+function isSectoralDebtCategory(category){
+  const norm = normCategory(category);
+  return norm.startsWith("debt") && norm.includes("sectoral");
 }
 // Cap-tier categories a fund NAME can be checked against. Sectoral/Thematic is
 // excluded on purpose: MFAPI collapses every sector into one string and never says
@@ -799,25 +883,15 @@ function claimedCategoryFromName(name){
 }
 
 // Name-based screen for the searchable/import list. MFAPI's /mf endpoint returns
-// scheme NAMES but no category, so we can't call isUnsupportedCategory() at list
-// build time — instead we approximate it from tokens that reliably appear in the
-// NAMES of non-equity schemes. This keeps debt / hybrid / gold / index / ETF /
-// international funds out of the pick list, so a user can't select something that
-// computeScheme() would then reject at add time (the pick -> "can't be compared"
-// round-trip). The category check in computeScheme() stays the authoritative gate
-// for anything a name doesn't reveal (e.g. a hybrid fund with a plain name, or an
-// import-by-code that bypasses this list). Kept deliberately conservative so it
-// never hides a genuine actively-managed equity fund. ELSS/value/contra/focused/
-// dividend-yield are equity and intentionally absent here.
+// scheme NAMES but no category, so this can only hide categories that are reliably
+// unsupported from the name alone. Actively-managed debt funds are now intentionally
+// allowed through; computeScheme() uses the API's real category to route them.
 const NON_EQUITY_NAME_TOKENS = [
-  "liquid","overnight","gilt","money market","ultra short","low duration",
-  "short duration","medium duration","long duration","banking and psu",
-  "corporate bond","credit risk","debt","duration","floater","dynamic bond","bond",
-  // "hybrid"/"balanced"/"equity savings" are now SUPPORTED (Phase A) and removed
-  // from this block so they appear in the pick list. "arbitrage" (excluded) and
-  // "multi asset"/"asset allocation" (Phase B) stay blocked. The category gate in
-  // computeScheme() remains authoritative for anything a name doesn't reveal.
+  // Hybrid categories not yet supported.
   "arbitrage","multi asset","asset allocation",
+  // Debt categories that still need a clean benchmark.
+  "floater","floating rate","floating interest","sectoral debt",
+  // Other asset classes / structures outside this utility.
   "gold","silver","commodit","fund of fund","fof","overseas","international","global",
   "index fund","exchange traded","etf","retirement","children","pension",
 ];
@@ -847,6 +921,10 @@ function resolveBenchmarkKey(schemeName, category){
     // Hybrid funds officially on a CRISIL twin: same NSE composite, flagged approx.
     const crisil = HYBRID_KEYS.has(catKey) ? hybridCrisilNote(n) : null;
     if(crisil) return { key:CATEGORY_KEY_BENCH[catKey], approx:true, note:crisil };
+    // MFAPI exposes only the SEBI debt category, not the scheme-level Tier-1 benchmark
+    // or PRC bucket. Use the matching Nifty aggregate as an honest category proxy
+    // and label it approximate rather than pretending it is the disclosed benchmark.
+    if(DEBT_KEYS.has(catKey)) return { key:CATEGORY_KEY_BENCH[catKey], approx:true, note:DEBT_PROXY_NOTE };
     return { key:CATEGORY_KEY_BENCH[catKey], approx:false };
   }
 
@@ -1472,10 +1550,9 @@ async function computeScheme(spec){
   // on the next hydrate instead of being frozen forever. spec.category is only a
   // fallback for the rare case the API omits it.
   const category=detail.category||spec.category||"";
-  // Debt / arbitrage / gold / index / FoF still can't be fairly benchmarked here.
-  // Reject with a clear message rather than silently comparing against Nifty 500,
-  // which would produce a meaningless (and misleading) alpha. Equity and mainstream
-  // hybrid (aggressive/balanced/conservative/BAF/equity-savings) now pass this gate.
+  // Reject unsupported categories with a clear message rather than silently comparing
+  // them against Nifty 500. Equity, mainstream hybrid, and the supported debt
+  // categories now pass this gate.
   if(isUnsupportedCategory(category)){
     const shown=(category||"").trim();
     // Multi Asset is a real category we plan to support (Phase B: a synthesized
@@ -1485,15 +1562,24 @@ async function computeScheme(spec){
         "against a bespoke equity + debt + gold/silver blend that varies by fund, which isn't "+
         "wired up yet — support is planned. For now it can't be added.");
     }
+    if(isFloatingRateCategory(category)){
+      throw new Error(officialName+" is a floating-rate debt fund. The Nifty fixed-income aggregate "+
+        "family used by this utility does not provide a clean category-level floating-rate TRI, so "+
+        "using a duration or overnight proxy would be misleading. It has not been added.");
+    }
+    if(isSectoralDebtCategory(category)){
+      throw new Error(officialName+" is a sectoral debt fund. This new category needs a sector-specific "+
+        "debt benchmark; a single generic debt index would be misleading. It has not been added.");
+    }
     // MFAPI's category field is dirty on legacy records ("1", "1099 Days",
     // "Growth", "Income", "IDF", "Payout"). Those aren't a scheme type the user
     // can act on, so say so plainly instead of quoting the junk back at them.
     const looksJunk = !shown || !/scheme|elss/i.test(shown);
     throw new Error(looksJunk
       ? officialName+" doesn't report a recognisable SEBI scheme category"+(shown?' (its category reads "'+shown+'")':"")+
-        ", so it can't be benchmarked here. This tool compares equity and mainstream hybrid funds against a matching Nifty TRI."
+        ", so it can't be benchmarked here. This tool compares equity, mainstream hybrid, and supported debt funds against a matching total-return index."
       : officialName+' is a "'+shown+'" scheme; '+
-        "this tool compares equity and mainstream hybrid funds against a matching Nifty TRI, so it can't be compared here.");
+        "this tool compares equity, mainstream hybrid, and supported debt funds against a matching total-return index, so it can't be compared here.");
   }
   // Wrong-fund guard: if the name the user supplied CLAIMS a cap tier that
   // contradicts the resolved fund's real SEBI category, we resolved the wrong
@@ -1521,6 +1607,7 @@ async function computeScheme(spec){
   const benchTri=await resolveBenchmarkTri(bk.key,bk.approx);
   const benchNav=benchTri?benchTri.navArr:null;   // TRI series behaves like a NAV array
   const benchInfo=benchTri;
+  const intendedBench=BENCH_FUNDS[bk.key]||null; // retain the intended label even before its data file exists
 
   // Alpha is measured only over the window where BOTH the fund and its TRI
   // have data. Because TRI inception dates differ by index, the benchmark's
@@ -1558,8 +1645,11 @@ async function computeScheme(spec){
     startStr:spec.startStr,endStr:spec.endStr||"",start,amount,
     fundValueDate:fundLast,navStaleDays,cmpValueDate,fund:fundFull,fundCmp,benchCmp,cmpFirst,cmpCount,
     fundSkipped:(fundFull&&fundFull.skipped)?fundFull.skipped.length:0,
-    benchLabel:benchInfo?benchInfo.label:null,benchApprox:benchInfo?benchInfo.approx:false,
-    benchNote: (benchInfo && bk.note) ? bk.note : null,
+    benchKey:bk.key,
+    benchLabel:benchInfo?benchInfo.label:(intendedBench?intendedBench.label:null),
+    benchDataMissing:!benchInfo,
+    benchApprox:benchInfo?benchInfo.approx:!!bk.approx,
+    benchNote:bk.note||null,
     cmpShorter:!!(benchCmp&&cmpCount<fundFull.placed)
   };
 }
@@ -1732,8 +1822,15 @@ function render(){
     }
     const v=schemeView(s),band=perfBand(v.alpha),f=s.fund,b=s.benchCmp;
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
-    if(s.benchLabel&&b){const noteTxt=s.benchNote?s.benchNote:(s.benchApprox?'broad-market proxy':'category proxy');bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+escapeHtml(noteTxt)+')</span></div>';}
-    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category proxy · no overlapping data)</span></div>';}
+    if(s.benchLabel&&s.benchDataMissing){
+      const missingNote=s.benchNote?s.benchNote+' · benchmark data unavailable':'benchmark data unavailable';
+      bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+escapeHtml(missingNote)+')</span></div>';
+    }else if(s.benchLabel&&b){
+      const noteTxt=s.benchNote?s.benchNote:(s.benchApprox?'broad-market proxy':'category proxy');
+      bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+escapeHtml(noteTxt)+')</span></div>';
+    }else if(s.benchLabel){
+      bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category proxy · no overlapping data)</span></div>';
+    }
     const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark proxy by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a. (XIRR spread)</div>';
     // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
     let notes="";
