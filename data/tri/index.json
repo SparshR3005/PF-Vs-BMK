@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-07-19T22:34:26Z",
+  "generated_utc": "2026-07-20T10:59:49Z",
   "indices": [
     {
       "key": "NIFTY50",
@@ -353,6 +353,141 @@
       "fresh": true
     },
     {
+      "key": "NIFTY_1D_RATE",
+      "index": "Nifty 1D rate index",
+      "file": "NIFTY_1D_RATE.json",
+      "count": 3649,
+      "start": "2011-01-03",
+      "end": "2026-07-17",
+      "fresh": true
+    },
+    {
+      "key": "NIFTY_LIQUID",
+      "index": "Nifty Liquid Index",
+      "file": "NIFTY_LIQUID.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_ULTRA_SHORT_DEBT",
+      "index": "Nifty Ultra Short Duration Debt Index",
+      "file": "NIFTY_ULTRA_SHORT_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_LOW_DURATION_DEBT",
+      "index": "Nifty Low Duration Debt Index",
+      "file": "NIFTY_LOW_DURATION_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_MONEY_MARKET",
+      "index": "Nifty Money Market Index",
+      "file": "NIFTY_MONEY_MARKET.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_SHORT_DURATION_DEBT",
+      "index": "Nifty Short Duration Debt Index",
+      "file": "NIFTY_SHORT_DURATION_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_MEDIUM_DURATION_DEBT",
+      "index": "Nifty Medium Duration Debt Index",
+      "file": "NIFTY_MEDIUM_DURATION_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_MEDIUM_LONG_DURATION_DEBT",
+      "index": "Nifty Medium to Long Duration Debt Index",
+      "file": "NIFTY_MEDIUM_LONG_DURATION_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_LONG_DURATION_DEBT",
+      "index": "Nifty Long Duration Debt Index",
+      "file": "NIFTY_LONG_DURATION_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_COMPOSITE_DEBT",
+      "index": "Nifty Composite Debt Index",
+      "file": "NIFTY_COMPOSITE_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_CORPORATE_BOND",
+      "index": "Nifty Corporate Bond Index",
+      "file": "NIFTY_CORPORATE_BOND.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_CREDIT_RISK_BOND",
+      "index": "Nifty Credit Risk Bond Index",
+      "file": "NIFTY_CREDIT_RISK_BOND.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_BANKING_PSU_DEBT",
+      "index": "Nifty Banking & PSU Debt Index",
+      "file": "NIFTY_BANKING_PSU_DEBT.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_ALL_DURATION_GSEC",
+      "index": "Nifty All Duration G-Sec Index",
+      "file": "NIFTY_ALL_DURATION_GSEC.json",
+      "count": 0,
+      "start": null,
+      "end": null,
+      "fresh": false
+    },
+    {
+      "key": "NIFTY_10Y_BENCHMARK_GSEC",
+      "index": "Nifty 10 yr Benchmark G-Sec",
+      "file": "NIFTY_10Y_BENCHMARK_GSEC.json",
+      "count": 3937,
+      "start": "2011-01-03",
+      "end": "2026-07-17",
+      "fresh": true
+    },
+    {
       "key": "NIFTY_HYBRID_65_35",
       "index": "NIFTY 50 Hybrid Composite Debt 65:35 Index",
       "file": "NIFTY_HYBRID_65_35.json",
@@ -381,7 +516,7 @@
     },
     {
       "key": "NIFTY_EQ_SAVINGS",
-      "index": "NIFTY Equity Savings Index",
+      "index": "Nifty Equity Savings",
       "file": "NIFTY_EQ_SAVINGS.json",
       "count": 0,
       "start": null,
