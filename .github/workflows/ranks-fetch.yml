@@ -1,0 +1,54 @@
+name: Fetch ranking data
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 15:30 UTC = 21:00 IST, an hour after the TRI job, so the two never contend
+    # for the same runner window and a failure in one is unambiguous.
+    - cron: "30 15 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ranks-fetch
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    # Measured: 2.42 schemes/sec at concurrency 8. Discovery touches ~2,890 schemes
+    # via /latest and full history is pulled for ~1,250 rankable funds, so the happy
+    # path is roughly 30 min. A timeout commits nothing, so leave real headroom.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+
+      # Gate. The publish rules and the shared universe filters are the only things
+      # standing between a bad fetch and a category file full of wrong ranks. If the
+      # tests don't pass, don't fetch and don't commit: a skipped day costs nothing.
+      - name: Regression tests (gate)
+        run: |
+          python tests/test_probe_ranks.py
+          python tests/test_fetch_ranks.py
+
+      - name: Fetch ranking data
+        run: python fetch_ranks.py --concurrency 8
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/ranks
+          if git diff --staged --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "Update ranking data [skip ci]"
+            git push || (git pull --rebase --autostash && git push)
+          fi
