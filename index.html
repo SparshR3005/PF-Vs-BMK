@@ -685,6 +685,13 @@ const CATEGORY_CANON = {
   "equity scheme - dividend yield fund":   "DIV_YIELD",
   "equity scheme - sectoral/ thematic":    "SECTORAL",
   "equity scheme - sectoral/thematic":     "SECTORAL",
+  // MFAPI also serves a PLURAL variant on ~20 live schemes ("Equity Schemes -
+  // Thematic Fund"). Without this key categoryKey() returns null, so
+  // isUnsupportedCategory() fires and computeScheme() THROWS -- those funds
+  // could not be added to a portfolio at all. Found by probe_ranks.py's
+  // rejected-category histogram against the live universe, not by inspection.
+  "equity schemes - thematic fund":        "SECTORAL",
+  "equity scheme - thematic fund":         "SECTORAL",
   "equity scheme - elss":                  "ELSS",
   "elss":                                  "ELSS",   // MFAPI returns this bare
 };
