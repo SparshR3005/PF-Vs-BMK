@@ -46,10 +46,12 @@ const QUARTILE_HELP = {1:"a",2:"b",3:"c",4:"d"};
 const NAME_STOPWORDS = new Set(["direct","regular","plan","growth","option","opt",
                                 "payout","reinvestment","idcw","dividend"]);
 const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","DSP","PGIM",
-  "BNP","JM","IIFL","ITI","NJ","BOI","PPFAS","AMC","ELSS","LT","TATA","IDBI","BOB"]);
+  "BNP","JM","IIFL","ITI","NJ","BOI","PPFAS","AMC","ELSS","LT","TATA","IDBI","BOB",
+  "MF","TRUSTMF","WOC","NAV","TRI","SIP","XIRR","FOF","IDCW","ONE",
+  "US","UK","ESG","REIT","INVIT","PSU","FMCG","IT","NIFTY","BSE","NSE","CRISIL"]);
 
-const NEEDED = ["normaliseFundName","gridToNavArr","rankCandidates","qBadge","signedPP",
-                "periodTableHtml","topListHtml"];
+const NEEDED = ["titleCaseWord","titleCaseName","normaliseFundName","gridToNavArr",
+                "rankCandidates","qBadge","signedPP","periodTableHtml","topListHtml"];
 let loaded = true;
 try { eval(NEEDED.map(grabFn).join("\n")); }
 catch(e){ loaded = false; console.log("  FAIL  index.html is missing Insights machinery: " + e.message); fail++; }
