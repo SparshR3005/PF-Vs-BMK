@@ -98,6 +98,9 @@ HORIZONS = [
 # have. Matches the "--" convention in the reference table.
 MIN_ANNUALISE_DAYS = 365
 
+# Hard bound on grid spacing. runSIP() matches an installment to the first NAV
+# within 7 days of the scheduled date, so any wider hole can drop installments.
+GRID_MAX_GAP_DAYS = 7
 GRID_STEP_DAYS = 7
 GRID_YEARS = 11           # 10y horizon plus buffer
 MIN_GRID_POINTS = 8       # below this a fund cannot support any useful window
@@ -111,15 +114,34 @@ MAX_GROWTH_FACTOR = 1.60
 # Below this many funds a quartile is noise dressed as a verdict; publish the
 # rank and its denominator instead and let the thinness show.
 MIN_QUARTILE_UNIVERSE = 8
+# Losing a couple of funds is normal churn at any cohort size; only refuse a
+# small-cohort drop when it is both proportionally AND absolutely large.
+SMALL_COHORT_TOLERANCE = 3
 
 
 # ------------------------------------------------------------------ pure maths
-def build_weekly_grid(rows, as_of, years=GRID_YEARS, step=GRID_STEP_DAYS):
-    """Reduce a daily NAV history to one point per `step`-day bucket.
+def build_weekly_grid(rows, as_of, years=GRID_YEARS, max_gap=GRID_MAX_GAP_DAYS):
+    """Reduce a daily NAV history to a sparse grid with NO GAP EXCEEDING `max_gap`.
 
-    Returns (t0, day_offsets, values) using each bucket's LAST ACTUAL trading day,
-    not the bucket boundary. Storing the real date matters: runSIP() matches an
-    installment to a NAV date, so a synthesised date would shift cash flows.
+    Returns (t0, day_offsets, values, forced_gaps).
+
+    The obvious implementation -- bucket into fixed 7-day windows, keep each
+    bucket's last point -- is WRONG, and the bug is invisible on clean synthetic
+    data. If one bucket's last trading day falls early (a holiday week) and the
+    next bucket's falls late, the two selected points sit more than 7 days apart.
+    Real published output had gaps of 8 and 9 days.
+
+    That matters because runSIP() places an installment at the first NAV within 7
+    days of the scheduled date. A 9-day hole can leave a scheduled date unmatched,
+    the installment is skipped, and the eligibility filter (skipped == 0) then drops
+    that fund from the ranking entirely -- silently, for a storage artifact rather
+    than anything about the fund.
+
+    So select greedily instead: from each chosen point, take the FURTHEST point
+    still within max_gap. That keeps roughly weekly density while making the gap
+    bound structural rather than hoped-for. Where the underlying data itself has a
+    hole bigger than max_gap (a genuine market closure) no grid can fix it; those
+    are counted and reported rather than hidden.
     """
     cutoff = as_of - timedelta(days=int(years * 365.25))
     pts = []
@@ -137,18 +159,37 @@ def build_weekly_grid(rows, as_of, years=GRID_YEARS, step=GRID_STEP_DAYS):
     if not pts:
         return None
     pts.sort()
-    t0 = pts[0][0]
-    buckets = {}
+    # De-duplicate same-day rows, keeping the last seen for that date.
+    dedup = {}
     for d, nav in pts:
-        buckets[(d - t0).days // step] = (d, nav)   # later points overwrite -> last wins
-    if len(buckets) < MIN_GRID_POINTS:
+        dedup[d] = nav
+    pts = sorted(dedup.items())
+
+    selected = [pts[0]]
+    forced = 0
+    i, n = 1, len(pts)
+    while i < n:
+        last = selected[-1][0]
+        best = None
+        j = i
+        while j < n and (pts[j][0] - last).days <= max_gap:
+            best = j
+            j += 1
+        if best is None:
+            # Underlying history jumps more than max_gap; unavoidable, so record it.
+            selected.append(pts[i])
+            forced += 1
+            i += 1
+        else:
+            selected.append(pts[best])
+            i = best + 1
+
+    if len(selected) < MIN_GRID_POINTS:
         return None
-    offsets, values = [], []
-    for k in sorted(buckets):
-        d, nav = buckets[k]
-        offsets.append((d - t0).days)
-        values.append(round(nav, 4))
-    return t0, offsets, values
+    t0 = selected[0][0]
+    offsets = [(d - t0).days for d, _ in selected]
+    values = [round(v, 4) for _, v in selected]
+    return t0, offsets, values, forced
 
 
 def nav_on_or_before(pts, target):
@@ -268,11 +309,13 @@ def compute_period_table(funds, as_of):
 def build_nav_doc(key, plan, funds, as_of):
     """The weekly grid the browser uses for same-window top-5."""
     out = {}
+    forced_total = 0
     for f in funds:
         grid = build_weekly_grid(f["rows"], as_of)
         if not grid:
             continue
-        t0, offsets, values = grid
+        t0, offsets, values, forced = grid
+        forced_total += forced
         out[f["code"]] = {"n": f["name"], "t0": t0.isoformat(), "d": offsets, "v": values}
     if not out:
         return None
@@ -283,6 +326,8 @@ def build_nav_doc(key, plan, funds, as_of):
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "step_days": GRID_STEP_DAYS,
         "count": len(out),
+        "max_gap_days": GRID_MAX_GAP_DAYS,
+        "forced_gaps": forced_total,   # holes the source data itself had
         "funds": out,
     }
 
@@ -324,7 +369,13 @@ def safe_to_publish(path, new_count):
     old = existing_count(path)
     if old is None or old == 0:
         return True, "no prior file"
-    if new_count < old * MIN_KEEP_FRACTION:
+    # A PERCENTAGE floor alone assumes a large cohort. In a 6-fund category one
+    # fund merging or ageing out is a 17% drop and two is 33% -- ordinary events
+    # that a 80% floor refuses. Worse, once refused the stale count never updates,
+    # so the category stays refused forever. CONTRA hit exactly this: 6 vs 8 = 75%,
+    # refused, and it would have stayed refused every night thereafter. So allow a
+    # small ABSOLUTE change regardless of percentage.
+    if new_count < old * MIN_KEEP_FRACTION and (old - new_count) > SMALL_COHORT_TOLERANCE:
         return False, f"REFUSED: {new_count} funds vs {old} committed (<{MIN_KEEP_FRACTION:.0%})"
     if new_count > old * MAX_GROWTH_FACTOR:
         return False, (f"REFUSED: {new_count} funds vs {old} committed "
@@ -450,6 +501,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="compute everything, write nothing")
     ap.add_argument("--canary", metavar="CAT", help="process a single category end to end")
     ap.add_argument("--max-funds", type=int, default=0, help="cap funds per category (testing)")
+    ap.add_argument("--force", action="store_true",
+                    help="bypass the publish gate; for deliberate schema/semantics changes")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--timeout", type=float, default=30.0)
     args = ap.parse_args()
@@ -532,6 +585,8 @@ def main():
         if published < len(usable):
             log(f"{cat}: {len(usable)-published} fund(s) too young for any horizon -- excluded")
         allowed, why = safe_to_publish(p_path, published)
+        if args.force and not allowed:
+            allowed, why = True, why + "  [OVERRIDDEN by --force]"
         log(f"{cat}: periods {why}")
         if allowed and not args.dry_run:
             write_json_atomic(p_path, periods)
@@ -539,8 +594,12 @@ def main():
         elif not allowed:
             refused += 1
 
+        # Two different populations, so two different names. "ranked" is the period
+        # table (needs >=6 months of history); "grid" is the weekly NAV file (needs
+        # ~2 months). They legitimately differ, and a single "funds" field made the
+        # manifest look self-contradictory.
         cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
-                      "funds": published, "plans": {}}
+                      "ranked": published, "plans": {}}
         for plan in ("Direct", "Regular"):
             cohort = [f for f in usable if f["plan"] == plan]
             if not cohort:
@@ -550,13 +609,16 @@ def main():
                 continue
             n_path = OUT_DIR / f"navs_{cat}_{plan}.json"
             ok_pub, why2 = safe_to_publish(n_path, doc["count"])
+            if args.force and not ok_pub:
+                ok_pub, why2 = True, why2 + "  [OVERRIDDEN by --force]"
             log(f"{cat}/{plan}: navs {why2}")
             if ok_pub and not args.dry_run:
                 write_json_atomic(n_path, doc)
                 written += 1
             elif not ok_pub:
                 refused += 1
-            cat_status["plans"][plan] = {"funds": doc["count"], "status": "ok" if ok_pub else "stale"}
+            cat_status["plans"][plan] = {"grid": doc["count"],
+                                         "status": "ok" if ok_pub else "stale"}
         manifest["categories"][cat] = cat_status
 
     if not args.dry_run:
