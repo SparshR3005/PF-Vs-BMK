@@ -43,12 +43,13 @@ Stdlib only -- deliberately no new entry in requirements.txt.
 
 import argparse
 import json
+import random
 import re
 import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -246,33 +247,98 @@ def stage1(timeout):
 
 
 # ---------------------------------------------------------------- stage 2
-def fetch_detail(code, timeout):
+def parse_dmy(v):
+    """mfapi serves dates as DD-MM-YYYY (confirmed against index.html's parser)."""
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", str(v or ""))
+    if not m:
+        return None
+    d, mo, y = (int(x) for x in m.groups())
+    try:
+        return date(y, mo, d)
+    except ValueError:
+        return None
+
+
+def fetch_detail(entry, timeout):
+    code = entry["schemeCode"]
     payload, elapsed, nbytes, status = get_json(f"{API}/mf/{code}", timeout)
     if payload is None:
         return {"code": code, "ok": False, "status": status, "elapsed": elapsed}
     meta = payload.get("meta") or {}
     data = payload.get("data") or []
-    dates = []
-    for row in data[:1] + data[-1:]:
-        d = str(row.get("date") or "")
-        if d:
-            dates.append(d)
+    # Don't assume newest-first or oldest-first ordering; take the true extremes.
+    stamps = [d for d in (parse_dmy(r.get("date")) for r in data) if d]
+    oldest = min(stamps) if stamps else None
+    newest = max(stamps) if stamps else None
+    span_years = ((newest - oldest).days / 365.25) if (oldest and newest) else 0.0
     return {
         "code": code,
         "ok": True,
         "status": status,
         "elapsed": elapsed,
         "bytes": nbytes,
-        "category": meta.get("scheme_category"),
+        "plan": entry["plan"],
+        "category_raw": meta.get("scheme_category"),
         "cat_key": category_key(meta.get("scheme_category")),
         "nav_points": len(data),
-        "newest": dates[0] if dates else None,
-        "oldest": dates[-1] if len(dates) > 1 else None,
+        "oldest": oldest.isoformat() if oldest else None,
+        "newest": newest.isoformat() if newest else None,
+        "span_years": span_years,
     }
 
 
+def probe_latest_endpoint(entries, timeout):
+    """Does /mf/<code>/latest return the category too?
+
+    This is the single highest-leverage unknown left. A nightly job that refetches
+    full NAV history for ~1200 funds pulls ~70 MB and ~20 min off a FREE community
+    API, every night, forever. If /latest carries meta.scheme_category in a small
+    payload, the nightly job can instead fetch one tiny record per fund and append
+    it to the committed series, refetching full history only occasionally --
+    roughly a 50x reduction in load. Worth ten requests to find out."""
+    print()
+    print("STAGE 3 -- is /mf/<code>/latest a cheap nightly alternative?")
+    print("-" * 72)
+    ok_n = with_cat = 0
+    sizes, lats = [], []
+    for e in entries[:10]:
+        payload, elapsed, nbytes, status = get_json(f"{API}/mf/{e['schemeCode']}/latest", timeout)
+        if payload is None:
+            continue
+        ok_n += 1
+        sizes.append(nbytes)
+        lats.append(elapsed)
+        meta = payload.get("meta") or {}
+        if category_key(meta.get("scheme_category")) is not None or meta.get("scheme_category"):
+            with_cat += 1
+    if not ok_n:
+        print("  /latest did not respond -- nightly job must refetch full history.")
+        return {"ok": 0}
+    print(f"  responded {ok_n}/10   carries scheme_category: {with_cat}/{ok_n}")
+    print(f"  median payload {statistics.median(sizes)/1024:.1f} KB "
+          f"(vs ~58 KB for full history)   median latency {statistics.median(lats):.2f}s")
+    verdict = ("USABLE -- nightly can fetch /latest and append; full refetch weekly"
+               if with_cat == ok_n else
+               "NOT usable for category; full detail still needed for discovery")
+    print(f"  verdict: {verdict}")
+    return {"ok": ok_n, "with_category": with_cat,
+            "median_bytes": statistics.median(sizes),
+            "median_latency": statistics.median(lats)}
+
+
 def stage2(survivors, sample_n, concurrency, timeout, full):
-    targets = survivors if full else survivors[::max(1, len(survivors) // max(1, sample_n))][:sample_n]
+    # Seeded RANDOM sample, not a fixed stride. Striding assumes the list has no
+    # periodic structure, and mfapi's does: schemes arrive grouped by AMC, and AMCs
+    # register funds in contiguous blocks. A stride that lands in step with those
+    # blocks silently samples one slice of the market and reports it as the whole.
+    # (Caught by tests/test_probe_ranks.py, where a strided sample returned a 100%
+    # rejection rate that random sampling does not reproduce.) Seeded so two runs
+    # over an unchanged list are comparable.
+    if full:
+        targets = survivors
+    else:
+        rng = random.Random(20260723)
+        targets = rng.sample(survivors, min(sample_n, len(survivors)))
     label = "ALL" if full else f"sample of {len(targets)}"
     print()
     print(f"STAGE 2 -- per-scheme detail ({label}, concurrency {concurrency})")
@@ -281,13 +347,18 @@ def stage2(survivors, sample_n, concurrency, timeout, full):
     started = time.monotonic()
     results = []
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futs = {pool.submit(fetch_detail, t["schemeCode"], timeout): t for t in targets}
+        futs = {pool.submit(fetch_detail, t, timeout): t for t in targets}
         done = 0
+        step = 100 if len(targets) > 400 else 25
         for fut in as_completed(futs):
             results.append(fut.result())
             done += 1
-            if done % 25 == 0 or done == len(targets):
-                print(f"    {done}/{len(targets)} fetched ({time.monotonic()-started:.1f}s elapsed)")
+            if done % step == 0 or done == len(targets):
+                el = time.monotonic() - started
+                rate = done / el if el else 0
+                eta = (len(targets) - done) / rate if rate else 0
+                print(f"    {done}/{len(targets)}  {el:6.0f}s elapsed  "
+                      f"{rate:.2f}/s  ETA {eta/60:5.1f} min")
     wall = time.monotonic() - started
 
     ok = [r for r in results if r["ok"]]
@@ -298,6 +369,8 @@ def stage2(survivors, sample_n, concurrency, timeout, full):
 
     lat = sorted(r["elapsed"] for r in ok)
     navs = sorted(r["nav_points"] for r in ok)
+    observed_rate = len(targets) / wall if wall else 0
+
     print()
     print(f"  ok {len(ok)}, failed {len(bad)}")
     if bad:
@@ -305,43 +378,68 @@ def stage2(survivors, sample_n, concurrency, timeout, full):
         for r in bad:
             codes[r["status"]] = codes.get(r["status"], 0) + 1
         print(f"  failure status codes: {codes}"
-              + ("   <-- 429 means mfapi IS rate limiting; lower --concurrency"
+              + ("   <-- 429: mfapi IS rate limiting; lower --concurrency"
                  if 429 in codes else ""))
-    print(f"  latency  median {statistics.median(lat):.2f}s   p90 {lat[int(len(lat)*0.9)-1]:.2f}s   max {lat[-1]:.2f}s")
+    print(f"  latency  median {statistics.median(lat):.2f}s   "
+          f"p90 {lat[int(len(lat)*0.9)-1]:.2f}s   max {lat[-1]:.2f}s")
     print(f"  payload  median {statistics.median(r['bytes'] for r in ok)/1024:.0f} KB")
     print(f"  NAV pts  median {statistics.median(navs):.0f}   min {navs[0]}   max {navs[-1]}")
-    print(f"  wall time for {len(targets)} schemes at concurrency {concurrency}: {wall:.1f}s")
 
-    # category distribution
-    dist = {}
-    unsupported = 0
+    # THROUGHPUT: measured, not modelled. An earlier version of this script divided
+    # median latency by concurrency and under-predicted the real wall time by ~4x,
+    # because the latency distribution is heavily right-skewed (median 1.5s, p90 14s)
+    # and the slow tail dominates. Only observed throughput is trustworthy here.
+    print()
+    print(f"  OBSERVED THROUGHPUT: {observed_rate:.2f} schemes/sec at concurrency {concurrency}")
+    print(f"    -> all {len(survivors)} candidates: {len(survivors)/observed_rate/60:.1f} min at this concurrency")
+
+    # ---- category distribution, split by plan
+    dist, plan_split, rejected_raw = {}, {}, {}
     for r in ok:
         k = r["cat_key"]
         if k is None:
-            unsupported += 1
-        else:
-            dist[k] = dist.get(k, 0) + 1
+            raw = (r["category_raw"] or "(empty)").strip()
+            rejected_raw[raw] = rejected_raw.get(raw, 0) + 1
+            continue
+        dist[k] = dist.get(k, 0) + 1
+        plan_split.setdefault(k, {"Direct": 0, "Regular": 0})[r["plan"]] += 1
+
+    scale = len(survivors) / len(ok)
     print()
-    print("  SEBI category distribution in this batch")
+    print("  SEBI CATEGORY COUNTS" + ("" if full else "  (sampled -- see CI caveat below)"))
+    print(f"    {'category':<12}{'seen':>6}{'Direct':>8}{'Regular':>9}{'est. full':>11}")
     for k in sorted(dist, key=lambda x: -dist[x]):
-        flag = "   (EXCLUDED from ranking)" if k in UNRANKABLE_KEYS else ""
-        print(f"    {k:<12} {dist[k]:>5}{flag}")
-    print(f"    {'(rejected)':<12} {unsupported:>5}   category junk/non-equity -- fails closed")
+        ps = plan_split[k]
+        flag = "  EXCLUDED" if k in UNRANKABLE_KEYS else ""
+        est = dist[k] if full else dist[k] * scale
+        print(f"    {k:<12}{dist[k]:>6}{ps['Direct']:>8}{ps['Regular']:>9}{est:>11.0f}{flag}")
 
-    scale = len(survivors) / len(ok) if not full else 1.0
-    rankable_sample = sum(v for k, v in dist.items() if k not in UNRANKABLE_KEYS)
-    est_rankable = rankable_sample * scale
+    if rejected_raw:
+        print()
+        print("  REJECTED category strings (passed name filters, failed the allowlist)")
+        print("    If a legitimate equity category appears here, the allowlist is missing it.")
+        for raw, c in sorted(rejected_raw.items(), key=lambda kv: -kv[1])[:15]:
+            print(f"    {c:>5}  {raw[:60]}")
 
+    # ---- history depth: decides which horizons are worth displaying
     print()
-    print("  EXTRAPOLATION" if not full else "  EXACT COUNTS")
-    print(f"    estimated rankable equity funds (excl. Sectoral): {est_rankable:,.0f}")
-    for conc in (4, 8, 12):
-        per = statistics.median(lat)
-        est_s = est_rankable * per / conc
-        print(f"    est. nightly fetch at concurrency {conc:>2}: {est_s/60:>6.1f} min")
-    return {"dist": dist, "unsupported": unsupported, "median_latency": statistics.median(lat),
-            "median_nav_points": statistics.median(navs), "est_rankable": est_rankable,
-            "sampled": len(ok), "failed": len(bad), "wall": wall}
+    print("  HISTORY DEPTH (drives which period rows can be populated)")
+    for yrs, lbl in ((1, "1Y"), (3, "3Y"), (5, "5Y"), (7, "7Y"), (10, "10Y")):
+        n = sum(1 for r in ok if r["span_years"] >= yrs)
+        print(f"    >= {lbl:<4} {n:>5} of {len(ok)}  ({100*n/len(ok):5.1f}%)"
+              f"   est. {n*scale:>6.0f} funds" if not full else
+              f"    >= {lbl:<4} {n:>5} of {len(ok)}  ({100*n/len(ok):5.1f}%)")
+
+    rankable_sample = sum(v for k, v in dist.items() if k not in UNRANKABLE_KEYS)
+    est_rankable = rankable_sample if full else rankable_sample * scale
+    print()
+    print(f"  RANKABLE equity funds (excl. Sectoral): {est_rankable:,.0f}")
+
+    return {"dist": dist, "plan_split": plan_split, "rejected_raw": rejected_raw,
+            "median_latency": statistics.median(lat), "median_nav_points": statistics.median(navs),
+            "est_rankable": est_rankable, "sampled": len(ok), "failed": len(bad),
+            "wall": wall, "observed_rate": observed_rate,
+            "depth": {f"ge_{y}y": sum(1 for r in ok if r["span_years"] >= y) for y in (1, 3, 5, 7, 10)}}
 
 
 def main():
@@ -368,6 +466,8 @@ def main():
     if not s2:
         return 1
 
+    s3 = probe_latest_endpoint(s1["survivors"], args.timeout)
+
     report = {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "list_complete": s1["complete"],
@@ -384,6 +484,12 @@ def main():
         "rejected_category": s2["unsupported"],
         "est_rankable_funds": round(s2["est_rankable"]),
         "full_scan": bool(args.full),
+        "observed_rate_per_s": round(s2["observed_rate"], 3),
+        "concurrency_used": args.concurrency,
+        "plan_split": s2["plan_split"],
+        "rejected_category_strings": dict(sorted(s2["rejected_raw"].items(), key=lambda kv: -kv[1])[:15]),
+        "history_depth": s2["depth"],
+        "latest_endpoint": s3,
     }
     print()
     print("=" * 72)
