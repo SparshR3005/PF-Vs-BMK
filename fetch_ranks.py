@@ -106,6 +106,8 @@ MIN_GRID_POINTS = 8       # below this a fund cannot support any useful window
 # sane share of the funds the committed one had; a sudden collapse means mfapi
 # returned junk, and last-good data beats confidently wrong data.
 MIN_KEEP_FRACTION = 0.80
+# A real category grows by a fund or two a year, never doubles overnight.
+MAX_GROWTH_FACTOR = 1.60
 
 
 # ------------------------------------------------------------------ pure maths
@@ -296,13 +298,23 @@ def existing_count(path):
 
 
 def safe_to_publish(path, new_count):
-    """Refuse to replace a healthy file with a collapsed one."""
+    """Refuse to replace a healthy file with a collapsed one.
+
+    Also refuses an implausible SURGE. The gate was originally one-sided, which left
+    a trap: an upstream duplicate-list bug inflates the file, passes as "growth",
+    and then every correct night afterwards looks like a 50% collapse and is
+    refused -- pinning the data to the corrupted version. A category cannot
+    plausibly double overnight, so treat that as corruption too.
+    """
     old = existing_count(path)
     if old is None or old == 0:
         return True, "no prior file"
-    if new_count >= old * MIN_KEEP_FRACTION:
-        return True, f"{new_count} vs {old} committed"
-    return False, f"REFUSED: {new_count} funds vs {old} committed (<{MIN_KEEP_FRACTION:.0%})"
+    if new_count < old * MIN_KEEP_FRACTION:
+        return False, f"REFUSED: {new_count} funds vs {old} committed (<{MIN_KEEP_FRACTION:.0%})"
+    if new_count > old * MAX_GROWTH_FACTOR:
+        return False, (f"REFUSED: {new_count} funds vs {old} committed "
+                       f"(>{MAX_GROWTH_FACTOR:.0%}) -- looks like duplicated upstream data")
+    return True, f"{new_count} vs {old} committed"
 
 
 # ------------------------------------------------------------------ fetching
@@ -324,6 +336,32 @@ def discover_universe(timeout, concurrency, log):
         log("WARNING: /mf looks paginated; universe may be partial")
 
     has_isin = any(isinstance(s, dict) and "isinGrowth" in s for s in all_schemes)
+
+    # DEDUPE BY schemeCode. mfapi has been observed serving the full /mf list with
+    # every entry duplicated: one probe run returned 75,378 schemes and a later run
+    # returned 37,689 -- an exact 2.0000 ratio across every single category. Without
+    # this, a duplicated night puts each fund into its category ranking twice, so
+    # "rank 6 of 134" is published where the truth is "rank 3 of 67". Worse, the
+    # publish gate only guards against shrinkage, so the inflated files pass, and the
+    # next NORMAL night looks like a 50% collapse and gets refused -- latching the
+    # corruption in permanently. Deduping at ingest is the root-cause fix.
+    seen, deduped, dupes = set(), [], 0
+    for s in all_schemes:
+        if not isinstance(s, dict):
+            continue
+        code = s.get("schemeCode")
+        if code is None:
+            continue
+        if code in seen:
+            dupes += 1
+            continue
+        seen.add(code)
+        deduped.append(s)
+    if dupes:
+        log(f"WARNING: /mf contained {dupes} duplicate schemeCode entries -- dropped "
+            f"({len(all_schemes)} -> {len(deduped)})")
+    all_schemes = deduped
+
     candidates = []
     for s in all_schemes:
         if not isinstance(s, dict) or not s.get("schemeName") or not s.get("schemeCode"):
