@@ -108,6 +108,9 @@ MIN_GRID_POINTS = 8       # below this a fund cannot support any useful window
 MIN_KEEP_FRACTION = 0.80
 # A real category grows by a fund or two a year, never doubles overnight.
 MAX_GROWTH_FACTOR = 1.60
+# Below this many funds a quartile is noise dressed as a verdict; publish the
+# rank and its denominator instead and let the thinness show.
+MIN_QUARTILE_UNIVERSE = 8
 
 
 # ------------------------------------------------------------------ pure maths
@@ -200,12 +203,24 @@ def rank_desc(pairs):
 
 
 def quartile(rank, n):
-    """1 = top quartile ... 4 = bottom. The band is what users should read; the
-    exact rank churns daily (measured: it moves on ~99% of days)."""
+    """1 = top quartile ... 4 = bottom, or None when the cohort is too small.
+
+    Two things were wrong with the obvious ceil(rank/n*4):
+
+    1. For n < 4 it could never return 1 -- the best fund in a 3-fund category was
+       published as "2nd quartile", and in a 1-fund category the only fund came out
+       BOTTOM quartile. Real CONTRA data hit exactly this: Kotak Contra ranked #1 of
+       3 and was labelled quartile 2. The floor form below always gives rank 1 -> 1.
+
+    2. Even correct, a quartile over 3 funds is theatre. Quartiles need enough
+       members to mean anything, so below MIN_QUARTILE_UNIVERSE we publish None and
+       let the UI show the bare "1 of 3", which is honest about how thin it is.
+    """
     if not n or rank is None:
         return None
-    q = math.ceil(rank / n * 4)
-    return max(1, min(4, q))
+    if n < MIN_QUARTILE_UNIVERSE:
+        return None
+    return min(4, (rank - 1) * 4 // n + 1)
 
 
 # ------------------------------------------------------------------ per-category
@@ -498,15 +513,25 @@ def main():
             continue
 
         usable = [f for f in funds if f["pts"]]
+        plan_tables = compute_period_table(usable, as_of)
+        # Count what actually lands in the file. compute_period_table drops funds with
+        # no eligible horizon at all (under ~6 months old), so len(usable) overstates
+        # it -- CONTRA published 8 while holding 3+3, LARGE_MID 69 while holding
+        # 33+34. A manifest that disagrees with its own payload is worse than no
+        # manifest, because the client trusts it.
+        published = sum(len(pt.get("funds") or {}) for pt in plan_tables.values())
         periods = {
             "key": cat, "as_of": as_of.isoformat(),
             "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "horizons": [h for h, _ in HORIZONS],
-            "count": len(usable),
-            "plans": compute_period_table(usable, as_of),
+            "count": published,
+            "parsed": len(usable),      # kept for diagnostics; never a display figure
+            "plans": plan_tables,
         }
         p_path = OUT_DIR / f"periods_{cat}.json"
-        allowed, why = safe_to_publish(p_path, len(usable))
+        if published < len(usable):
+            log(f"{cat}: {len(usable)-published} fund(s) too young for any horizon -- excluded")
+        allowed, why = safe_to_publish(p_path, published)
         log(f"{cat}: periods {why}")
         if allowed and not args.dry_run:
             write_json_atomic(p_path, periods)
@@ -515,7 +540,7 @@ def main():
             refused += 1
 
         cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
-                      "funds": len(usable), "plans": {}}
+                      "funds": published, "plans": {}}
         for plan in ("Direct", "Regular"):
             cohort = [f for f in usable if f["plan"] == plan]
             if not cohort:
