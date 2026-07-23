@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""
+fetch_ranks.py -- build the category-ranking data behind the Insights tab.
+
+WHAT IT PUBLISHES  (all under data/ranks/, mirroring data/tri/'s conventions)
+
+  periods_<CAT>.json      Precomputed point-to-point returns, category averages,
+                          ranks and quartiles for fixed horizons (6m..10y), for
+                          BOTH plans. Tiny (a few KB). Computed here from full
+                          DAILY NAV because point-to-point returns are measured
+                          from just two observations, so a coarse grid moves ranks
+                          by several places -- measured at up to 12.
+
+  navs_<CAT>_<PLAN>.json  A WEEKLY NAV grid per fund, shipped to the browser so it
+                          can rank candidates over the user's actual SIP window
+                          using the same runSIP()/xirr() the portfolio uses.
+                          Weekly is enough here (measured XIRR deviation 0.026 pp,
+                          zero rank changes) because a SIP averages ~100
+                          installments and endpoint errors cancel.
+
+  index.json              Manifest: per-file freshness and status, so the client
+                          can warn on stale data instead of silently ranking
+                          against last month's numbers.
+
+WHY WEEKLY AND NOT MONTHLY
+  runSIP() places an installment at the first NAV within 7 days of the scheduled
+  date. A month-end grid leaves most scheduled dates with no NAV in range: in
+  testing, 0 of 120 installments were placed for SIP days 1, 5 and 12. A weekly
+  grid placed all 120 in every case. Do not coarsen this grid.
+
+WHY BOTH PLANS
+  Ranking a Regular-plan holding against Direct peers measures a fee gap, not
+  skill. Each plan is ranked against its own cohort.
+
+WHY SECTORAL IS ABSENT
+  MFAPI collapses every sector into one category string and never says which, so
+  a flat "Sectoral/Thematic" ranking would compare an IT fund against a Pharma
+  fund. Those funds are still benchmarked by the app via SECTOR_KEYWORDS; they
+  are simply not ranked.
+
+LOAD DISCIPLINE
+  mfapi is a free community service. Universe discovery uses /mf/<code>/latest
+  (~0.4 KB) rather than full history (~58 KB) -- measured 145x smaller -- and only
+  the rankable subset gets a full-history fetch. Be a good citizen here: if this
+  job gets throttled, the feature dies.
+
+USAGE
+  python fetch_ranks.py                 # full nightly run
+  python fetch_ranks.py --dry-run       # compute everything, write nothing
+  python fetch_ranks.py --canary MID_CAP  # one category end to end
+  python fetch_ranks.py --max-funds 40  # cap work while testing
+"""
+
+import argparse
+import json
+import math
+import os
+import statistics
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+# The scheme-universe filters live here, in the production job, and the probe
+# imports them from this module. One definition, one place. tests/ asserts this
+# module agrees with index.html, so the Python and the client can never drift.
+from mf_universe import (  # noqa: F401
+    API,
+    CATEGORY_CANON,
+    INCOME_TOKENS,
+    NON_EQUITY_NAME_TOKENS,
+    UNRANKABLE_KEYS,
+    category_key,
+    classify_plan,
+    get_json,
+    name_looks_non_equity,
+    parse_dmy,
+    unwrap_list,
+)
+
+OUT_DIR = Path("data/ranks")
+
+# Horizons published in the period table. 1-week and 1-month are deliberately
+# absent: for a multi-year SIP investor they are noise, and short-horizon rank
+# tables are precisely what drives performance chasing.
+HORIZONS = [
+    ("6m", 182),
+    ("1y", 365),
+    ("2y", 730),
+    ("3y", 1095),
+    ("5y", 1826),
+    ("7y", 2557),
+    ("10y", 3652),
+]
+
+# Never annualise a sub-year return -- it implies a precision the number does not
+# have. Matches the "--" convention in the reference table.
+MIN_ANNUALISE_DAYS = 365
+
+GRID_STEP_DAYS = 7
+GRID_YEARS = 11           # 10y horizon plus buffer
+MIN_GRID_POINTS = 8       # below this a fund cannot support any useful window
+
+# Publishing gate. A category file is only replaced if the new one still covers a
+# sane share of the funds the committed one had; a sudden collapse means mfapi
+# returned junk, and last-good data beats confidently wrong data.
+MIN_KEEP_FRACTION = 0.80
+
+
+# ------------------------------------------------------------------ pure maths
+def build_weekly_grid(rows, as_of, years=GRID_YEARS, step=GRID_STEP_DAYS):
+    """Reduce a daily NAV history to one point per `step`-day bucket.
+
+    Returns (t0, day_offsets, values) using each bucket's LAST ACTUAL trading day,
+    not the bucket boundary. Storing the real date matters: runSIP() matches an
+    installment to a NAV date, so a synthesised date would shift cash flows.
+    """
+    cutoff = as_of - timedelta(days=int(years * 365.25))
+    pts = []
+    for r in rows:
+        d = parse_dmy(r.get("date"))
+        if d is None or d < cutoff or d > as_of:
+            continue
+        try:
+            nav = float(r.get("nav"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(nav) or nav <= 0:
+            continue
+        pts.append((d, nav))
+    if not pts:
+        return None
+    pts.sort()
+    t0 = pts[0][0]
+    buckets = {}
+    for d, nav in pts:
+        buckets[(d - t0).days // step] = (d, nav)   # later points overwrite -> last wins
+    if len(buckets) < MIN_GRID_POINTS:
+        return None
+    offsets, values = [], []
+    for k in sorted(buckets):
+        d, nav = buckets[k]
+        offsets.append((d - t0).days)
+        values.append(round(nav, 4))
+    return t0, offsets, values
+
+
+def nav_on_or_before(pts, target):
+    """Latest (date, nav) at or before `target`; None if the series starts later."""
+    lo, hi, best = 0, len(pts) - 1, None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if pts[mid][0] <= target:
+            best = pts[mid]
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def period_return(pts, as_of, days):
+    """Point-to-point % return over `days`, or None when history doesn't cover it.
+
+    Eligibility is strict: the series must actually start on or before the window
+    open. A fund that launched mid-window would otherwise post a flattering short
+    return and outrank funds that ran the whole period.
+    """
+    if not pts:
+        return None
+    start = as_of - timedelta(days=days)
+    if pts[0][0] > start:
+        return None
+    a = nav_on_or_before(pts, start)
+    b = nav_on_or_before(pts, as_of)
+    if not a or not b or a[1] <= 0:
+        return None
+    return (b[1] / a[1] - 1.0) * 100.0
+
+
+def annualised(abs_pct, days):
+    """CAGR from a cumulative return. None under a year, by design."""
+    if abs_pct is None or days < MIN_ANNUALISE_DAYS:
+        return None
+    growth = 1.0 + abs_pct / 100.0
+    if growth <= 0:
+        return None
+    return (growth ** (365.25 / days) - 1.0) * 100.0
+
+
+def rank_desc(pairs):
+    """[(key, value)] -> {key: rank}, best value = rank 1. Ties share a rank."""
+    vals = sorted((v for _, v in pairs), reverse=True)
+    out = {}
+    for k, v in pairs:
+        out[k] = vals.index(v) + 1
+    return out
+
+
+def quartile(rank, n):
+    """1 = top quartile ... 4 = bottom. The band is what users should read; the
+    exact rank churns daily (measured: it moves on ~99% of days)."""
+    if not n or rank is None:
+        return None
+    q = math.ceil(rank / n * 4)
+    return max(1, min(4, q))
+
+
+# ------------------------------------------------------------------ per-category
+def compute_period_table(funds, as_of):
+    """funds: [{code, name, plan, pts}] -> the periods_<CAT>.json payload body.
+
+    Ranks are computed WITHIN plan, and within the set eligible for that horizon.
+    The eligible count is published alongside every rank so a thin comparison
+    looks thin instead of authoritative.
+    """
+    plans = {}
+    for plan in ("Direct", "Regular"):
+        cohort = [f for f in funds if f["plan"] == plan]
+        if not cohort:
+            continue
+        per_fund = {f["code"]: {"name": f["name"], "abs": {}, "ann": {}, "rank": {}, "q": {}}
+                    for f in cohort}
+        universe, avg, med = {}, {}, {}
+        for label, days in HORIZONS:
+            scored = []
+            for f in cohort:
+                r = period_return(f["pts"], as_of, days)
+                if r is None:
+                    continue
+                scored.append((f["code"], r))
+                per_fund[f["code"]]["abs"][label] = round(r, 2)
+                a = annualised(r, days)
+                if a is not None:
+                    per_fund[f["code"]]["ann"][label] = round(a, 2)
+            universe[label] = len(scored)
+            if not scored:
+                continue
+            vals = [v for _, v in scored]
+            avg[label] = round(sum(vals) / len(vals), 2)
+            med[label] = round(statistics.median(vals), 2)
+            ranks = rank_desc(scored)
+            for code, rk in ranks.items():
+                per_fund[code]["rank"][label] = rk
+                per_fund[code]["q"][label] = quartile(rk, len(scored))
+        plans[plan] = {"universe": universe, "avg": avg, "median": med,
+                       "funds": {c: v for c, v in per_fund.items() if v["abs"]}}
+    return plans
+
+
+def build_nav_doc(key, plan, funds, as_of):
+    """The weekly grid the browser uses for same-window top-5."""
+    out = {}
+    for f in funds:
+        grid = build_weekly_grid(f["rows"], as_of)
+        if not grid:
+            continue
+        t0, offsets, values = grid
+        out[f["code"]] = {"n": f["name"], "t0": t0.isoformat(), "d": offsets, "v": values}
+    if not out:
+        return None
+    return {
+        "key": key,
+        "plan": plan,
+        "as_of": as_of.isoformat(),
+        "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "step_days": GRID_STEP_DAYS,
+        "count": len(out),
+        "funds": out,
+    }
+
+
+# ------------------------------------------------------------------ io
+def write_json_atomic(path, payload):
+    """Two-phase write: a crash mid-write must not leave a half-file that parses
+    as valid JSON with missing funds."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, separators=(",", ":"), sort_keys=True)
+    os.replace(tmp, path)
+
+
+def existing_count(path):
+    try:
+        with path.open(encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if "count" in doc:
+        return doc["count"]
+    total = 0
+    for plan in (doc.get("plans") or {}).values():
+        total += len(plan.get("funds") or {})
+    return total or None
+
+
+def safe_to_publish(path, new_count):
+    """Refuse to replace a healthy file with a collapsed one."""
+    old = existing_count(path)
+    if old is None or old == 0:
+        return True, "no prior file"
+    if new_count >= old * MIN_KEEP_FRACTION:
+        return True, f"{new_count} vs {old} committed"
+    return False, f"REFUSED: {new_count} funds vs {old} committed (<{MIN_KEEP_FRACTION:.0%})"
+
+
+# ------------------------------------------------------------------ fetching
+def discover_universe(timeout, concurrency, log):
+    """Name-filter /mf, then resolve each survivor's category via /latest.
+
+    /latest carries meta.scheme_category at ~0.4 KB against ~58 KB for full
+    history, so discovery costs a fraction of a full-detail pass.
+    """
+    raw, _, _, status = get_json(f"{API}/mf", timeout)
+    if raw is None:
+        log(f"FATAL: /mf returned {status}")
+        return None
+    all_schemes, complete = unwrap_list(raw)
+    if all_schemes is None:
+        log("FATAL: unexpected /mf shape")
+        return None
+    if not complete:
+        log("WARNING: /mf looks paginated; universe may be partial")
+
+    has_isin = any(isinstance(s, dict) and "isinGrowth" in s for s in all_schemes)
+    candidates = []
+    for s in all_schemes:
+        if not isinstance(s, dict) or not s.get("schemeName") or not s.get("schemeCode"):
+            continue
+        n = str(s["schemeName"]).lower()
+        if "growth" not in n:
+            continue
+        if any(t in n for t in INCOME_TOKENS):
+            continue
+        if has_isin and not str(s.get("isinGrowth") or "").strip():
+            continue
+        if name_looks_non_equity(n):
+            continue
+        candidates.append({"code": s["schemeCode"], "name": s["schemeName"],
+                           "plan": classify_plan(n)})
+    log(f"name filters: {len(all_schemes)} -> {len(candidates)} candidates")
+
+    def resolve(c):
+        payload, _, _, _ = get_json(f"{API}/mf/{c['code']}/latest", timeout)
+        if payload is None:
+            return None
+        cat = ((payload.get("meta") or {}).get("scheme_category"))
+        key = category_key(cat)
+        if key is None or key in UNRANKABLE_KEYS:
+            return None
+        c["cat"] = key
+        return c
+
+    resolved, done = [], 0
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futs = [pool.submit(resolve, c) for c in candidates]
+        for fut in as_completed(futs):
+            r = fut.result()
+            done += 1
+            if r:
+                resolved.append(r)
+            if done % 500 == 0:
+                log(f"  categorised {done}/{len(candidates)} -> {len(resolved)} rankable")
+    log(f"universe: {len(resolved)} rankable funds across "
+        f"{len({r['cat'] for r in resolved})} categories")
+    return resolved
+
+
+def fetch_histories(funds, timeout, concurrency, log):
+    def one(f):
+        payload, _, _, _ = get_json(f"{API}/mf/{f['code']}", timeout)
+        if payload is None:
+            return None
+        rows = payload.get("data") or []
+        if not rows:
+            return None
+        f["rows"] = rows
+        return f
+
+    out, done = [], 0
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futs = [pool.submit(one, f) for f in funds]
+        for fut in as_completed(futs):
+            r = fut.result()
+            done += 1
+            if r:
+                out.append(r)
+            if done % 200 == 0:
+                log(f"  history {done}/{len(funds)}")
+    return out
+
+
+# ------------------------------------------------------------------ main
+def main():
+    ap = argparse.ArgumentParser(description="Build category ranking data for the Insights tab.")
+    ap.add_argument("--dry-run", action="store_true", help="compute everything, write nothing")
+    ap.add_argument("--canary", metavar="CAT", help="process a single category end to end")
+    ap.add_argument("--max-funds", type=int, default=0, help="cap funds per category (testing)")
+    ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--timeout", type=float, default=30.0)
+    args = ap.parse_args()
+
+    started = time.monotonic()
+
+    def log(msg):
+        print(f"[{time.monotonic()-started:7.1f}s] {msg}", flush=True)
+
+    log("discovering universe")
+    universe = discover_universe(args.timeout, args.concurrency, log)
+    if not universe:
+        return 1
+    if args.canary:
+        universe = [u for u in universe if u["cat"] == args.canary]
+        log(f"canary {args.canary}: {len(universe)} funds")
+        if not universe:
+            log("FATAL: canary category matched no funds")
+            return 1
+
+    by_cat = {}
+    for u in universe:
+        by_cat.setdefault(u["cat"], []).append(u)
+
+    manifest = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "categories": {}}
+    written = refused = 0
+
+    for cat in sorted(by_cat):
+        funds = by_cat[cat]
+        if args.max_funds:
+            funds = funds[: args.max_funds]
+        log(f"{cat}: fetching {len(funds)} histories")
+        funds = fetch_histories(funds, args.timeout, args.concurrency, log)
+        if not funds:
+            log(f"{cat}: no histories returned -- skipping")
+            manifest["categories"][cat] = {"status": "missing"}
+            continue
+
+        # Parse once; both the period table and the grid reuse it.
+        as_of = None
+        for f in funds:
+            pts = []
+            for r in f["rows"]:
+                d = parse_dmy(r.get("date"))
+                if d is None:
+                    continue
+                try:
+                    nav = float(r.get("nav"))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(nav) and nav > 0:
+                    pts.append((d, nav))
+            pts.sort()
+            f["pts"] = pts
+            if pts:
+                as_of = pts[-1][0] if as_of is None else max(as_of, pts[-1][0])
+        if as_of is None:
+            log(f"{cat}: no parseable NAV -- skipping")
+            manifest["categories"][cat] = {"status": "missing"}
+            continue
+
+        usable = [f for f in funds if f["pts"]]
+        periods = {
+            "key": cat, "as_of": as_of.isoformat(),
+            "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "horizons": [h for h, _ in HORIZONS],
+            "count": len(usable),
+            "plans": compute_period_table(usable, as_of),
+        }
+        p_path = OUT_DIR / f"periods_{cat}.json"
+        allowed, why = safe_to_publish(p_path, len(usable))
+        log(f"{cat}: periods {why}")
+        if allowed and not args.dry_run:
+            write_json_atomic(p_path, periods)
+            written += 1
+        elif not allowed:
+            refused += 1
+
+        cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
+                      "funds": len(usable), "plans": {}}
+        for plan in ("Direct", "Regular"):
+            cohort = [f for f in usable if f["plan"] == plan]
+            if not cohort:
+                continue
+            doc = build_nav_doc(cat, plan, cohort, as_of)
+            if not doc:
+                continue
+            n_path = OUT_DIR / f"navs_{cat}_{plan}.json"
+            ok_pub, why2 = safe_to_publish(n_path, doc["count"])
+            log(f"{cat}/{plan}: navs {why2}")
+            if ok_pub and not args.dry_run:
+                write_json_atomic(n_path, doc)
+                written += 1
+            elif not ok_pub:
+                refused += 1
+            cat_status["plans"][plan] = {"funds": doc["count"], "status": "ok" if ok_pub else "stale"}
+        manifest["categories"][cat] = cat_status
+
+    if not args.dry_run:
+        write_json_atomic(OUT_DIR / "index.json", manifest)
+    log(f"done: {written} file(s) written, {refused} refused"
+        + (" (dry run -- nothing written)" if args.dry_run else ""))
+    return 1 if refused and not written else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
