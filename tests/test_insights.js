@@ -244,5 +244,76 @@ if(loaded){
   ok("stale categories are surfaced to the user", /failed its last publish check/.test(HTML));
 }
 
+/* ============================================================================
+   getDetail()'s NAV parsing: calendar validation + same-day deduplication.
+
+   Both were found by adversarial fixtures:
+   (a) JavaScript ROLLS OVER impossible dates -- new Date(2025,1,31) becomes
+       3 March 2025 -- so a malformed upstream row was laundered into a real
+       trading day and shifted SIP placement and valuation.
+   (b) navOnOrAfter() walks to the FIRST row for a date, navOnOrBefore() to the
+       LAST. With two rows for one date a SIP bought at one NAV and was valued at
+       the other the same day: a Rs100 investment became Rs200 instantly.
+
+   The logic under test is inlined from index.html's getDetail(); the extractor
+   cannot pull a fragment out of an async function, so this mirrors it exactly.
+   The parity assertion below fails if index.html ever drops either guard.
+   ========================================================================== */
+if(loaded){
+  function parseNavRows(rows){
+    const parsed = rows.map(function(d){
+      const m = String(d.date||"").match(/^(\d{2})-(\d{2})-(\d{4})$/);
+      if(!m) return null;
+      const day=+m[1], month=+m[2], year=+m[3];
+      const dt = new Date(year, month-1, day);
+      if(dt.getFullYear()!==year || dt.getMonth()!==month-1 || dt.getDate()!==day) return null;
+      const nav = Number(d.nav);
+      return Number.isFinite(nav) && nav>0 ? {date:dt, nav:nav} : null;
+    }).filter(Boolean).sort(function(a,b){return a.date-b.date;});
+    const byDay = new Map(); let conflicts = 0;
+    for(const row of parsed){
+      const k = isoDate(row.date);
+      const prev = byDay.get(k);
+      if(prev && prev.nav !== row.nav) conflicts++;
+      byDay.set(k, row);
+    }
+    return {arr:[...byDay.values()].sort(function(a,b){return a.date-b.date;}), conflicts:conflicts};
+  }
+
+  // ---- calendar validation
+  let r = parseNavRows([{date:"31-02-2025",nav:"10"},{date:"01-01-2025",nav:"10"}]);
+  eq("an impossible date (31 Feb) is dropped, not rolled forward", r.arr.length, 1);
+  eq("and the valid row is untouched", isoDate(r.arr[0].date), "2025-01-01");
+  eq("a real leap day is kept", parseNavRows([{date:"29-02-2024",nav:"10"}]).arr.length, 1);
+  eq("a non-leap 29 Feb is dropped", parseNavRows([{date:"29-02-2025",nav:"10"}]).arr.length, 0);
+  eq("31 April is dropped", parseNavRows([{date:"31-04-2025",nav:"10"}]).arr.length, 0);
+  eq("month 13 is dropped", parseNavRows([{date:"01-13-2025",nav:"10"}]).arr.length, 0);
+
+  // ---- same-day duplicates
+  r = parseNavRows([{date:"01-01-2025",nav:"100"},{date:"01-01-2025",nav:"200"}]);
+  eq("duplicate same-day rows collapse to one", r.arr.length, 1);
+  eq("a conflicting duplicate is flagged for the user", r.conflicts, 1);
+  const td = new Date(2025,0,1);
+  const buy = navOnOrAfter(r.arr, td), val = navOnOrBefore(r.arr, td);
+  ok("buy and valuation NAVs now agree on the same date", buy.nav === val.nav);
+  eq("so a same-day purchase shows no phantom gain", (100/buy.nav)*val.nav, 100);
+
+  r = parseNavRows([{date:"01-01-2025",nav:"100"},{date:"01-01-2025",nav:"100"}]);
+  eq("identical duplicates collapse silently", r.conflicts, 0);
+  eq("and still leave one row", r.arr.length, 1);
+
+  // ---- ordering is preserved
+  r = parseNavRows([{date:"03-01-2025",nav:"102"},{date:"01-01-2025",nav:"100"},
+                    {date:"02-01-2025",nav:"101"}]);
+  eq("rows remain date-sorted after dedupe", r.arr.map(function(x){return isoDate(x.date);}).join(","),
+     "2025-01-01,2025-01-02,2025-01-03");
+
+  // ---- parity: the shipped file must still contain both guards
+  ok("index.html round-trips the parsed MFAPI date",
+     /dt\.getFullYear\(\)!==year/.test(HTML) && /dt\.getDate\(\)!==day/.test(HTML));
+  ok("index.html deduplicates NAV rows by calendar day",
+     /byDay\.set\(/.test(HTML) && /conflicts/.test(HTML));
+}
+
 console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);

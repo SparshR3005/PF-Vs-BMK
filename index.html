@@ -1370,13 +1370,49 @@ async function getDetail(code){
   if(detailCache[key]) return detailCache[key];
   const json = await fetchJson(`${API}/mf/${encodeURIComponent(key)}`);
   if(!json || !json.meta || !Array.isArray(json.data)) throw new Error("Invalid NAV response for code "+key);
-  const arr = json.data.map(d=>{
+  const parsed = json.data.map(d=>{
     const m = String(d.date||"").match(/^(\d{2})-(\d{2})-(\d{4})$/);
     if(!m) return null;
-    const dt = new Date(+m[3], +m[2]-1, +m[1]);
+    const day=+m[1], month=+m[2], year=+m[3];
+    const dt = new Date(year, month-1, day);
+    // JavaScript ROLLS OVER impossible calendar dates instead of rejecting them:
+    // new Date(2025,1,31) silently becomes 3 March 2025. A malformed upstream row
+    // like "31-02-2025" would therefore be accepted as a real trading day and
+    // shift both SIP placement and valuation. parseInput() already round-trips
+    // its ISO dates for exactly this reason; MFAPI's DD-MM-YYYY needs the same
+    // check, or bad source data is laundered into a plausible-looking NAV.
+    if(dt.getFullYear()!==year || dt.getMonth()!==month-1 || dt.getDate()!==day) return null;
     const nav = Number(d.nav);
     return Number.isFinite(nav) && nav>0 ? {date:dt, nav} : null;
   }).filter(Boolean).sort((a,b)=>a.date-b.date);
+
+  /* DEDUPLICATE BY CALENDAR DAY.
+     navOnOrAfter() walks left to the FIRST row for a date; navOnOrBefore() walks
+     right to the LAST. With two rows for one date those return opposite ends, so
+     a SIP could BUY at one NAV and be VALUED at the other on the same day —
+     reproduced as a ₹100 investment worth ₹200 instantly, a pure artefact.
+     Collapsing to one row per date makes the two searches agree by construction.
+
+     Identical duplicates are harmless and collapse silently. CONFLICTING values
+     mean the upstream response disagrees with itself: we keep the LAST row (the
+     later correction in MFAPI's ordering) and surface a data-quality warning
+     rather than failing the holding outright — silently picking one is what made
+     this unauditable in the first place. */
+  const byDay = new Map();
+  let conflicts = 0;
+  for(const row of parsed){
+    const k = isoDate(row.date);
+    const prev = byDay.get(k);
+    if(prev && prev.nav !== row.nav) conflicts++;
+    byDay.set(k, row);
+  }
+  const arr = [...byDay.values()].sort((a,b)=>a.date-b.date);
+  if(conflicts){
+    console.warn("Scheme "+key+": "+conflicts+" date(s) had conflicting NAVs; kept the last value per date.");
+    try{ toast("This fund's NAV history had "+conflicts+" date"+(conflicts===1?"":"s")+
+               " with conflicting values from the data source. The latest value for each date was used — "+
+               "double-check any figure that looks off.", {type:"warn", timeout:9000}); }catch(e){}
+  }
   if(!arr.length) throw new Error("No usable NAV history for code "+key);
   const detail = {
     code:key,

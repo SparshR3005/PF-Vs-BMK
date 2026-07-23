@@ -99,6 +99,26 @@ HORIZONS = [
 # have. Matches the "--" convention in the reference table.
 MIN_ANNUALISE_DAYS = 365
 
+# A category's `as_of` is the LATEST NAV date seen across every fund in it, so a
+# fund that stopped reporting still gets measured against it. nav_on_or_before()
+# then carries that fund's final NAV forward to both window boundaries and the
+# result looks like a current figure -- a fund a full year stale published "0.0%"
+# as its 1-year return in testing. Indian MF sees routine suspensions, mergers and
+# closures, so this is an ordinary event, not an exotic one.
+#
+# 7 days matches the tolerance used everywhere else in this project (runSIP's NAV
+# match window, MAX_STALE_DAYS in fetch_tri.py). A fund quiet for longer than a
+# trading week is not reporting, and is excluded from that horizon rather than
+# ranked on a stale price.
+MAX_TERMINAL_STALE_DAYS = 7
+
+# The window-OPEN observation has the same problem in reverse: if the nearest NAV
+# at or before the window open is far older than the window, the "start" price
+# belongs to a different period and the return spans the wrong interval. Kept
+# looser than the terminal bound because early history is legitimately sparser
+# (holidays, and thin early series), but still bounded.
+MAX_BOUNDARY_STALE_DAYS = 30
+
 # Hard bound on grid spacing. runSIP() matches an installment to the first NAV
 # within 7 days of the scheduled date, so any wider hole can drop installments.
 GRID_MAX_GAP_DAYS = 7
@@ -212,6 +232,10 @@ def period_return(pts, as_of, days):
     Eligibility is strict: the series must actually start on or before the window
     open. A fund that launched mid-window would otherwise post a flattering short
     return and outrank funds that ran the whole period.
+
+    The result is checked for finiteness. Extreme NAV pairs (1e-308 -> 1e308 was
+    the reproduction) overflow to inf, and an inf that escapes here becomes a bare
+    `Infinity` token in the published JSON, which the browser refuses to parse.
     """
     if not pts:
         return None
@@ -222,7 +246,20 @@ def period_return(pts, as_of, days):
     b = nav_on_or_before(pts, as_of)
     if not a or not b or a[1] <= 0:
         return None
-    return (b[1] / a[1] - 1.0) * 100.0
+    # A fund whose last NAV predates the window close is STALE: nav_on_or_before
+    # would carry that final NAV forward to both boundaries and report it as a
+    # current figure. A suspended/closed/merging fund then ranks against live
+    # peers -- the reproduction showed a fund a full year stale publishing "0.0%"
+    # for its 1y return. Refuse the horizon instead.
+    if (as_of - b[0]).days > MAX_TERMINAL_STALE_DAYS:
+        return None
+    # Likewise the opening observation: if the nearest NAV at or before the window
+    # open is far older than the window itself, the "start" price is not this
+    # period's price and the return spans the wrong interval.
+    if (start - a[0]).days > MAX_BOUNDARY_STALE_DAYS:
+        return None
+    result = (b[1] / a[1] - 1.0) * 100.0
+    return result if math.isfinite(result) else None
 
 
 def annualised(abs_pct, days):
@@ -232,7 +269,8 @@ def annualised(abs_pct, days):
     growth = 1.0 + abs_pct / 100.0
     if growth <= 0:
         return None
-    return (growth ** (365.25 / days) - 1.0) * 100.0
+    result = (growth ** (365.25 / days) - 1.0) * 100.0
+    return result if math.isfinite(result) else None
 
 
 def rank_desc(pairs):
@@ -304,25 +342,31 @@ def compute_period_table(funds, as_of):
             scored = []
             for f in cohort:
                 r = period_return(f["pts"], as_of, days)
-                if r is None:
+                # period_return already refuses non-finite results, but assert it
+                # here too: everything downstream (avg, median, the published
+                # value) assumes finiteness, and a bare Infinity in the output is
+                # a file the browser cannot parse at all.
+                if r is None or not math.isfinite(r):
                     continue
                 scored.append((f["code"], r))
                 per_fund[f["code"]]["abs"][label] = round(r, 2)
                 a = annualised(r, days)
                 if a is not None:
                     per_fund[f["code"]]["ann"][label] = round(a, 2)
-            universe[label] = len(scored)
             if not scored:
+                universe[label] = 0
                 continue
-            vals = [v for _, v in scored]
+            ranks = rank_desc(scored)
+            # ONE denominator for the whole horizon: the population actually
+            # ranked. rank_desc drops any non-finite value that still slipped
+            # through, so len(scored) can exceed it -- and a published "rank 6 of
+            # 134" whose 134 came from a different population than the 6 is the
+            # kind of number a client checks and cannot reconcile.
+            ranked_n = len(ranks)
+            universe[label] = ranked_n
+            vals = [v for code, v in scored if code in ranks]
             avg[label] = round(sum(vals) / len(vals), 2)
             med[label] = round(statistics.median(vals), 2)
-            ranks = rank_desc(scored)
-            # Denominator must be the population actually RANKED, not len(scored).
-            # rank_desc drops non-finite returns, so those two can differ; using
-            # len(scored) would compute quartiles against a larger universe than
-            # the ranks were drawn from and shift funds into the wrong band.
-            ranked_n = len(ranks)
             for code, rk in ranks.items():
                 per_fund[code]["rank"][label] = rk
                 per_fund[code]["q"][label] = quartile(rk, ranked_n)
@@ -360,11 +404,33 @@ def build_nav_doc(key, plan, funds, as_of):
 # ------------------------------------------------------------------ io
 def write_json_atomic(path, payload):
     """Two-phase write: a crash mid-write must not leave a half-file that parses
-    as valid JSON with missing funds."""
+    as valid JSON with missing funds.
+
+    allow_nan=False is LOAD-BEARING, not hygiene. Python's json.dump defaults to
+    allow_nan=True, which emits BARE `Infinity` / `NaN` tokens. Those are not
+    valid JSON: Python round-trips them happily, but the browser's JSON.parse()
+    (and response.json()) REJECT the file outright -- so one extreme NAV pair
+    could take an entire ranking category offline in the client while every
+    server-side check passed. fetch_tri.py's writer already sets this; the two
+    writers disagreeing is exactly how the bad value reached disk.
+
+    Failing here is the point: a ValueError aborts this file's publish and leaves
+    the last-good copy in place, which is strictly better than shipping a file the
+    browser cannot read.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, separators=(",", ":"), sort_keys=True)
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"), sort_keys=True,
+                      allow_nan=False)
+    except (ValueError, OSError):
+        # Never leave a partial .tmp behind for the next run to trip over.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     os.replace(tmp, path)
 
 
@@ -570,7 +636,13 @@ def main():
         # Parse once; both the period table and the grid reuse it.
         as_of = None
         for f in funds:
-            pts = []
+            # DEDUPE BY DATE, keeping the LAST row seen for a date. Three paths
+            # consume this data and they must agree: build_weekly_grid() already
+            # keeps the last, and index.html's getDetail() now does the same.
+            # A bare list + pts.sort() did NOT: sorting (date, nav) tuples makes a
+            # duplicated date resolve to the HIGHEST nav, so the period table and
+            # the weekly grid could disagree about the same fund on the same day.
+            by_day = {}
             for r in f["rows"]:
                 d = parse_dmy(r.get("date"))
                 if d is None:
@@ -580,8 +652,8 @@ def main():
                 except (TypeError, ValueError):
                     continue
                 if math.isfinite(nav) and nav > 0:
-                    pts.append((d, nav))
-            pts.sort()
+                    by_day[d] = nav
+            pts = sorted(by_day.items())
             f["pts"] = pts
             if pts:
                 as_of = pts[-1][0] if as_of is None else max(as_of, pts[-1][0])

@@ -362,6 +362,10 @@ def read_existing_doc(path: Path):
 # committed historical values (the fingerprint of a wrong index being spliced in).
 CONT_MIN_KEEP_FRACTION = 0.98   # new count must be >= 98% of the committed count
 CONT_VALUE_TOLERANCE   = 0.01   # committed historical points must match within 1%
+# Fraction of COMMITTED DATES that must still be present in the new series. The
+# row-count test alone cannot see this: a series can retain 98% of the row COUNT
+# while sharing few or none of the same dates.
+CONT_MIN_DATE_OVERLAP  = 0.98
 
 
 def continuity_problem(new_doc: dict, old_doc) -> str:
@@ -388,21 +392,46 @@ def continuity_problem(new_doc: dict, old_doc) -> str:
         return (f"row count shrank {old_count} -> {new_count} "
                 f"(<{CONT_MIN_KEEP_FRACTION:.0%} retained)")
 
-    # Overlapping historical points are fixed once published; large drift means a
-    # different index (or a decimal shift) was returned under the same name.
-    common = [d for d in old_series if d in new_series]
-    if len(common) >= 20:
-        step = max(1, len(common) // 40)            # sample up to ~40 points
-        for d in common[::step]:
-            ov, nv = old_series[d], new_series[d]
-            if ov and abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
-                return (f"committed value on {d} changed {ov:.2f} -> {nv:.2f} "
-                        f"(>{CONT_VALUE_TOLERANCE:.0%}) — likely a different series")
-        if old_end and old_end in new_series and old_series.get(old_end):
-            ov, nv = old_series[old_end], new_series[old_end]
-            if abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
-                return (f"value on prior end {old_end} changed {ov:.2f} -> {nv:.2f} "
-                        f"(>{CONT_VALUE_TOLERANCE:.0%}) — likely a different series")
+    # ---- DATE OVERLAP ----
+    # The value comparison below used to run only `if len(common) >= 20`, so a
+    # series sharing FEWER than 20 dates skipped it entirely and returned ''. A
+    # fully DISJOINT replacement -- earlier start, later end, similar row count,
+    # zero dates in common, values 5x different -- was therefore accepted, which
+    # is precisely the "wrong index served under the right name" case this gate
+    # exists to stop. Overlap is now a REQUIREMENT, not a precondition.
+    if old_series:
+        retained = [d for d in old_series if d in new_series]
+        overlap = len(retained) / len(old_series)
+        if overlap < CONT_MIN_DATE_OVERLAP:
+            return (f"only {len(retained)} of {len(old_series)} committed dates "
+                    f"({overlap:.1%}) survive in the new series "
+                    f"(<{CONT_MIN_DATE_OVERLAP:.0%}) — likely a different series")
+        # The prior terminal date is the single most load-bearing point: it is the
+        # last value every committed XIRR was computed against.
+        if old_end and old_end not in new_series:
+            return (f"prior end date {old_end} is absent from the new series "
+                    f"— the committed tail would be rewritten")
+    else:
+        retained = []
+
+    # ---- VALUE COMPARISON: EVERY overlapping point, never a sample ----
+    # This used to sample ~40 points via common[::step]. On the real NIFTY500 file
+    # (6,857 points) that made step=171 and left 6,816 dates -- 99.4% of committed
+    # history -- unchecked. A published value could change by 900% and pass simply
+    # by not being one of the 41 sampled dates. Comparing all of them is a few
+    # thousand float ops: microseconds, against the cost of silently rewriting
+    # every historical XIRR.
+    for d in retained:
+        ov, nv = old_series[d], new_series[d]
+        if not isinstance(ov, (int, float)) or not isinstance(nv, (int, float)):
+            return f"non-numeric value on {d} — refusing to publish"
+        if not math.isfinite(ov) or not math.isfinite(nv):
+            return f"non-finite value on {d} — refusing to publish"
+        if ov <= 0:
+            return f"non-positive committed value {ov} on {d}"
+        if abs(nv - ov) / ov > CONT_VALUE_TOLERANCE:
+            return (f"committed value on {d} changed {ov:.2f} -> {nv:.2f} "
+                    f"(>{CONT_VALUE_TOLERANCE:.0%}) — likely a different series")
     return ""
 
 

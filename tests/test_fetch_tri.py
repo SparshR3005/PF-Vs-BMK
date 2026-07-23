@@ -254,6 +254,114 @@ def test_gap_move_never_exceeds_absolute_ceiling():
     assert ft.validate_series(doc), "a 95% move must be refused at any gap"
 
 
+# ------------------------------------------------------- continuity: full overlap
+# Two holes were found by adversarial fixtures and are pinned here.
+#
+# (a) The value comparison ran only `if len(common) >= 20`, so a series sharing
+#     FEWER than 20 dates skipped it entirely. A fully DISJOINT replacement --
+#     earlier start, later end, similar row count, ZERO dates in common, values
+#     5x different -- returned '' and would have overwritten good history.
+#
+# (b) It then sampled ~40 points via common[::step]. On the real NIFTY500 file
+#     (6,857 points) step=171, leaving 99.4% of committed history unchecked. A
+#     published value could change by 900% simply by not being sampled.
+def _doc(series):
+    return {"start": min(series), "end": max(series), "series": series}
+
+
+def test_rejects_fully_disjoint_replacement():
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=2 * i)).isoformat(): 100.0 + i for i in range(100)}
+    ns = start - _td(days=1)
+    new = {(ns + _td(days=2 * i)).isoformat(): 500.0 + i for i in range(102)}
+    assert not (set(old) & set(new)), "fixture must be disjoint"
+    problem = ft.continuity_problem(_doc(new), _doc(old))
+    assert problem, "a zero-overlap replacement must be refused"
+    assert "survive" in problem or "different series" in problem
+
+
+def test_rejects_partial_overlap_below_floor():
+    """Half the committed dates vanishing is still a different series."""
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    new = {d: v for i, (d, v) in enumerate(sorted(old.items())) if i % 2 == 0}
+    new[(start + _td(days=200)).isoformat()] = 300.0
+    assert ft.continuity_problem(_doc(new), _doc(old))
+
+
+def test_rejects_mutation_the_old_sampler_missed():
+    """Index 1 fell outside the old step-2 sample; a 10x change passed."""
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    new = dict(old)
+    new[(start + _td(days=1)).isoformat()] *= 10
+    problem = ft.continuity_problem(_doc(new), _doc(old))
+    assert problem, "a 10x change on an unsampled date must be refused"
+    assert "changed" in problem
+
+
+def test_rejects_mutation_anywhere_in_a_large_series():
+    """Every overlapping point is compared, not a sample -- check several."""
+    from datetime import date as _d, timedelta as _td
+    start = _d(2000, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 1000.0 + i for i in range(4000)}
+    for idx in (1, 7, 1234, 2999, 3998):
+        new = dict(old)
+        key = (start + _td(days=idx)).isoformat()
+        new[key] = old[key] * 1.5
+        assert ft.continuity_problem(_doc(new), _doc(old)), \
+            f"a 50% change on index {idx} must be refused"
+
+
+def test_rejects_missing_prior_end_date():
+    """The committed terminal date is what every published XIRR was priced on."""
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    new = dict(old)
+    del new[max(old)]
+    new[(start + _td(days=100)).isoformat()] = 200.0
+    new[(start + _td(days=101)).isoformat()] = 201.0
+    assert ft.continuity_problem(_doc(new), _doc(old))
+
+
+def test_accepts_a_genuine_daily_extension():
+    """The gate must not become a blanket ban: appending a day is normal."""
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    new = dict(old)
+    new[(start + _td(days=100)).isoformat()] = 200.0
+    assert ft.continuity_problem(_doc(new), _doc(old)) == ""
+
+
+def test_accepts_tiny_revisions_within_tolerance():
+    """Providers do restate slightly; sub-1% drift stays acceptable."""
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    new = {d: v * 1.005 for d, v in old.items()}
+    assert ft.continuity_problem(_doc(new), _doc(old)) == ""
+
+
+def test_first_run_still_publishes():
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    new = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    assert ft.continuity_problem(_doc(new), None) == ""
+
+
+def test_rejects_non_finite_committed_value():
+    from datetime import date as _d, timedelta as _td
+    start = _d(2020, 1, 1)
+    old = {(start + _td(days=i)).isoformat(): 100.0 + i for i in range(100)}
+    new = dict(old)
+    new[(start + _td(days=5)).isoformat()] = float("inf")
+    assert ft.continuity_problem(_doc(new), _doc(old))
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

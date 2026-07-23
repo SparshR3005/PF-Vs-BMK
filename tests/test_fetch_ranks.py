@@ -439,5 +439,116 @@ eq("ranked population excludes the non-finite fund", len(_ranks), 12)
 ok("quartiles computed on the ranked population stay in range",
    all(R.quartile(rk, len(_ranks)) in (1, 2, 3, 4) for rk in _ranks.values()))
 
+# ------------------------------------------------------- non-finite -> bad JSON
+# json.dump defaults to allow_nan=True and emits BARE `Infinity`, which Python
+# round-trips but the browser's JSON.parse REJECTS -- one extreme NAV pair could
+# take a whole ranking category offline client-side while every server check
+# passed. Reproduced with NAVs 1e-308 -> 1e308.
+_AS_OF = date(2026, 7, 20)
+_extreme = [
+    {"code": "BAD", "name": "Extreme", "plan": "Direct",
+     "pts": [(_AS_OF - timedelta(days=365), 1e-308), (_AS_OF, 1e308)]},
+    {"code": "OK", "name": "Normal", "plan": "Direct",
+     "pts": [(_AS_OF - timedelta(days=365), 100.0), (_AS_OF, 110.0)]},
+]
+_plans = R.compute_period_table(_extreme, _AS_OF)
+ok("an overflowing return is excluded from output",
+   "BAD" not in _plans["Direct"]["funds"])
+ok("a normal fund alongside it is unaffected",
+   "OK" in _plans["Direct"]["funds"])
+eq("the published universe counts only ranked funds",
+   _plans["Direct"]["universe"].get("1y"), 1)
+
+ok("period_return refuses a non-finite result",
+   R.period_return([(_AS_OF - timedelta(days=365), 1e-308), (_AS_OF, 1e308)],
+                   _AS_OF, 365) is None)
+
+with tempfile.TemporaryDirectory() as _td:
+    _p = Path(_td) / "periods.json"
+    R.write_json_atomic(_p, {"plans": _plans})
+    _raw = _p.read_text(encoding="utf-8")
+ok("no bare Infinity token reaches the file", "Infinity" not in _raw)
+try:
+    json.loads(_raw, parse_constant=lambda t: (_ for _ in ()).throw(ValueError(t)))
+    _strict = True
+except ValueError:
+    _strict = False
+ok("a strict JSON parser accepts the published file", _strict)
+
+# The writer itself must fail closed rather than emit invalid JSON.
+with tempfile.TemporaryDirectory() as _td:
+    _p = Path(_td) / "x.json"
+    try:
+        R.write_json_atomic(_p, {"v": float("inf")})
+        _refused = False
+    except ValueError:
+        _refused = True
+    ok("write_json_atomic refuses a non-finite payload", _refused)
+    ok("and leaves no partial .tmp behind", not list(Path(_td).glob("*.tmp")))
+
+# ------------------------------------------------------- stale funds
+# `as_of` is the latest NAV across the whole category, so a fund that stopped
+# reporting still gets measured against it: nav_on_or_before() carries its final
+# NAV to BOTH boundaries and prints a current-looking figure. A fund a full year
+# stale published "0.0%" as its 1-year return.
+_stale = [(date(2024, 7, 20), 100.0), (date(2025, 7, 20), 110.0)]
+ok("a year-stale fund is excluded from the 1y horizon",
+   R.period_return(_stale, _AS_OF, 365) is None)
+ok("...and from every other horizon too",
+   R.period_return(_stale, _AS_OF, 730) is None
+   and R.period_return(_stale, _AS_OF, 1095) is None)
+
+_fresh = [(date(2025, 7, 18), 100.0), (date(2026, 7, 18), 115.0)]
+near("a fund reporting within tolerance still ranks",
+     R.period_return(_fresh, date(2026, 7, 20), 365), 15.0, 0.5)
+
+_edge = [(date(2025, 7, 12), 100.0), (date(2026, 7, 13), 110.0)]
+ok("a fund exactly at the 7-day bound is still included",
+   R.period_return(_edge, date(2026, 7, 20), 365) is not None)
+_over = [(date(2025, 7, 10), 100.0), (date(2026, 7, 11), 110.0)]
+ok("a fund one day past the bound is excluded",
+   R.period_return(_over, date(2026, 7, 20), 365) is None)
+
+# ------------------------------------------------------- duplicate NAV dates
+# Three consumers read this data and must agree. build_weekly_grid() keeps the
+# LAST row for a date; a bare list + pts.sort() resolved duplicates to the
+# HIGHEST nav instead, so the period table and the weekly grid could disagree
+# about the same fund on the same day. index.html now keeps the last too.
+_dupe_rows = [
+    {"date": "01-01-2025", "nav": "100"},
+    {"date": "01-01-2025", "nav": "200"},
+    {"date": "02-01-2025", "nav": "150"},
+]
+_by_day = {}
+for _r in _dupe_rows:
+    _d = R.parse_dmy(_r["date"])
+    if _d is not None:
+        _by_day[_d] = float(_r["nav"])
+_pts = sorted(_by_day.items())
+eq("duplicate dates collapse to one point", len(_pts), 2)
+eq("and the LAST row wins, matching build_weekly_grid", _pts[0][1], 200.0)
+
+# Assert the grid's own dedupe policy directly rather than trusting it: both
+# paths must resolve a duplicated date to the SAME nav, or the period table and
+# the ranking grid describe different funds.
+_long_rows = []
+for _i in range(30):
+    _d = date(2025, 1, 1) + timedelta(days=_i * 3)
+    _long_rows.append({"date": _d.strftime("%d-%m-%Y"), "nav": "%d" % (100 + _i)})
+_long_rows.append({"date": "01-01-2025", "nav": "999"})   # duplicate of day 1, later row
+_grid = R.build_weekly_grid(_long_rows, date(2025, 4, 1), years=1, max_gap=7)
+ok("the weekly grid still builds with a duplicated date", _grid is not None)
+if _grid:
+    _t0, _off, _vals, _forced = _grid
+    eq("the grid resolves the duplicate to the LAST row, as the parser does",
+       _vals[0], 999.0)
+
+ok("an impossible calendar date is rejected outright",
+   R.parse_dmy("31-02-2025") is None)
+ok("a real leap day is still accepted",
+   R.parse_dmy("29-02-2024") is not None)
+ok("a non-leap 29 Feb is rejected",
+   R.parse_dmy("29-02-2025") is None)
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
