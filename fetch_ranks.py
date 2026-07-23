@@ -110,6 +110,14 @@ MIN_ANNUALISE_DAYS = 365
 # match window, MAX_STALE_DAYS in fetch_tri.py). A fund quiet for longer than a
 # trading week is not reporting, and is excluded from that horizon rather than
 # ranked on a stale price.
+# A NAV cannot be dated in the future. MFAPI occasionally serves a malformed row,
+# and `as_of` is a MAX across the whole category, so ONE such row redefines "now"
+# for every other fund in it -- which, combined with the staleness rule below,
+# marks every healthy fund dead and empties the category. Measured: a single row
+# dated 2030 took a 6-fund cohort's 1-year universe to 0. Clamping `as_of` after
+# the fact is not enough; the row has to be dropped at parse, before it can reach
+# max(). Two days of slack absorbs IST-vs-UTC skew on the runner.
+MAX_FUTURE_DAYS = 2
 MAX_TERMINAL_STALE_DAYS = 7
 
 # The window-OPEN observation has the same problem in reverse: if the nearest NAV
@@ -165,10 +173,14 @@ def build_weekly_grid(rows, as_of, years=GRID_YEARS, max_gap=GRID_MAX_GAP_DAYS):
     are counted and reported rather than hidden.
     """
     cutoff = as_of - timedelta(days=int(years * 365.25))
+    horizon = date.today() + timedelta(days=MAX_FUTURE_DAYS)
     pts = []
     for r in rows:
         d = parse_dmy(r.get("date"))
-        if d is None or d < cutoff or d > as_of:
+        # This function parses rows itself rather than reusing the caller's points,
+        # so it needs its own future guard: relying on `d > as_of` alone would trust
+        # an as_of that a bad row may already have poisoned.
+        if d is None or d < cutoff or d > as_of or d > horizon:
             continue
         try:
             nav = float(r.get("nav"))
@@ -620,108 +632,141 @@ def main():
 
     manifest = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "categories": {}}
-    written = refused = 0
+    written = refused = failed = 0
 
     for cat in sorted(by_cat):
-        funds = by_cat[cat]
-        if args.max_funds:
-            funds = funds[: args.max_funds]
-        log(f"{cat}: fetching {len(funds)} histories")
-        funds = fetch_histories(funds, args.timeout, args.concurrency, log)
-        if not funds:
-            log(f"{cat}: no histories returned -- skipping")
-            manifest["categories"][cat] = {"status": "missing"}
-            continue
-
-        # Parse once; both the period table and the grid reuse it.
-        as_of = None
-        for f in funds:
-            # DEDUPE BY DATE, keeping the LAST row seen for a date. Three paths
-            # consume this data and they must agree: build_weekly_grid() already
-            # keeps the last, and index.html's getDetail() now does the same.
-            # A bare list + pts.sort() did NOT: sorting (date, nav) tuples makes a
-            # duplicated date resolve to the HIGHEST nav, so the period table and
-            # the weekly grid could disagree about the same fund on the same day.
-            by_day = {}
-            for r in f["rows"]:
-                d = parse_dmy(r.get("date"))
-                if d is None:
-                    continue
-                try:
-                    nav = float(r.get("nav"))
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(nav) and nav > 0:
-                    by_day[d] = nav
-            pts = sorted(by_day.items())
-            f["pts"] = pts
-            if pts:
-                as_of = pts[-1][0] if as_of is None else max(as_of, pts[-1][0])
-        if as_of is None:
-            log(f"{cat}: no parseable NAV -- skipping")
-            manifest["categories"][cat] = {"status": "missing"}
-            continue
-
-        usable = [f for f in funds if f["pts"]]
-        plan_tables = compute_period_table(usable, as_of)
-        # Count what actually lands in the file. compute_period_table drops funds with
-        # no eligible horizon at all (under ~6 months old), so len(usable) overstates
-        # it -- CONTRA published 8 while holding 3+3, LARGE_MID 69 while holding
-        # 33+34. A manifest that disagrees with its own payload is worse than no
-        # manifest, because the client trusts it.
-        published = sum(len(pt.get("funds") or {}) for pt in plan_tables.values())
-        periods = {
-            "key": cat, "as_of": as_of.isoformat(),
-            "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "horizons": [h for h, _ in HORIZONS],
-            "count": published,
-            "parsed": len(usable),      # kept for diagnostics; never a display figure
-            "plans": plan_tables,
-        }
-        p_path = OUT_DIR / f"periods_{cat}.json"
-        if published < len(usable):
-            log(f"{cat}: {len(usable)-published} fund(s) too young for any horizon -- excluded")
-        allowed, why = safe_to_publish(p_path, published)
-        if args.force and not allowed:
-            allowed, why = True, why + "  [OVERRIDDEN by --force]"
-        log(f"{cat}: periods {why}")
-        if allowed and not args.dry_run:
-            write_json_atomic(p_path, periods)
-            written += 1
-        elif not allowed:
-            refused += 1
-
-        # Two different populations, so two different names. "ranked" is the period
-        # table (needs >=6 months of history); "grid" is the weekly NAV file (needs
-        # ~2 months). They legitimately differ, and a single "funds" field made the
-        # manifest look self-contradictory.
-        cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
-                      "ranked": published, "plans": {}}
-        for plan in ("Direct", "Regular"):
-            cohort = [f for f in usable if f["plan"] == plan]
-            if not cohort:
+        # ONE category must not be able to take down the others. write_json_atomic
+        # raises by design (allow_nan=False, so a non-finite value can never reach
+        # disk), but nothing caught it: categories run in alphabetical order, so an
+        # exception on CONTRA aborted main() and the remaining nine never wrote at
+        # all -- no files, no manifest entries. A last line of defence should not
+        # also be a single point of failure.
+        #
+        # The failed category is marked "stale", NOT dropped: a missing manifest
+        # entry tells the client the category does not exist, while "stale" tells it
+        # the committed files are real but old. Those mean different things.
+        try:
+            funds = by_cat[cat]
+            if args.max_funds:
+                funds = funds[: args.max_funds]
+            log(f"{cat}: fetching {len(funds)} histories")
+            funds = fetch_histories(funds, args.timeout, args.concurrency, log)
+            if not funds:
+                log(f"{cat}: no histories returned -- skipping")
+                manifest["categories"][cat] = {"status": "missing"}
                 continue
-            doc = build_nav_doc(cat, plan, cohort, as_of)
-            if not doc:
+
+            # Parse once; both the period table and the grid reuse it.
+            as_of = None
+            future_horizon = date.today() + timedelta(days=MAX_FUTURE_DAYS)
+            dropped_future = 0
+            for f in funds:
+                # DEDUPE BY DATE, keeping the LAST row seen for a date. Three paths
+                # consume this data and they must agree: build_weekly_grid() already
+                # keeps the last, and index.html's getDetail() now does the same.
+                # A bare list + pts.sort() did NOT: sorting (date, nav) tuples makes a
+                # duplicated date resolve to the HIGHEST nav, so the period table and
+                # the weekly grid could disagree about the same fund on the same day.
+                by_day = {}
+                for r in f["rows"]:
+                    d = parse_dmy(r.get("date"))
+                    if d is None:
+                        continue
+                    # Drop future-dated rows BEFORE they can reach the max() below.
+                    if d > future_horizon:
+                        dropped_future += 1
+                        continue
+                    try:
+                        nav = float(r.get("nav"))
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(nav) and nav > 0:
+                        by_day[d] = nav
+                pts = sorted(by_day.items())
+                f["pts"] = pts
+                if pts:
+                    as_of = pts[-1][0] if as_of is None else max(as_of, pts[-1][0])
+            if dropped_future:
+                log(f"{cat}: dropped {dropped_future} future-dated NAV row(s) "
+                    f"(after {future_horizon.isoformat()})")
+            if as_of is None:
+                log(f"{cat}: no parseable NAV -- skipping")
+                manifest["categories"][cat] = {"status": "missing"}
                 continue
-            n_path = OUT_DIR / f"navs_{cat}_{plan}.json"
-            ok_pub, why2 = safe_to_publish(n_path, doc["count"])
-            if args.force and not ok_pub:
-                ok_pub, why2 = True, why2 + "  [OVERRIDDEN by --force]"
-            log(f"{cat}/{plan}: navs {why2}")
-            if ok_pub and not args.dry_run:
-                write_json_atomic(n_path, doc)
+
+            usable = [f for f in funds if f["pts"]]
+            plan_tables = compute_period_table(usable, as_of)
+            # Count what actually lands in the file. compute_period_table drops funds with
+            # no eligible horizon at all (under ~6 months old), so len(usable) overstates
+            # it -- CONTRA published 8 while holding 3+3, LARGE_MID 69 while holding
+            # 33+34. A manifest that disagrees with its own payload is worse than no
+            # manifest, because the client trusts it.
+            published = sum(len(pt.get("funds") or {}) for pt in plan_tables.values())
+            periods = {
+                "key": cat, "as_of": as_of.isoformat(),
+                "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "horizons": [h for h, _ in HORIZONS],
+                "count": published,
+                "parsed": len(usable),      # kept for diagnostics; never a display figure
+                "plans": plan_tables,
+            }
+            p_path = OUT_DIR / f"periods_{cat}.json"
+            if published < len(usable):
+                log(f"{cat}: {len(usable)-published} fund(s) too young for any horizon -- excluded")
+            allowed, why = safe_to_publish(p_path, published)
+            if args.force and not allowed:
+                allowed, why = True, why + "  [OVERRIDDEN by --force]"
+            log(f"{cat}: periods {why}")
+            if allowed and not args.dry_run:
+                write_json_atomic(p_path, periods)
                 written += 1
-            elif not ok_pub:
+            elif not allowed:
                 refused += 1
-            cat_status["plans"][plan] = {"grid": doc["count"],
-                                         "status": "ok" if ok_pub else "stale"}
-        manifest["categories"][cat] = cat_status
 
+            # Two different populations, so two different names. "ranked" is the period
+            # table (needs >=6 months of history); "grid" is the weekly NAV file (needs
+            # ~2 months). They legitimately differ, and a single "funds" field made the
+            # manifest look self-contradictory.
+            cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
+                          "ranked": published, "plans": {}}
+            for plan in ("Direct", "Regular"):
+                cohort = [f for f in usable if f["plan"] == plan]
+                if not cohort:
+                    continue
+                doc = build_nav_doc(cat, plan, cohort, as_of)
+                if not doc:
+                    continue
+                n_path = OUT_DIR / f"navs_{cat}_{plan}.json"
+                ok_pub, why2 = safe_to_publish(n_path, doc["count"])
+                if args.force and not ok_pub:
+                    ok_pub, why2 = True, why2 + "  [OVERRIDDEN by --force]"
+                log(f"{cat}/{plan}: navs {why2}")
+                if ok_pub and not args.dry_run:
+                    write_json_atomic(n_path, doc)
+                    written += 1
+                elif not ok_pub:
+                    refused += 1
+                cat_status["plans"][plan] = {"grid": doc["count"],
+                                             "status": "ok" if ok_pub else "stale"}
+            manifest["categories"][cat] = cat_status
+
+
+        except Exception as exc:   # noqa: BLE001 - any failure must stay local
+            failed += 1
+            log(f"{cat}: FAILED ({type(exc).__name__}: {exc}) -- "
+                f"keeping last-good files, continuing with other categories")
+            prev = manifest["categories"].get(cat) or {}
+            prev.update({"status": "stale", "error": type(exc).__name__})
+            manifest["categories"][cat] = prev
+            continue
     if not args.dry_run:
         write_json_atomic(OUT_DIR / "index.json", manifest)
-    log(f"done: {written} file(s) written, {refused} refused"
+    log(f"done: {written} file(s) written, {refused} refused, {failed} category error(s)"
         + (" (dry run -- nothing written)" if args.dry_run else ""))
+    # A category that errored is a real failure even when others succeeded, so the
+    # Action must go red rather than reporting a partial run as success.
+    if failed:
+        return 1
     return 1 if refused and not written else 0
 
 
