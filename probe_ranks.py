@@ -481,7 +481,7 @@ def main():
         "median_latency_s": round(s2["median_latency"], 3),
         "median_nav_points": s2["median_nav_points"],
         "category_distribution": s2["dist"],
-        "rejected_category": s2["unsupported"],
+        "rejected_category": sum(s2["rejected_raw"].values()),
         "est_rankable_funds": round(s2["est_rankable"]),
         "full_scan": bool(args.full),
         "observed_rate_per_s": round(s2["observed_rate"], 3),
