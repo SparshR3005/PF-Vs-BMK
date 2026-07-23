@@ -26,7 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import probe_ranks as P  # noqa: E402
+import mf_universe as P    # noqa: E402  filters: the single shared definition
+import probe_ranks as PR   # noqa: E402  the probe program itself (smoke test)
 
 HTML = (ROOT / "index.html").read_text(encoding="utf-8")
 
@@ -88,6 +89,17 @@ ok("index.html still gates on the Growth option",
 
 ok("index.html still null-checks isinGrowth for legacy records",
    "hasGrowthIsinField" in HTML and "isinGrowth" in HTML)
+
+
+# The three modules must share ONE definition object, not three equal copies --
+# equal-today copies drift tomorrow.
+import fetch_ranks as _FR   # noqa: E402
+ok("probe and shared module share the same CATEGORY_CANON object",
+   PR.CATEGORY_CANON is P.CATEGORY_CANON)
+ok("fetcher and shared module share the same CATEGORY_CANON object",
+   _FR.CATEGORY_CANON is P.CATEGORY_CANON)
+ok("fetcher and shared module share the same non-equity token list",
+   _FR.NON_EQUITY_NAME_TOKENS is P.NON_EQUITY_NAME_TOKENS)
 
 
 # ------------------------------------------------------------------ category gate
@@ -244,18 +256,18 @@ def _stub_get_json(url, timeout, attempts=3):
             0.4, npts * 38, 200)
 
 
-_real_get_json, _real_argv = P.get_json, sys.argv
-P.get_json = _stub_get_json
+_real_get_json, _real_argv = PR.get_json, sys.argv
+PR.get_json = _stub_get_json
 sys.argv = ["probe_ranks.py", "--sample", "40", "--concurrency", "4"]
 _buf = _io.StringIO()
 try:
     with _ctx.redirect_stdout(_buf):
-        _rc = P.main()
+        _rc = PR.main()
     _crashed = None
 except Exception as exc:                      # noqa: BLE001 - we want ANY failure
     _rc, _crashed = None, f"{type(exc).__name__}: {exc}"
 finally:
-    P.get_json, sys.argv = _real_get_json, _real_argv
+    PR.get_json, sys.argv = _real_get_json, _real_argv
 
 ok("main() runs end to end without raising", _crashed is None)
 if _crashed:
