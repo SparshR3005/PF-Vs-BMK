@@ -1,0 +1,63 @@
+name: Probe mfapi universe
+
+# Manual only. This is a measurement run, not a scheduled job: it exists to size
+# the ranking fetcher before that fetcher is written. Delete this workflow once
+# the numbers are known and the real ranks job is in place.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "Schemes to sample in stage 2 (60 is plenty for a first look)"
+        required: false
+        default: "60"
+      concurrency:
+        description: "Parallel detail fetches (start at 6; lower it if you see 429s)"
+        required: false
+        default: "6"
+      full:
+        description: "Fetch EVERY candidate for exact per-category counts (slow)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+# Read-only on purpose. The probe writes nothing into data/ and commits nothing,
+# so it has no business holding a write token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ranks-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    # The sampled run finishes in ~1-2 min. --full can take far longer, which is
+    # itself the thing being measured, so leave real headroom.
+    timeout-minutes: 60
+    steps:
+      # Pinned to commit SHAs, matching tri-fetch.yml.
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+
+      # Gate: the probe's filters are a port of index.html's. If they have drifted,
+      # the universe measured is not the universe the UI can rank against, and the
+      # whole measurement is worthless. Fail before spending any mfapi requests.
+      - name: Drift guard (probe filters vs index.html)
+        run: python tests/test_probe_ranks.py
+
+      - name: Probe mfapi
+        run: |
+          FLAG=""
+          if [ "${{ github.event.inputs.full }}" = "true" ]; then FLAG="--full"; fi
+          python probe_ranks.py \
+            --sample "${{ github.event.inputs.sample }}" \
+            --concurrency "${{ github.event.inputs.concurrency }}" \
+            $FLAG
