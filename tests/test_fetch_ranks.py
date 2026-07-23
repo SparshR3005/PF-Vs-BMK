@@ -136,11 +136,39 @@ eq("ties share a rank", R.rank_desc([("a", 5.0), ("b", 5.0), ("c", 1.0)]),
 
 eq("rank 1 of 40 is the top quartile", R.quartile(1, 40), 1)
 eq("rank 40 of 40 is the bottom quartile", R.quartile(40, 40), 4)
-eq("rank 20 of 40 is the second quartile", R.quartile(20, 40), 2)
-eq("rank 21 of 40 is the third quartile", R.quartile(21, 40), 3)
+eq("rank 10 of 40 is still the top quartile", R.quartile(10, 40), 1)
+eq("rank 11 of 40 crosses into the second", R.quartile(11, 40), 2)
+eq("rank 30 of 40 is the third quartile", R.quartile(30, 40), 3)
 eq("quartile of an empty universe is None", R.quartile(1, 0), None)
 ok("quartiles always fall in 1..4 for every rank in a 37-fund universe",
    all(R.quartile(i, 37) in (1, 2, 3, 4) for i in range(1, 38)))
+
+# REGRESSION: the original ceil(rank/n*4) could never return 1 for n < 4. Live
+# CONTRA data published Kotak Contra as rank 1 of 3 and quartile 2; at n=1 the sole
+# fund in a category came out BOTTOM quartile. The top-ranked fund must always be
+# in the top quartile whenever a quartile is published at all.
+for _n in range(R.MIN_QUARTILE_UNIVERSE, 60):
+    if R.quartile(1, _n) != 1:
+        ok(f"rank 1 of {_n} must be top quartile", False)
+        break
+else:
+    ok("rank 1 is the top quartile at every publishable cohort size", True)
+for _n in range(R.MIN_QUARTILE_UNIVERSE, 60):
+    if R.quartile(_n, _n) != 4:
+        ok(f"rank {_n} of {_n} must be bottom quartile", False)
+        break
+else:
+    ok("the last rank is the bottom quartile at every publishable cohort size", True)
+ok("quartiles never decrease as rank worsens",
+   all(R.quartile(r, 40) <= R.quartile(r + 1, 40) for r in range(1, 40)))
+
+# A quartile over three funds is theatre; publish the bare rank instead.
+ok("quartiles are suppressed on a 3-fund cohort (real CONTRA case)",
+   R.quartile(1, 3) is None)
+ok("quartiles are suppressed just below the threshold",
+   R.quartile(1, R.MIN_QUARTILE_UNIVERSE - 1) is None)
+ok("quartiles appear exactly at the threshold",
+   R.quartile(1, R.MIN_QUARTILE_UNIVERSE) == 1)
 
 
 # ------------------------------------------------------------------ period table
@@ -228,6 +256,28 @@ ok("horizons increase monotonically",
 ok("SECTORAL is excluded from ranking", "SECTORAL" in R.UNRANKABLE_KEYS)
 ok("the plural Thematic variant now resolves (was rejected outright)",
    R.category_key("Equity Schemes - Thematic Fund") == "SECTORAL")
+
+# ------------------------------------------------- published-count integrity
+# Live output disagreed with itself: the CONTRA manifest claimed 8 funds while the
+# file held 3 Direct + 3 Regular, and LARGE_MID claimed 69 while holding 33 + 34.
+# The header counted parsed funds; the table drops funds too young for any horizon.
+_mixed = []
+for _i in range(6):
+    _mixed.append({"code": f"M{_i}", "name": f"Fund {_i}",
+                   "plan": "Direct" if _i % 2 == 0 else "Regular",
+                   "pts": to_pts(daily_rows(5))})
+for _i in range(2):                       # too young for even the 6-month horizon
+    _mixed.append({"code": f"Y{_i}", "name": f"Young {_i}",
+                   "plan": "Direct" if _i % 2 == 0 else "Regular",
+                   "pts": to_pts(daily_rows(0.1))})
+_tbl = R.compute_period_table(_mixed, AS_OF)
+_published = sum(len(p.get("funds") or {}) for p in _tbl.values())
+eq("funds with no eligible horizon are excluded from the table", _published, 6)
+ok("the excluded funds are the young ones",
+   all(not c.startswith("Y") for p in _tbl.values() for c in p["funds"]))
+ok("every published fund carries at least one absolute return",
+   all(f["abs"] for p in _tbl.values() for f in p["funds"].values()))
+
 
 # --------------------------------------------------- duplicate-list resilience
 # Reproduces the real incident: mfapi served /mf with every entry duplicated.
