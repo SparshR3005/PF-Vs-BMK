@@ -838,8 +838,30 @@ const CATEGORY_NAME_TOKENS = {
    the exact wrong-fund import this guards against.
    Order matters: the longest/most specific claim wins, so "large & mid cap"
    is not read as a "large cap" claim (nor as "mid cap"). */
+/* Compressed spellings ("Midcap", "Largecap", "Flexicap") are canonicalised to
+   the spaced form FIRST, because matchKey() already does exactly this and the two
+   must agree about the same string. They did not: matchKey("HDFC Midcap Fund")
+   and matchKey("HDFC Mid Cap Fund") both produce "hdfcmidcap", but this guard saw
+   only the raw name and returned null for the compressed one — i.e. the guard was
+   silently INERT for any sheet written as "Largecap"/"Midcap", which is exactly
+   the wrong-fund case it exists to block.
+
+   ORDER IS LOAD-BEARING: "largemidcap" must be rewritten before "largecap", or a
+   Large & Mid Cap name would be mangled into a LARGE_CAP claim and the guard would
+   fire on a correct fund. Same reason "midcap" is handled after the large&mid
+   forms. This mirrors the most-specific-first rule used by SECTOR_KEYWORDS. */
+function canonicaliseCapSpelling(n){
+  return String(n||"")
+    .replace(/largeandmidcap|large\s*&\s*midcap|largemidcap/g, "large & mid cap")
+    .replace(/\blargecap\b/g,  "large cap")
+    .replace(/\bmidcap\b/g,    "mid cap")
+    .replace(/\bsmallcap\b/g,  "small cap")
+    .replace(/\bflexicap\b/g,  "flexi cap")
+    .replace(/\bmulticap\b/g,  "multi cap")
+    .replace(/\s+/g," ").trim();
+}
 function claimedCategoryFromName(name){
-  const n = normName(stripRenameNote(name));
+  const n = canonicaliseCapSpelling(normName(stripRenameNote(name)));
   const order = ["LARGE_MID","DIV_YIELD","LARGE_CAP","MID_CAP","SMALL_CAP","MULTI_CAP","FLEXI_CAP","ELSS","CONTRA","FOCUSED","VALUE"];
   for(const key of order){
     if((CATEGORY_NAME_TOKENS[key]||[]).some(t=>n.includes(t))) return key;
@@ -1067,9 +1089,15 @@ async function loadSchemeList(){
       if(!s || !s.schemeName || !s.schemeCode) return;
       const n=String(s.schemeName).toLowerCase();
       const isGrowth=n.includes("growth");
-      const isIncome=n.includes("idcw") || n.includes("dividend") ||
-                     n.includes("payout") || n.includes("reinvest") ||
-                     n.includes("bonus");
+      // "dividend" alone used to be listed here and it silently deleted an entire
+      // SEBI equity category: "Dividend Yield" funds are GROWTH-option equity
+      // schemes whose name contains "dividend". They were dropped at ingest, so
+      // they never reached the picker and no DIV_YIELD ranking was ever published
+      // — with nothing erroring. Exclude the payout PLAN, keep the fund category.
+      // Mirrors mf_universe.name_looks_income_option(); tests assert parity.
+      const isIncome=n.includes("idcw") || n.includes("payout") ||
+                     n.includes("reinvest") || n.includes("bonus") ||
+                     /\bdividend\b(?!\s+yield)/.test(n);
       if(!isGrowth || isIncome) return;
       if(hasGrowthIsinField && !String(s.isinGrowth||"").trim()) return;
 
@@ -1240,7 +1268,11 @@ async function serverSearch(q){
   const norm = arr
     .map(s=>({schemeCode:s.schemeCode, schemeName:s.schemeName, lower:String(s.schemeName||"").toLowerCase(), isinGrowth:s.isinGrowth||""}))
     .filter(s=>s.schemeCode && s.schemeName)
-    .filter(s=>s.lower.includes("growth") && !/(idcw|dividend|payout|reinvest|bonus)/.test(s.lower))
+    // Same split as loadSchemeList(): drop the dividend PAYOUT plan, keep the
+    // "Dividend Yield" equity category. Both filters must stay in step.
+    .filter(s=>s.lower.includes("growth") &&
+               !/(idcw|payout|reinvest|bonus)/.test(s.lower) &&
+               !/\bdividend\b(?!\s+yield)/.test(s.lower))
     .filter(s=>!nameLooksNonEquity(s.lower))
     .filter(s=>{ const isDirect=s.lower.includes("direct"); return wantPlan==="Direct" ? isDirect : !isDirect; });
   box.innerHTML = "";
@@ -1404,15 +1436,23 @@ function normaliseFlows(flows){
 }
 
 function xirr(inputFlows){
+  // Days per year used to annualise. MUST match fetch_ranks.py's annualised(),
+  // which uses 365.25: the Insights tab prints a fund's SIP XIRR (computed here)
+  // directly beside its category period returns (computed there), so two different
+  // bases mean the two numbers never quite reconcile if a client checks them.
+  // 365.25 is the average Gregorian year, the standard CAGR convention.
+  // Declared INSIDE the function on purpose: the test harness extracts functions
+  // from index.html one at a time, so a bare outer const would not be in scope.
+  const DAYS_PER_YEAR = 365.25;
   const flows=normaliseFlows(inputFlows);
   if(flows.length<2 || !flows.some(f=>f.amount>0) || !flows.some(f=>f.amount<0)) return null;
   const d0=flows[0].date;
   const npv=r=>{
     if(r<=-1) return NaN;
-    return flows.reduce((s,f)=>s+f.amount/Math.pow(1+r,daysBetween(d0,f.date)/365),0);
+    return flows.reduce((s,f)=>s+f.amount/Math.pow(1+r,daysBetween(d0,f.date)/DAYS_PER_YEAR),0);
   };
   const dnpv=r=>flows.reduce((s,f)=>{
-    const t=daysBetween(d0,f.date)/365;
+    const t=daysBetween(d0,f.date)/DAYS_PER_YEAR;
     return t ? s-t*f.amount/Math.pow(1+r,t+1) : s;
   },0);
 
@@ -2168,6 +2208,12 @@ function stripRenameNote(s){
 }
 function matchKey(name){
   let n=normName(stripRenameNote(name)).replace(/flexicap/g,"flexi cap").replace(/midcap/g,"mid cap").replace(/smallcap/g,"small cap").replace(/multicap/g,"multi cap");
+  // "&" is stripped by the [^a-z0-9] pass below, but the word "and" survived it,
+  // so "Large & Mid Cap" keyed as ...largemidcap while "Large and Mid Cap" keyed
+  // as ...largeandmidcap. The two never exact-matched, dropping a correct name
+  // onto the FUZZY path — the same path that produced the v6 wrong-fund import.
+  // CATEGORY_CANON already accepts both spellings; the key must too.
+  n=n.replace(/\band\b/g," ");
   n=n.replace(/\b(gr|growth|option|plan|fund|direct|dir|regular|reg|the)\b/g," ").replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
   return n.replace(/\s/g,"");
 }
@@ -2968,6 +3014,11 @@ const HORIZON_LABELS = [["6m","6 Month"],["1y","1 Year"],["2y","2 Years"],
 /* Under this many eligible peers a "top 5" is noise dressed as a recommendation.
    CONTRA has 4 funds per plan; "top 5 of 4" would be absurd. Show rank only. */
 const MIN_TOP_UNIVERSE = 10;
+// Below this many ELIGIBLE peers, "rank N of M" over-claims: it reads as a standing
+// within the category when it is really a standing within whatever handful happened
+// to run the user's whole window. Mirrors MIN_QUARTILE_UNIVERSE in fetch_ranks.py,
+// which suppresses quartiles on the same reasoning.
+const MIN_RANK_UNIVERSE = 8;
 const TOP_N = 5;
 const LAG_THRESHOLD_PP = 3;
 const QUARTILE_WORD = {1:"Top quartile",2:"2nd quartile",3:"3rd quartile",4:"Bottom quartile"};
@@ -3095,7 +3146,14 @@ function rankCandidates(navDoc, dates, amount, valueDate, ownCode){
   const median = pool.length ? (pool.length%2 ? pool[mid].xirr
                                 : (pool[mid-1].xirr+pool[mid].xirr)/2) : null;
   const top = pool.filter(function(r){ return String(r.code)!==String(ownCode); }).slice(0,TOP_N);
-  return {top:top, universe:pool.length, ownRank:ownRank, ownXirr:ownXirr, median:median};
+  /* `universe` is the ELIGIBLE pool (funds that ran the whole window), which can be
+     far smaller than the category: the published grids hold funds with many
+     different inception dates (LARGE_CAP Direct: 33 funds across 14 distinct t0
+     values), so a 10-year window can leave only the oldest handful eligible.
+     Reporting "2 of 3" without saying so reads as the whole category. Return the
+     full cohort too, so the UI can disclose the shrinkage. */
+  return {top:top, universe:pool.length, cohort:rows.length,
+          ownRank:ownRank, ownXirr:ownXirr, median:median};
 }
 
 /* ---------------------------------------------------------------- rendering */
@@ -3267,11 +3325,26 @@ async function fillInsightDetail(pane, item, gen){
     const res = rankCandidates(navs, dates, item.amount, item.valueDate, item.code);
     const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
     html += '<div class="ins-sub">Your window — same SIP dates and amount, '+escapeHtml(item.plan)+" plan</div>";
+    /* Only funds that ran the ENTIRE window are eligible, so `universe` can be a
+       small fraction of the category over a long SIP. Below MIN_RANK_UNIVERSE a
+       rank is noise dressed as a verdict ("2 of 3"), so state the position without
+       implying it is a category standing — the same honesty rule fetch_ranks.py
+       applies to quartiles via MIN_QUARTILE_UNIVERSE. */
+    const thin = res.universe > 0 && res.universe < MIN_RANK_UNIVERSE;
+    const dropped = (res.cohort||0) - res.universe;
     html += '<div class="ins-note">'+
-      (res.ownRank ? "Your fund ranks <b>"+res.ownRank+" of "+res.universe+"</b> over this window."
-                   : "Your fund could not be ranked over this window (its history does not cover it).")+
+      (res.ownRank
+        ? (thin
+            ? "Only <b>"+res.universe+"</b> fund"+(res.universe===1?"":"s")+
+              " in this category ran your full window, so a category rank isn't "+
+              "meaningful here. Among those, your fund places "+res.ownRank+"."
+            : "Your fund ranks <b>"+res.ownRank+" of "+res.universe+"</b> over this window.")
+        : "Your fund could not be ranked over this window (its history does not cover it).")+
       (res.median!=null ? " Category median "+(res.median*100).toFixed(2)+"%"+
         (own!=null ? ", your fund "+(own*100).toFixed(2)+"%." : ".") : "")+
+      (dropped > 0 ? ' <span class="approx">'+dropped+" fund"+(dropped===1?"":"s")+
+        " in this category started after your SIP began and "+
+        (dropped===1?"was":"were")+" excluded, so the comparison is like-for-like.</span>" : "")+
       "</div>";
     const lagging = item.alphaPP!=null && item.alphaPP <= -LAG_THRESHOLD_PP;
     if(lagging) html += topListHtml(res, own);

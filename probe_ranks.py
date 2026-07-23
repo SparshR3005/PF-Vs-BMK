@@ -62,6 +62,7 @@ from mf_universe import (  # noqa: E402
     API,
     CATEGORY_CANON,
     INCOME_TOKENS,
+    name_looks_income_option,
     NON_EQUITY_NAME_TOKENS,
     UNRANKABLE_KEYS,
     category_key,
@@ -115,7 +116,7 @@ def stage1(timeout):
         if "growth" not in n:
             funnel["not_growth"] += 1
             continue
-        if any(t in n for t in INCOME_TOKENS):
+        if name_looks_income_option(n):
             funnel["income_option"] += 1
             continue
         if has_isin_field and not str(s.get("isinGrowth") or "").strip():

@@ -84,6 +84,25 @@ for tok in P.INCOME_TOKENS:
     ok(f"income token {tok!r} is also excluded by index.html",
        f'n.includes("{tok}")' in HTML)
 
+# "dividend" is NOT a blanket income token: it must exclude the dividend PAYOUT
+# plan while keeping the "Dividend Yield" equity CATEGORY. Regression guard for
+# the bug where the blanket token silently deleted DIV_YIELD from the universe --
+# no error, no ranking file, no funds in the picker.
+ok("'dividend' is not a blanket income token",
+   "dividend" not in P.INCOME_TOKENS)
+ok("index.html uses the same dividend-not-yield rule",
+   r"\bdividend\b(?!\s+yield)" in HTML)
+ok("a dividend PAYOUT plan is still excluded",
+   P.name_looks_income_option("abc equity fund - dividend - growth"))
+ok("an IDCW plan is still excluded",
+   P.name_looks_income_option("abc equity fund - idcw payout"))
+ok("a Dividend Yield FUND survives the income filter",
+   not P.name_looks_income_option(
+       "icici prudential dividend yield equity fund - direct plan - growth"))
+ok("DIV_YIELD is a rankable category, so it must reach the fetcher",
+   P.CATEGORY_CANON.get("equity scheme - dividend yield fund") == "DIV_YIELD"
+   and "DIV_YIELD" not in P.UNRANKABLE_KEYS)
+
 ok("index.html still gates on the Growth option",
    'const isGrowth=n.includes("growth")' in HTML)
 

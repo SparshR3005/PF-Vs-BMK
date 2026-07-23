@@ -267,6 +267,12 @@ def rows_to_doc(key: str, name: str, rows: list) -> dict:
 # against it, so we refuse it and keep the last-good file instead.
 MAX_DAILY_MOVE = 0.35
 
+# Absolute ceiling for a move across ANY gap, however long. The per-gap tolerance
+# scales as sqrt(gap) but is clamped here, so a long hole in the series can never
+# license an arbitrarily large jump. India's sharpest multi-session dislocations
+# (Mar-2020, Nov-2016) stayed well inside this, so exceeding it means bad data.
+MAX_GAP_MOVE = 0.60
+
 
 def validate_series(doc: dict):
     """Return an error string if the series looks corrupt, else ''."""
@@ -279,20 +285,31 @@ def validate_series(doc: dict):
     for iso, val in items:
         if val <= 0:
             return f"non-positive value {val} on {iso}"
+        cur = datetime.strptime(iso, "%Y-%m-%d").date()
         if prev_val is not None:
-            cur = datetime.strptime(iso, "%Y-%m-%d").date()
             gap = (cur - prev_date).days
-            # Only police consecutive trading days; long gaps (holidays, and the
-            # sparse early history of some indices) can legitimately move more.
-            if gap <= 4:
-                move = abs(val - prev_val) / prev_val
-                if move > MAX_DAILY_MOVE:
-                    return (f"implausible {move:.0%} move on {iso} "
-                            f"({prev_val:.2f} -> {val:.2f}); refusing to publish")
-            prev_date, prev_val = cur, val
-        else:
-            prev_date = datetime.strptime(iso, "%Y-%m-%d").date()
-            prev_val = val
+            # Longer gaps genuinely permit larger moves (a holiday week, or the
+            # sparse early history of some indices), so the tolerance SCALES with
+            # the gap -- but it is never switched off.
+            #
+            # It used to be `if gap <= 4:`, which left an unbounded hole: any
+            # corruption landing after a 5+ day gap was not checked at all. A 90%
+            # single-day crash following a 10-day gap validated clean and would have
+            # been published. That gap is reachable on an ordinary long weekend
+            # (Fri->Mon is 3 days; one extra holiday makes it 5).
+            #
+            # Random-walk scaling (sigma ~ sqrt(t)) with a hard ceiling: even the
+            # worst multi-day dislocations in Indian index history sit far below
+            # MAX_GAP_MOVE, so anything above it is a data error, not a market.
+            limit = MAX_DAILY_MOVE if gap <= 4 else min(
+                MAX_GAP_MOVE, MAX_DAILY_MOVE * math.sqrt(gap / 4.0)
+            )
+            move = abs(val - prev_val) / prev_val
+            if move > limit:
+                return (f"implausible {move:.0%} move over {gap}d on {iso} "
+                        f"({prev_val:.2f} -> {val:.2f}, limit {limit:.0%}); "
+                        f"refusing to publish")
+        prev_date, prev_val = cur, val
     return ""
 
 

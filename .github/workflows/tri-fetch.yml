@@ -47,6 +47,15 @@ jobs:
       - name: Run regression tests (gate)
         run: python tests/test_fetch_tri.py
 
+      # The JS suites guard the benchmark ROUTING that this data feeds: a fund
+      # routed to the wrong index produces a confidently wrong spread even when
+      # every TRI series is perfect. Cheap to run, and a red suite means the
+      # committed data would be interpreted incorrectly — so gate on it too.
+      - name: Matching / routing regression tests (gate)
+        run: |
+          node tests/test_matching.js
+          node tests/test_insights.js
+
       - name: Fetch TRI (headful under xvfb)
         run: xvfb-run -a python fetch_tri.py
 

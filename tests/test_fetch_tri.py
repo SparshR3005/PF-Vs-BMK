@@ -188,6 +188,72 @@ def test_fetch_index_survives_generic_browser_error():
         ft.time.sleep = orig_sleep
 
 
+# ---------------------------------------------------------------- gap-scaled move
+# validate_series() used to check the single-day move ONLY when the gap was <= 4
+# days, leaving every longer gap completely unpoliced. A corrupt value landing
+# after a holiday week therefore validated clean and would have been published,
+# silently rewriting every XIRR computed against that series. The tolerance now
+# scales with the gap but is never switched off.
+def _series(n=300, start_val=1000.0, drift=1.0005, start=None):
+    from datetime import date as _d, timedelta as _td
+    start = start or _d(2020, 1, 1)
+    out, cur = {}, start_val
+    for i in range(n):
+        out[(start + _td(days=i)).isoformat()] = cur
+        cur *= drift
+    return out
+
+
+def _append(series, days_after, factor):
+    from datetime import datetime as _dt, timedelta as _td
+    last = sorted(series)[-1]
+    last_d = _dt.strptime(last, "%Y-%m-%d").date()
+    out = dict(series)
+    out[(last_d + _td(days=days_after)).isoformat()] = series[last] * factor
+    return out
+
+
+def test_clean_series_validates():
+    assert ft.validate_series({"series": _series()}) == ""
+
+
+def test_rejects_crash_after_long_gap():
+    """The bug: a 90% collapse after a 10-day gap used to pass unchecked."""
+    doc = {"series": _append(_series(), 10, 0.10)}
+    problem = ft.validate_series(doc)
+    assert problem, "a 90% move over a 10-day gap must be refused"
+    assert "implausible" in problem
+
+
+def test_rejects_crash_just_past_the_old_four_day_cutoff():
+    """A 5-day gap sat one day outside the old check and was unbounded."""
+    doc = {"series": _append(_series(), 5, 0.60)}
+    assert ft.validate_series(doc), "a 40% move over 5 days must be refused"
+
+
+def test_allows_real_move_over_a_holiday_gap():
+    """Scaling must not become a blanket ban: 8% over 10 days is ordinary."""
+    doc = {"series": _append(_series(), 10, 0.92)}
+    assert ft.validate_series(doc) == ""
+
+
+def test_allows_worst_real_single_day_crash():
+    """2020's worst session was ~13%; it must still publish."""
+    doc = {"series": _append(_series(), 1, 0.87)}
+    assert ft.validate_series(doc) == ""
+
+
+def test_still_rejects_large_single_day_move():
+    doc = {"series": _append(_series(), 1, 0.64)}
+    assert ft.validate_series(doc), "a 36% single-day move must be refused"
+
+
+def test_gap_move_never_exceeds_absolute_ceiling():
+    """However long the gap, the tolerance is clamped by MAX_GAP_MOVE."""
+    doc = {"series": _append(_series(), 400, 0.05)}
+    assert ft.validate_series(doc), "a 95% move must be refused at any gap"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

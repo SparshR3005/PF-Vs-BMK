@@ -69,6 +69,7 @@ from mf_universe import (  # noqa: F401
     API,
     CATEGORY_CANON,
     INCOME_TOKENS,
+    name_looks_income_option,
     NON_EQUITY_NAME_TOKENS,
     UNRANKABLE_KEYS,
     category_key,
@@ -235,12 +236,31 @@ def annualised(abs_pct, days):
 
 
 def rank_desc(pairs):
-    """[(key, value)] -> {key: rank}, best value = rank 1. Ties share a rank."""
-    vals = sorted((v for _, v in pairs), reverse=True)
-    out = {}
-    for k, v in pairs:
-        out[k] = vals.index(v) + 1
-    return out
+    """[(key, value)] -> {key: rank}, best value = rank 1. Ties share a rank.
+
+    NaN-SAFE. The previous form used `vals.index(v)`, which compares with `==`,
+    and NaN != NaN. A single NaN therefore either raised ValueError or shifted
+    every rank below it: [1.0, NaN, 3.0] published {a:1, b:2, c:3} when c is
+    genuinely rank 1. Those ranks went out with no error and no warning.
+    period_return() can emit a non-finite value (e.g. inf/inf) if a bad NAV
+    survives parsing, so this is reachable from live data, not theoretical.
+
+    Non-finite entries are dropped rather than ranked: a fund whose return could
+    not be computed has no defensible position in the table, and omitting it
+    keeps the published denominator honest.
+
+    Also O(n) instead of O(n^2) -- index() rescanned the whole list per fund.
+    """
+    clean = [(k, v) for k, v in pairs
+             if isinstance(v, (int, float)) and math.isfinite(v)]
+    if not clean:
+        return {}
+    first_pos = {}
+    for i, v in enumerate(sorted((v for _, v in clean), reverse=True)):
+        # setdefault keeps the FIRST index for a repeated value, so ties share the
+        # better rank -- the same convention the old index() call produced.
+        first_pos.setdefault(v, i + 1)
+    return {k: first_pos[v] for k, v in clean}
 
 
 def quartile(rank, n):
@@ -298,9 +318,14 @@ def compute_period_table(funds, as_of):
             avg[label] = round(sum(vals) / len(vals), 2)
             med[label] = round(statistics.median(vals), 2)
             ranks = rank_desc(scored)
+            # Denominator must be the population actually RANKED, not len(scored).
+            # rank_desc drops non-finite returns, so those two can differ; using
+            # len(scored) would compute quartiles against a larger universe than
+            # the ranks were drawn from and shift funds into the wrong band.
+            ranked_n = len(ranks)
             for code, rk in ranks.items():
                 per_fund[code]["rank"][label] = rk
-                per_fund[code]["q"][label] = quartile(rk, len(scored))
+                per_fund[code]["q"][label] = quartile(rk, ranked_n)
         plans[plan] = {"universe": universe, "avg": avg, "median": med,
                        "funds": {c: v for c, v in per_fund.items() if v["abs"]}}
     return plans
@@ -435,7 +460,7 @@ def discover_universe(timeout, concurrency, log):
         n = str(s["schemeName"]).lower()
         if "growth" not in n:
             continue
-        if any(t in n for t in INCOME_TOKENS):
+        if name_looks_income_option(n):
             continue
         if has_isin and not str(s.get("isinGrowth") or "").strip():
             continue

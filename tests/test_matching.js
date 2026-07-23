@@ -72,6 +72,7 @@ try {
   extractFn("normCategory"),
   extractFn("categoryKey"),
   extractFn("isUnsupportedCategory"),
+  extractFn("canonicaliseCapSpelling"),
   extractFn("claimedCategoryFromName"),
   extractFn("resolveBenchmarkKey"),
   ].join("\n");
@@ -327,6 +328,49 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
   ok("import prefers the Portfolio sheet by name",
      /toLowerCase\(\)==="portfolio"/.test(HTML));
   ok("import offers candidates when it can't resolve", /needsPick/.test(HTML));
+})();
+
+/* ---------------------------------------------------------------- cap spelling
+   The category guard ran on the RAW name while matchKey() canonicalised
+   compressed spellings, so the two disagreed about the same string:
+   matchKey("HDFC Midcap Fund") === matchKey("HDFC Mid Cap Fund"), but
+   claimedCategoryFromName("HDFC Midcap Fund") returned null -- i.e. the
+   wrong-fund guard was INERT for any sheet written "Midcap"/"Largecap". */
+(function testCompressedCapSpelling(){
+  const claim = A.claimedCategoryFromName;
+  ok("GUARD: 'Largecap' claims LARGE_CAP", claim("ICICI Prudential Largecap Fund") === "LARGE_CAP");
+  ok("GUARD: 'Midcap' claims MID_CAP",     claim("HDFC Midcap Fund") === "MID_CAP");
+  ok("GUARD: 'Smallcap' claims SMALL_CAP", claim("SBI Smallcap Fund") === "SMALL_CAP");
+  ok("GUARD: 'Flexicap' claims FLEXI_CAP", claim("PPFAS Flexicap Fund") === "FLEXI_CAP");
+  ok("GUARD: 'Multicap' claims MULTI_CAP", claim("Nippon Multicap Fund") === "MULTI_CAP");
+
+  // Spaced forms must be unchanged.
+  ok("spaced 'Large Cap' still claims LARGE_CAP", claim("ICICI Prudential Large Cap Fund") === "LARGE_CAP");
+  ok("spaced 'Mid Cap' still claims MID_CAP",     claim("HDFC Mid Cap Fund") === "MID_CAP");
+
+  // ORDER TRAP: "largemidcap" must not be rewritten into a LARGE_CAP claim, or the
+  // guard would fire on a CORRECT Large & Mid Cap fund and refuse a valid holding.
+  ok("ORDER: 'Largemidcap' claims LARGE_MID, not LARGE_CAP",
+     claim("ICICI Prudential Largemidcap Fund") === "LARGE_MID");
+  ok("ORDER: 'Large & Midcap' claims LARGE_MID",
+     claim("Some Large & Midcap Fund") === "LARGE_MID");
+  ok("ORDER: 'Large and Mid Cap' claims LARGE_MID",
+     claim("ICICI Prudential Large and Mid Cap Fund") === "LARGE_MID");
+  ok("a name claiming nothing checkable still returns null",
+     claim("Some Random Equity Fund") === null);
+})();
+
+/* ---------------------------------------------------------------- and vs &
+   "&" was stripped by matchKey's [^a-z0-9] pass but the WORD "and" survived it,
+   so the two spellings keyed differently and a correct name fell to the FUZZY
+   path -- the same path that produced the v6 wrong-fund import. */
+(function testAndAmpersandParity(){
+  const a = A.matchKey("ICICI Prudential Large & Mid Cap Fund - Direct Plan - Growth");
+  const b = A.matchKey("ICICI Prudential Large and Mid Cap Fund - Direct Plan - Growth");
+  ok("'&' and 'and' produce the SAME match key", a === b);
+  ok("and that key is the compact form", a === "iciciprudentiallargemidcap");
+  ok("an unrelated name is still distinct",
+     A.matchKey("ICICI Prudential Large Cap Fund") !== a);
 })();
 
 console.log(`\n${fail ? "FAILED" : "ALL PASSED"} (${pass} passed, ${fail} failed)`);

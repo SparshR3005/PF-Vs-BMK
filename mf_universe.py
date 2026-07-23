@@ -34,7 +34,37 @@ NON_EQUITY_NAME_TOKENS = [
     "index fund", "exchange traded", "etf", "retirement", "children", "pension",
 ]
 
-INCOME_TOKENS = ["idcw", "dividend", "payout", "reinvest", "bonus"]
+# Income-OPTION tokens: these identify a dividend/IDCW *payout plan* of a scheme,
+# which must never enter the universe (its NAV is reduced by every payout, so an
+# XIRR against a TRI is meaningless).
+#
+# "dividend" is deliberately ABSENT from this list. It used to be here, and it
+# silently deleted an entire SEBI equity category: "Equity Scheme - Dividend
+# Yield Fund" is a growth-option EQUITY fund whose NAME contains "dividend".
+# CATEGORY_CANON maps it to DIV_YIELD and treats it as rankable, but no
+# DIV_YIELD file was ever published and those funds never appeared in the
+# picker -- with nothing erroring, because the fund was dropped at ingest.
+#
+# The distinction we actually want is "dividend" NOT followed by "yield", so the
+# payout plan is still excluded while the fund category survives. Kept as a
+# predicate (not a bare token) because a substring test cannot express it.
+INCOME_TOKENS = ["idcw", "payout", "reinvest", "bonus"]
+
+# "dividend" only counts as an income-option marker when it is NOT part of the
+# category phrase "dividend yield". Word-bounded so "dividends" in a longer
+# marketing string can't slip past.
+DIVIDEND_PLAN_RE = re.compile(r"\bdividend\b(?!\s+yield)")
+
+
+def name_looks_income_option(n):
+    """True when the scheme NAME marks an income/payout plan rather than growth.
+
+    Mirrors index.html's loadSchemeList() exactly. Any change here must be made
+    there too -- tests/test_probe_ranks.py fails on drift.
+    """
+    if any(t in n for t in INCOME_TOKENS):
+        return True
+    return bool(DIVIDEND_PLAN_RE.search(n))
 
 CATEGORY_CANON = {
     "equity scheme - large cap fund":         "LARGE_CAP",

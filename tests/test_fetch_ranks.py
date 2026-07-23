@@ -408,5 +408,36 @@ eq("duplicated codes are not fetched twice", len(dupe_calls), len(clean_calls))
 eq("no duplicate schemeCode survives discovery",
    len({c["code"] for c in dupes}), len(dupes))
 
+# ---------------------------------------------------------------- rank_desc NaN
+# rank_desc used vals.index(v), which compares with == -- and NaN != NaN. A single
+# non-finite return either raised ValueError or shifted every rank below it:
+# [1.0, NaN, 3.0] published c as rank 3 when it is genuinely rank 1, with no error.
+# period_return() can emit a non-finite value from bad upstream NAV, so this was
+# reachable from live data.
+eq("rank_desc orders best-first",
+   R.rank_desc([("a", 10.0), ("b", 5.0), ("c", 7.0)]), {"a": 1, "c": 2, "b": 3})
+eq("tied values share the better rank",
+   R.rank_desc([("a", 10.0), ("b", 10.0), ("c", 5.0)]), {"a": 1, "b": 1, "c": 3})
+
+_nan = R.rank_desc([("a", 1.0), ("b", float("nan")), ("c", 3.0)])
+ok("a NaN entry is dropped rather than ranked", "b" not in _nan)
+eq("the best finite value is rank 1 despite a NaN", _nan.get("c"), 1)
+eq("and the other fund keeps its true position", _nan.get("a"), 2)
+
+_inf = R.rank_desc([("a", 1.0), ("b", float("inf")), ("c", 3.0)])
+ok("an infinite value is dropped", "b" not in _inf)
+eq("finite ranks are unaffected by an infinity", _inf.get("c"), 1)
+
+eq("an all-NaN cohort ranks nothing", R.rank_desc([("a", float("nan"))]), {})
+eq("an empty cohort ranks nothing", R.rank_desc([]), {})
+
+# The quartile denominator must be the population actually RANKED. rank_desc can
+# drop funds, so len(scored) would over-count and shift bands.
+_scored = [("f%d" % i, float(i)) for i in range(12)] + [("bad", float("nan"))]
+_ranks = R.rank_desc(_scored)
+eq("ranked population excludes the non-finite fund", len(_ranks), 12)
+ok("quartiles computed on the ranked population stay in range",
+   all(R.quartile(rk, len(_ranks)) in (1, 2, 3, 4) for rk in _ranks.values()))
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
