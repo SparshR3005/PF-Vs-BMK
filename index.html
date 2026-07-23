@@ -1780,7 +1780,7 @@ function render(){
       // Retained error row: keep the holding visible with a Retry so a transient
       // failure never silently drops it from the portfolio (see hydrateActive).
       rows+=`<tr>
-        <td><div class="fund-name">${escapeHtml(s.name||s.inputName||('Code '+s.code))}</div>
+        <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name||s.inputName)||('Code '+s.code))}</div>
             <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''}</div>
             <div class="bmk-line" style="color:var(--danger);">⚠ Couldn't value: ${escapeHtml(s.error)}</div></td>
         <td class="num" colspan="6" style="color:var(--sub);">retained — value not available right now</td>
@@ -1791,7 +1791,7 @@ function render(){
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
     if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market benchmark':'category benchmark')+')</span></div>';}
     else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category benchmark · no overlapping data)</span></div>';}
-    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a. (XIRR spread)</div>';
+    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.</div>';
     // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
     let notes="";
     if(s.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+s.navStaleDays+' days ago ('+fmtDate(s.fundValueDate)+') — value may be stale/suspended</div>';
@@ -1799,7 +1799,7 @@ function render(){
     const gainCell='<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span><div class="sub2">'+pct(v.absR)+'</div>';
     const compCell=b?(anyShorter?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'<span>'+pct(v.bxCmp)+'</span>'):'—';
     rows+=`<tr>
-      <td><div class="fund-name">${escapeHtml(s.name)}</div>
+      <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name))}</div>
           ${bmkLine}${verdict}${notes}</td>
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
       <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
@@ -1816,7 +1816,7 @@ function render(){
       <td class="num">${port.anyBench?(anyShorter?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':pct(port.benchXirr)):'—'}</td>
       <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
   }
-  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR<br><span style="text-transform:none;font-weight:400;">full period</span></th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">XIRR spread</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR</th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">XIRR spread</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
   wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
     const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
@@ -2574,10 +2574,39 @@ $("exportBtn").addEventListener("click", ()=>{
 });
 
 /* ---- helpers for a cleaner export ---- */
-// Shorten a scheme name: drop plan words (already in Plan column) and
-// collapse "...Growth Option/Plan" to a trailing "Gr".
+// Title-case one word, preserving whitelisted acronyms and hyphen/slash parts.
+// NAME_ACRONYMS is declared further down with the insights helpers; both
+// call sites run only on user action, long after the script has evaluated.
+function titleCaseWord(w){
+  if(!w) return w;
+  // split on internal punctuation so "large-cap" and "a/b" both title-case
+  if(/[-/.]/.test(w) && w.length>1){
+    return w.split(/([-/.])/).map(p=> /[-/.]/.test(p)&&p.length===1 ? p : titleCaseWord(p)).join("");
+  }
+  const bare = w.replace(/[^A-Za-z0-9&]/g,"");
+  if(bare && NAME_ACRONYMS.has(bare.toUpperCase())) return w.toUpperCase();
+  // leave alphanumeric codes like "1099" or "50" alone
+  if(!/[A-Za-z]/.test(w)) return w;
+  // keep deliberate intercaps ("WhiteOak", "SmallCap") — an internal capital
+  // after a lower-case letter is a brand choice, not AMFI shouting
+  if(/[a-z][A-Z]/.test(w)) return w.charAt(0).toUpperCase() + w.slice(1);
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+}
+
+// Normalise casing across a whole scheme name.
+function titleCaseName(name){
+  return String(name||"").split(/\s+/).map(titleCaseWord).join(" ");
+}
+
+// Shorten a scheme name: drop plan/option words, collapse any "Growth"
+// wording to a trailing "Gr", and normalise inconsistent AMFI casing.
 function shortSchemeName(name){
   let n = String(name||"");
+  // drop parenthesised plan/option groups outright, e.g. "JM Midcap Fund (Direct)"
+  n = n.replace(/\(([^)]*)\)/g, function(m, inner){
+    const toks = String(inner).toLowerCase().split(/[\s-]+/).filter(Boolean);
+    return toks.length && toks.every(function(t){ return NAME_STOPWORDS.has(t); }) ? " " : m;
+  });
   // remove plan descriptors
   n = n.replace(/\b(direct|regular)\s+plan\b/gi, " ")
        .replace(/\b(direct|regular)\b/gi, " ")
@@ -2587,11 +2616,13 @@ function shortSchemeName(name){
   n = n.replace(/\bgrowth\s+option\b/gi, " ")
        .replace(/\bgrowth\b/gi, " ")
        .replace(/\boption\b/gi, " ");
-  // tidy separators and spaces
-  n = n.replace(/[-–—]\s*$/g,"").replace(/\s*[-–—]\s*/g," - ")
+  // tidy separators, empty brackets left by word removal, and spaces
+  n = n.replace(/\(\s*\)/g," ").replace(/\[\s*\]/g," ")
+       .replace(/[-–—]\s*$/g,"").replace(/\s*[-–—]\s*/g," - ")
        .replace(/\s{2,}/g," ").replace(/\s*-\s*$/,"").trim();
-  if(hadGrowth) n = n + " Gr";
-  return n;
+  n = titleCaseName(n);
+  if(hadGrowth) n = (n ? n + " Gr" : "Gr");
+  return n.trim();
 }
 
 // True only when the benchmark comparison starts after the SIP's full window.
@@ -2961,7 +2992,10 @@ async function loadRanksManifest(signal){
 const NAME_STOPWORDS = new Set(["direct","regular","plan","growth","option","opt",
                                 "payout","reinvestment","idcw","dividend"]);
 const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","DSP","PGIM",
-  "BNP","JM","IIFL","ITI","NJ","BOI","PPFAS","AMC","ELSS","LT","TATA","IDBI","BOB"]);
+  "BNP","JM","IIFL","ITI","NJ","BOI","PPFAS","AMC","ELSS","LT","TATA","IDBI","BOB",
+  // additional AMCs / vocabulary seen in live AMFI strings
+  "MF","TRUSTMF","WOC","NAV","TRI","SIP","XIRR","FOF","IDCW","ONE",
+  "US","UK","ESG","REIT","INVIT","PSU","FMCG","IT","NIFTY","BSE","NSE","CRISIL"]);
 
 /* AMFI names are registry strings, not labels. Live data includes reversed order
    ("...FUND - GROWTH - DIRECT PLAN"), parenthesised plans ("JM Midcap Fund
@@ -2986,13 +3020,9 @@ function normaliseFundName(raw){
   do{ prev = s; s = s.replace(/\s+(direct|regular|growth|plan|option)\s*$/i,""); }
   while(s !== prev);
   s = s.replace(/\s*-\s*$/,"").replace(/\s+/g," ").trim();
-  if(s && s === s.toUpperCase()){
-    s = s.split(" ").map(function(w){
-      const bare = w.replace(/[^A-Za-z0-9]/g,"").toUpperCase();
-      if(NAME_ACRONYMS.has(bare) || (bare.length<=3 && /^[A-Z]+$/.test(bare))) return w.toUpperCase();
-      return w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();
-    }).join(" ");
-  }
+  // Casing in AMFI strings is arbitrary ("GROWTH", "quant", "Kotak"), so
+  // normalise every name, not just the all-caps ones.
+  s = titleCaseName(s);
   return s;
 }
 
