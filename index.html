@@ -192,6 +192,64 @@
   .scroll-x{overflow-x:auto;}
   .mono{font-family:var(--mono);}
 
+
+  /* ---- Insights tab ---------------------------------------------------- */
+  .tabbar{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:0 0 14px;}
+  .tabbtn{appearance:none;background:none;border:none;border-bottom:2px solid transparent;
+    padding:9px 16px;font:inherit;font-size:.94rem;color:var(--muted);cursor:pointer;}
+  .tabbtn:hover{color:var(--ink);}
+  .tabbtn.active{color:var(--ink);font-weight:600;border-bottom-color:var(--accent);}
+  .tabbtn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+  .ins-head{display:flex;justify-content:space-between;align-items:baseline;
+    flex-wrap:wrap;gap:8px;margin-bottom:10px;}
+  .ins-window{font-size:.82rem;color:var(--muted);font-family:var(--mono);}
+  .ins-lede{font-size:.9rem;color:var(--ink);margin-bottom:12px;}
+  .ins-row{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden;}
+  .ins-row.lagging{border-left:3px solid var(--neg);}
+  .ins-summary{display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:center;
+    padding:11px 13px;cursor:pointer;background:none;border:none;width:100%;text-align:left;font:inherit;}
+  .ins-summary:hover{background:var(--hover,rgba(0,0,0,.02));}
+  .ins-summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+  .ins-fund{min-width:0;}
+  .ins-fund .nm{font-weight:600;font-size:.93rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .ins-fund .cat{font-size:.76rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
+  .ins-num{font-family:var(--mono);font-size:.9rem;text-align:right;white-space:nowrap;}
+  .ins-num .lbl{display:block;font-family:var(--sans,inherit);font-size:.68rem;
+    color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+  .ins-caret{color:var(--muted);font-size:.8rem;transition:transform .15s;}
+  .ins-row.open .ins-caret{transform:rotate(90deg);}
+  .ins-detail{padding:0 13px 14px;border-top:1px solid var(--line);}
+  .ins-sub{font-size:.78rem;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.05em;margin:14px 0 7px;}
+  table.ptable{width:100%;border-collapse:collapse;font-size:.86rem;}
+  table.ptable th{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--muted);font-weight:600;text-align:right;padding:4px 8px;border-bottom:1px solid var(--line);}
+  table.ptable th:first-child{text-align:left;}
+  table.ptable td{padding:5px 8px;text-align:right;font-family:var(--mono);
+    border-bottom:1px solid var(--line-faint,rgba(0,0,0,.05));}
+  table.ptable td:first-child{text-align:left;font-family:inherit;}
+  table.ptable tr.young td{color:var(--muted);font-style:italic;}
+  .qband{display:inline-block;font-size:.68rem;padding:1px 6px;border-radius:9px;
+    font-family:var(--sans,inherit);letter-spacing:.02em;}
+  .q1{background:rgba(22,120,60,.13);color:var(--pos);}
+  .q2{background:rgba(22,120,60,.07);color:var(--pos);}
+  .q3{background:rgba(170,40,40,.07);color:var(--neg);}
+  .q4{background:rgba(170,40,40,.13);color:var(--neg);}
+  ol.top5{list-style:none;margin:0;padding:0;}
+  ol.top5 li{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;
+    align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line-faint,rgba(0,0,0,.05));}
+  ol.top5 .pos{font-family:var(--mono);color:var(--muted);font-size:.8rem;}
+  ol.top5 .xr{font-family:var(--mono);font-size:.88rem;}
+  ol.top5 .gap{font-family:var(--mono);font-size:.8rem;color:var(--pos);}
+  .ins-note{font-size:.8rem;color:var(--muted);margin-top:9px;line-height:1.5;}
+  .ins-foot{font-size:.78rem;color:var(--muted);line-height:1.6;margin-top:18px;
+    padding-top:12px;border-top:1px solid var(--line);}
+  @media(max-width:760px){
+    .ins-summary{grid-template-columns:1fr auto auto;gap:8px;}
+    .ins-summary .hide-sm{display:none;}
+    table.ptable{font-size:.8rem;}
+    table.ptable .col-abs{display:none;}
+  }
   @media(max-width:760px){
     body{padding:24px 14px 56px;}
     h1{font-size:29px;}
@@ -311,6 +369,18 @@
     <div class="status" id="status"></div>
   </div>
 
+  <div class="tabbar" id="tabbar" role="tablist" aria-label="Views" style="display:none;">
+    <button class="tabbtn active" id="tabPortfolio" role="tab" aria-selected="true"
+            aria-controls="panePortfolio">Portfolio</button>
+    <button class="tabbtn" id="tabInsights" role="tab" aria-selected="false"
+            aria-controls="paneInsights">Insights</button>
+  </div>
+
+  <div id="paneInsights" role="tabpanel" aria-labelledby="tabInsights" style="display:none;">
+    <div class="card"><div id="insightsBody"><div class="empty">Loading…</div></div></div>
+  </div>
+
+  <div id="panePortfolio" role="tabpanel" aria-labelledby="tabPortfolio">
   <div class="card" id="summaryCard" style="display:none;">
     <div class="summary-grid" id="summaryGrid"></div>
   </div>
@@ -325,6 +395,7 @@
       <div class="empty">No schemes added yet.</div>
     </div>
     <div class="foot" id="foot" style="display:none;"></div>
+  </div>
   </div>
 </div>
 
@@ -1630,6 +1701,8 @@ function render(){
   if(!schemes.length){
     wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
+    $("tabbar").style.display="none";$("paneInsights").style.display="none";
+    $("panePortfolio").style.display="";
     $("updateNavBtn").style.display="none";
     checkTriFreshness();   // no holdings → no in-use benchmark → banner hides itself
     return;
@@ -1728,6 +1801,8 @@ function render(){
       if(commit({...s, error:(e&&e.message)||"Could not value this holding"})) render();
     }
   });
+  $("tabbar").style.display="flex";
+  if($("paneInsights").style.display!=="none") renderInsights();
   $("foot").style.display="block";
   $("foot").innerHTML="Benchmark = a category-matched Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends — a stand-in for the fund's officially disclosed benchmark, not necessarily the exact one. The <b>XIRR spread</b> is the fund's money-weighted XIRR minus the benchmark's over the same installments: a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
   // Re-scope the freshness banner to the benchmarks THIS portfolio actually uses.
@@ -2434,6 +2509,17 @@ function styleCell(v, o={}){
   return { v: (v==null?"":v), t: (typeof v==="number"?"n":"s"), s };
 }
 
+$("tabPortfolio").addEventListener("click", ()=>switchTab("portfolio"));
+$("tabInsights").addEventListener("click", ()=>switchTab("insights"));
+// Arrow-key navigation between tabs, per the tablist pattern.
+$("tabbar").addEventListener("keydown", e=>{
+  if(e.key!=="ArrowRight" && e.key!=="ArrowLeft") return;
+  e.preventDefault();
+  const toIns = document.activeElement===$("tabPortfolio");
+  switchTab(toIns?"insights":"portfolio");
+  $(toIns?"tabInsights":"tabPortfolio").focus();
+});
+
 $("exportBtn").addEventListener("click", ()=>{
   if(!schemes.length) return;
   if(!valuedSchemes().length){ toast("Nothing to export yet — no holdings could be valued.", {type:"warn"}); return; }
@@ -2772,6 +2858,355 @@ refreshPfSelect();
 hydrateActive();       // #8: value saved holdings by their stored code, independent of the /mf list
 loadSchemeList();      // enables search + name-based import; no longer gates hydration
 checkTriFreshness();   // warn if committed TRI data has gone stale
+
+/* ======================================================================
+   INSIGHTS TAB
+   Ranks each holding against its SEBI category cohort, using data published
+   nightly by fetch_ranks.py into data/ranks/.
+
+   Two different files, because they answer two different questions:
+     periods_<CAT>.json     point-to-point track record, precomputed server-side
+                            from FULL DAILY nav. Point-to-point returns rest on
+                            just two observations, so a coarse grid moves ranks by
+                            several places -- measured up to 12. Must not be
+                            recomputed here.
+     navs_<CAT>_<PLAN>.json a weekly NAV grid, used HERE to rank peers over the
+                            user's actual SIP window. Weekly is sufficient for a
+                            SIP (measured XIRR deviation 0.026 pp, zero rank
+                            changes) because ~100 installments average the error
+                            out. It is NOT sufficient for point-to-point, which is
+                            why that half is precomputed instead.
+
+   Ranking is always within plan: pitting a Regular holding against Direct peers
+   measures a fee gap, not skill.
+   ====================================================================== */
+const RANKS_DIR = "data/ranks";
+const HORIZON_LABELS = [["6m","6 Month"],["1y","1 Year"],["2y","2 Years"],
+                        ["3y","3 Years"],["5y","5 Years"],["7y","7 Years"],["10y","10 Years"]];
+/* Under this many eligible peers a "top 5" is noise dressed as a recommendation.
+   CONTRA has 4 funds per plan; "top 5 of 4" would be absurd. Show rank only. */
+const MIN_TOP_UNIVERSE = 10;
+const TOP_N = 5;
+const LAG_THRESHOLD_PP = 3;
+const QUARTILE_WORD = {1:"Top quartile",2:"2nd quartile",3:"3rd quartile",4:"Bottom quartile"};
+
+let ranksManifest = null;
+const ranksCache = Object.create(null);
+let insightsGen = 0;
+
+/* Live data changes daily -- both the as-of date and the ranks -- so these must
+   never be cached by the browser. A stale ranks file is worse than a missing one
+   because it still looks authoritative. */
+async function loadRanksJson(name, signal){
+  if(ranksCache[name] !== undefined) return ranksCache[name];
+  try{
+    const res = await fetch(RANKS_DIR+"/"+name+"?v="+Date.now(), {cache:"no-store", signal});
+    if(!res.ok){ ranksCache[name] = null; return null; }
+    const doc = await res.json();
+    ranksCache[name] = doc;
+    return doc;
+  }catch(e){
+    if(e && e.name === "AbortError") throw e;
+    ranksCache[name] = null;
+    return null;
+  }
+}
+
+async function loadRanksManifest(signal){
+  if(ranksManifest !== null) return ranksManifest;
+  ranksManifest = await loadRanksJson("index.json", signal);
+  return ranksManifest;
+}
+
+/* ---------------------------------------------------------------- name display */
+const NAME_STOPWORDS = new Set(["direct","regular","plan","growth","option","opt",
+                                "payout","reinvestment","idcw","dividend"]);
+const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","DSP","PGIM",
+  "BNP","JM","IIFL","ITI","NJ","BOI","PPFAS","AMC","ELSS","LT","TATA","IDBI","BOB"]);
+
+/* AMFI names are registry strings, not labels. Live data includes reversed order
+   ("...FUND - GROWTH - DIRECT PLAN"), parenthesised plans ("JM Midcap Fund
+   (Direct)"), en dashes, missing spaces and shouting caps. The trap: "Nippon
+   India GROWTH Mid Cap Fund" has "Growth" in its real name, so stripping the word
+   wholesale corrupts it -- drop a segment only when EVERY token is boilerplate. */
+function normaliseFundName(raw){
+  let s = String(raw||"").trim();
+  if(!s) return "";
+  s = s.replace(/[\u2010-\u2015\u2212]/g,"-").replace(/\s+/g," ");
+  s = s.replace(/\(([^)]*)\)/g, function(m, inner){
+    const toks = inner.toLowerCase().split(/[\s-]+/).filter(Boolean);
+    return toks.length && toks.every(function(t){return NAME_STOPWORDS.has(t);}) ? "" : m;
+  });
+  s = s.replace(/\s*-\s*/g," - ").replace(/\s+/g," ");
+  s = s.split(" - ").map(function(x){return x.trim();}).filter(function(part){
+    if(!part) return false;
+    const toks = part.toLowerCase().split(/\s+/).filter(Boolean);
+    return !toks.every(function(t){return NAME_STOPWORDS.has(t);});
+  }).join(" - ");
+  let prev;
+  do{ prev = s; s = s.replace(/\s+(direct|regular|growth|plan|option)\s*$/i,""); }
+  while(s !== prev);
+  s = s.replace(/\s*-\s*$/,"").replace(/\s+/g," ").trim();
+  if(s && s === s.toUpperCase()){
+    s = s.split(" ").map(function(w){
+      const bare = w.replace(/[^A-Za-z0-9]/g,"").toUpperCase();
+      if(NAME_ACRONYMS.has(bare) || (bare.length<=3 && /^[A-Z]+$/.test(bare))) return w.toUpperCase();
+      return w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();
+    }).join(" ");
+  }
+  return s;
+}
+
+/* ---------------------------------------------------------------- ranking */
+/* Offsets are real trading days, never synthesised boundaries: runSIP() matches an
+   installment to a NAV date, so a fabricated date would shift the cash flow. */
+function gridToNavArr(entry){
+  const t0 = new Date(entry.t0+"T00:00:00");
+  const out = new Array(entry.d.length);
+  for(let i=0;i<entry.d.length;i++){
+    const d = new Date(t0.getTime());
+    d.setDate(d.getDate()+entry.d[i]);
+    out[i] = {date:d, nav:entry.v[i]};
+  }
+  return out;
+}
+
+/* Every peer is run through the SAME runSIP() as the portfolio, with the SAME
+   schedule array, rupee amount and valuation date. Only the NAV series differs.
+   XIRR is invariant to a constant SIP amount, so this depends purely on the dates
+   -- but day-of-month still shifts ranks on short windows (measured mean 0.80
+   places at 1.5 years), which is why it is computed here from the user's real
+   dates rather than precomputed per month on the server. */
+function rankCandidates(navDoc, dates, amount, valueDate, ownCode){
+  /* Fail loudly on a malformed document. Silently returning an empty ranking here
+     reads downstream as "no peers qualified", which is a legitimate outcome -- so a
+     shape error would masquerade as a real finding and never get noticed. */
+  if(!navDoc || !navDoc.funds || typeof navDoc.funds !== "object"){
+    return {top:[], universe:0, ownRank:null, ownXirr:null, median:null, malformed:true};
+  }
+  const scheduled = dates.length;
+  const rows = [];
+  for(const code in navDoc.funds){
+    const entry = navDoc.funds[code];
+    let r = null;
+    try{ r = runSIP(gridToNavArr(entry), dates, amount, valueDate); }catch(e){ r = null; }
+    if(!r || !isFinite(r.xirr)) continue;
+    rows.push({code:code, name:entry.n, xirr:r.xirr, placed:r.placed,
+               skipped:r.skipped ? r.skipped.length : 0});
+  }
+  if(!rows.length) return {top:[], universe:0, ownRank:null, ownXirr:null, median:null};
+
+  /* Without full-window eligibility a fund that launched mid-window posts a
+     flattering short number and outranks funds that ran the whole period --
+     measured: 4 of the top 5 became funds with 55 of 101 installments. */
+  const maxPlaced = Math.max.apply(null, rows.map(function(r){return r.placed;}));
+  let pool = rows.filter(function(r){
+    return r.skipped===0 && r.placed===maxPlaced && r.placed===scheduled;
+  });
+  if(!pool.length) pool = rows.filter(function(r){ return r.skipped===0 && r.placed===maxPlaced; });
+  pool.sort(function(a,b){ return b.xirr-a.xirr; });
+
+  let ownRank = null, ownXirr = null;
+  for(let i=0;i<pool.length;i++){
+    if(String(pool[i].code)===String(ownCode)){ ownRank=i+1; ownXirr=pool[i].xirr; break; }
+  }
+  const mid = Math.floor(pool.length/2);
+  const median = pool.length ? (pool.length%2 ? pool[mid].xirr
+                                : (pool[mid-1].xirr+pool[mid].xirr)/2) : null;
+  const top = pool.filter(function(r){ return String(r.code)!==String(ownCode); }).slice(0,TOP_N);
+  return {top:top, universe:pool.length, ownRank:ownRank, ownXirr:ownXirr, median:median};
+}
+
+/* ---------------------------------------------------------------- rendering */
+function qBadge(q){
+  if(!q) return "";
+  return '<span class="qband q'+q+'">'+QUARTILE_WORD[q]+"</span>";
+}
+function signedPP(x){
+  if(x===null||x===undefined||!isFinite(x)) return "—";
+  return (x>=0?"+":"−")+Math.abs(x).toFixed(2)+" pp";
+}
+
+function periodTableHtml(periodsDoc, plan, code){
+  const p = periodsDoc && periodsDoc.plans && periodsDoc.plans[plan];
+  if(!p) return '<div class="ins-note">No track record published for this category yet.</div>';
+  const f = p.funds && p.funds[String(code)];
+  if(!f) return '<div class="ins-note">This fund is not yet in the published category table — '+
+                'usually because it is under six months old.</div>';
+  let rows = "";
+  for(const pair of HORIZON_LABELS){
+    const k = pair[0], label = pair[1];
+    const abs = f.abs ? f.abs[k] : undefined;
+    if(abs===undefined){
+      rows += '<tr class="young"><td>'+label+'</td><td class="col-abs">—</td><td>—</td><td>—</td>'+
+              '<td colspan="2">not enough history</td></tr>';
+      continue;
+    }
+    const ann = (f.ann && f.ann[k]!==undefined) ? f.ann[k].toFixed(2)+"%" : "—";
+    const avg = (p.avg && p.avg[k]!==undefined) ? p.avg[k].toFixed(2)+"%" : "—";
+    const rk  = (f.rank && f.rank[k]!==undefined) ? f.rank[k] : null;
+    const uni = (p.universe && p.universe[k]) || 0;
+    const q   = (f.q && f.q[k]) || null;
+    rows += "<tr><td>"+label+'</td><td class="col-abs">'+abs.toFixed(2)+"%</td><td>"+ann+
+            "</td><td>"+avg+"</td><td>"+(rk?rk+" of "+uni:"—")+"</td><td>"+qBadge(q)+"</td></tr>";
+  }
+  return '<table class="ptable"><thead><tr><th>Period</th><th class="col-abs">Return</th>'+
+         "<th>Annualised</th><th>Category avg</th><th>Rank</th><th></th></tr></thead>"+
+         "<tbody>"+rows+"</tbody></table>";
+}
+
+function topListHtml(res, ownXirr){
+  if(!res.universe) return '<div class="ins-note">No comparable peers with a full history over this window.</div>';
+  if(res.universe < MIN_TOP_UNIVERSE){
+    return '<div class="ins-note">Only '+res.universe+" fund"+(res.universe===1?"":"s")+
+           " in this category ran the full window, so a top-five list would be noise. "+
+           "Your rank above is the meaningful figure.</div>";
+  }
+  if(!res.top.length) return '<div class="ins-note">No peer outperformed over this window.</div>';
+  let li = "";
+  res.top.forEach(function(r,i){
+    const gap = (ownXirr!=null) ? signedPP((r.xirr-ownXirr)*100) : "";
+    li += '<li><span class="pos">'+(i+1)+'</span><span class="nm">'+escapeHtml(normaliseFundName(r.name))+
+          '</span><span class="xr">'+(r.xirr*100).toFixed(2)+'%</span><span class="gap">'+gap+"</span></li>";
+  });
+  return '<ol class="top5">'+li+"</ol>";
+}
+
+function insightsRowHtml(item, idx){
+  const lag = item.alphaPP!=null && item.alphaPP <= -LAG_THRESHOLD_PP;
+  return '<div class="ins-row'+(lag?" lagging":"")+'" data-idx="'+idx+'">'+
+    '<button class="ins-summary" type="button" aria-expanded="false">'+
+      '<span class="ins-fund"><span class="nm">'+escapeHtml(normaliseFundName(item.name))+"</span>"+
+        '<span class="cat">'+escapeHtml(item.catLabel)+" · "+escapeHtml(item.plan)+"</span></span>"+
+      '<span class="ins-num hide-sm">'+(item.xirr!=null?(item.xirr*100).toFixed(2)+"%":"—")+
+        '<span class="lbl">Your XIRR</span></span>'+
+      '<span class="ins-num">'+(item.alphaPP!=null?signedPP(item.alphaPP):"—")+
+        '<span class="lbl">vs benchmark</span></span>'+
+      '<span class="ins-caret">▶</span>'+
+    "</button>"+
+    '<div class="ins-detail" hidden></div></div>';
+}
+
+function insightsItems(){
+  const out = [];
+  for(const s of schemes){
+    if(!s || s.error || !s.fund) continue;
+    const v = schemeView(s);
+    out.push({
+      code:s.code, name:s.name||("Code "+s.code), plan:s.plan||detectPlanFromName(s.name)||"Regular",
+      cat:categoryKey(s.category), catLabel:(s.category||"Uncategorised").replace(/^equity schemes?\s*-\s*/i,""),
+      xirr:v.fxFull, alphaPP:(v.alpha!=null? v.alpha*100 : null),
+      start:s.start, end:s.end, amount:s.amount, valueDate:s.fundValueDate
+    });
+  }
+  out.sort(function(a,b){
+    const A = a.alphaPP==null?1e9:a.alphaPP, B = b.alphaPP==null?1e9:b.alphaPP;
+    return A-B;
+  });
+  return out;
+}
+
+async function renderInsights(){
+  const host = $("insightsBody");
+  if(!host) return;
+  const gen = ++insightsGen;
+  const items = insightsItems();
+  if(!items.length){
+    host.innerHTML = '<div class="empty">Add a scheme to see how it ranks against its category.</div>';
+    return;
+  }
+  const lagging = items.filter(function(i){ return i.alphaPP!=null && i.alphaPP <= -LAG_THRESHOLD_PP; });
+  const asOf = items[0].valueDate ? fmtDate(items[0].valueDate) : "";
+  host.innerHTML =
+    '<div class="ins-head"><div><strong>Category standing</strong></div>'+
+    '<div class="ins-window">valued '+escapeHtml(asOf)+"</div></div>"+
+    '<div class="ins-lede">'+lagging.length+" of "+items.length+" holding"+(items.length===1?"":"s")+
+    " lag their benchmark by more than "+LAG_THRESHOLD_PP+" pp."+
+    "</div>"+
+    items.map(insightsRowHtml).join("")+
+    '<div class="ins-foot">Track-record figures are lumpsum point-to-point returns for the fund itself, '+
+    "published nightly; your XIRR above is money-weighted over your own instalments, so the two "+
+    "will not agree. Peers are ranked over <b>your</b> SIP dates and amount, within your plan "+
+    "(Direct vs Direct). Ranking uses realised return only and ignores risk — a fund can reach the "+
+    "top by taking considerably more of it. Past performance does not predict future returns, and "+
+    "merged or closed funds are absent, so surviving cohorts flatter.</div>";
+
+  host.querySelectorAll(".ins-row").forEach(function(row){
+    const btn = row.querySelector(".ins-summary");
+    btn.addEventListener("click", function(){
+      const open = row.classList.contains("open");
+      host.querySelectorAll(".ins-row.open").forEach(function(r){
+        r.classList.remove("open");
+        r.querySelector(".ins-detail").hidden = true;
+        r.querySelector(".ins-summary").setAttribute("aria-expanded","false");
+      });
+      if(!open){
+        row.classList.add("open");
+        btn.setAttribute("aria-expanded","true");
+        const pane = row.querySelector(".ins-detail");
+        pane.hidden = false;
+        fillInsightDetail(pane, items[Number(row.dataset.idx)], gen);
+      }
+    });
+  });
+}
+
+async function fillInsightDetail(pane, item, gen){
+  pane.innerHTML = '<div class="ins-note">Loading category data…</div>';
+  if(!item.cat){
+    pane.innerHTML = '<div class="ins-note">This fund has no recognised SEBI equity category, so it cannot be ranked.</div>';
+    return;
+  }
+  const man = await loadRanksManifest();
+  if(gen !== insightsGen) return;
+  const catInfo = man && man.categories && man.categories[item.cat];
+  if(!catInfo){
+    pane.innerHTML = '<div class="ins-note">No ranking data is published for '+escapeHtml(item.cat)+
+      ". Sector and thematic funds are deliberately excluded: the category field does not say <i>which</i> "+
+      "sector, so ranking would compare an IT fund against a pharma fund.</div>";
+    return;
+  }
+  const periods = await loadRanksJson("periods_"+item.cat+".json");
+  const navs = await loadRanksJson("navs_"+item.cat+"_"+item.plan+".json");
+  if(gen !== insightsGen) return;
+
+  let html = '<div class="ins-sub">Track record — lumpsum, point-to-point, as of '+
+             escapeHtml(catInfo.as_of||"")+"</div>"+periodTableHtml(periods, item.plan, item.code);
+
+  if(navs && item.start && item.amount && item.valueDate){
+    const dates = scheduleDates(item.start, item.end||item.valueDate);
+    const res = rankCandidates(navs, dates, item.amount, item.valueDate, item.code);
+    const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
+    html += '<div class="ins-sub">Your window — same SIP dates and amount, '+escapeHtml(item.plan)+" plan</div>";
+    html += '<div class="ins-note">'+
+      (res.ownRank ? "Your fund ranks <b>"+res.ownRank+" of "+res.universe+"</b> over this window."
+                   : "Your fund could not be ranked over this window (its history does not cover it).")+
+      (res.median!=null ? " Category median "+(res.median*100).toFixed(2)+"%"+
+        (own!=null ? ", your fund "+(own*100).toFixed(2)+"%." : ".") : "")+
+      "</div>";
+    const lagging = item.alphaPP!=null && item.alphaPP <= -LAG_THRESHOLD_PP;
+    if(lagging) html += topListHtml(res, own);
+    else html += '<div class="ins-note">Within '+LAG_THRESHOLD_PP+
+      " pp of its benchmark, so no alternatives are listed.</div>";
+  }
+  if(catInfo.status === "stale"){
+    html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s data failed its last publish check '+
+            "and may be out of date.</div>";
+  }
+  pane.innerHTML = html;
+}
+
+function switchTab(which){
+  const isIns = which === "insights";
+  $("tabPortfolio").classList.toggle("active", !isIns);
+  $("tabInsights").classList.toggle("active", isIns);
+  $("tabPortfolio").setAttribute("aria-selected", String(!isIns));
+  $("tabInsights").setAttribute("aria-selected", String(isIns));
+  $("panePortfolio").style.display = isIns ? "none" : "";
+  $("paneInsights").style.display = isIns ? "" : "none";
+  if(isIns) renderInsights();
+}
+
 </script>
 </body>
 </html>
