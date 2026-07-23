@@ -211,5 +211,71 @@ eq("the seeded sample is reproducible across runs",
    _random.Random(20260723).sample(population, 10))
 
 
+# ------------------------------------------------------- end-to-end smoke test
+# A real 20-minute --full run once completed every stage, printed every number we
+# needed, and THEN died assembling the final JSON: stage2's return key had been
+# renamed from "unsupported" to "rejected_raw" and main() still read the old name.
+# Unit tests on the pieces all passed, because nothing exercised main() end to end.
+# This does. It stubs the network and drives the whole program, so any key that
+# main() reads but stage2/stage3 no longer return fails here in a second rather
+# than at the end of a long Actions run.
+import io as _io            # noqa: E402
+import json as _json        # noqa: E402
+import contextlib as _ctx   # noqa: E402
+
+_CATS = ["Equity Scheme - Large Cap Fund", "Equity Scheme - Mid Cap Fund",
+         "Equity Scheme - Sectoral/ Thematic", "Equity Scheme - Contra Fund",
+         "1099 Days", "Income", ""]
+
+
+def _stub_get_json(url, timeout, attempts=3):
+    if url.endswith("/mf"):
+        return ([{"schemeCode": 100000 + i,
+                  "schemeName": f"AMC{i%7} Fund - {'Direct' if i%2 else 'Regular'} Plan - Growth",
+                  "isinGrowth": f"INF{i}"} for i in range(120)], 0.3, 4096, 200)
+    if url.endswith("/latest"):
+        return ({"meta": {"scheme_category": _CATS[0]},
+                 "data": [{"date": "22-07-2026", "nav": "101.5"}]}, 0.2, 420, 200)
+    code = int(url.rsplit("/", 1)[-1])
+    npts = 250 * (1 + code % 9)
+    data = [{"date": f"{1+(d%28):02d}-{1+(d//28)%12:02d}-{2026-int(d/250)}", "nav": "100"}
+            for d in range(npts)]
+    return ({"meta": {"scheme_category": _CATS[code % len(_CATS)]}, "data": data},
+            0.4, npts * 38, 200)
+
+
+_real_get_json, _real_argv = P.get_json, sys.argv
+P.get_json = _stub_get_json
+sys.argv = ["probe_ranks.py", "--sample", "40", "--concurrency", "4"]
+_buf = _io.StringIO()
+try:
+    with _ctx.redirect_stdout(_buf):
+        _rc = P.main()
+    _crashed = None
+except Exception as exc:                      # noqa: BLE001 - we want ANY failure
+    _rc, _crashed = None, f"{type(exc).__name__}: {exc}"
+finally:
+    P.get_json, sys.argv = _real_get_json, _real_argv
+
+ok("main() runs end to end without raising", _crashed is None)
+if _crashed:
+    print(f"          raised {_crashed}")
+ok("main() returns success on a healthy run", _rc == 0)
+
+_out = _buf.getvalue()
+ok("main() emits the copy-back banner", "COPY THE BLOCK BELOW" in _out)
+_blob = _out.rsplit("=" * 72, 1)[-1].strip() if "=" * 72 in _out else ""
+try:
+    _report = _json.loads(_blob)
+    _valid = True
+except Exception:                              # noqa: BLE001
+    _report, _valid = {}, False
+ok("the emitted report block is valid JSON", _valid)
+for _k in ("candidates", "category_distribution", "history_depth", "latest_endpoint",
+           "observed_rate_per_s", "plan_split", "rejected_category",
+           "rejected_category_strings", "est_rankable_funds"):
+    ok(f"report contains {_k!r}", _k in _report)
+
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
