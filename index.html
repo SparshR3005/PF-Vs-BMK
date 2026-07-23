@@ -197,24 +197,24 @@
   .tabbar{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:0 0 14px;}
   .tabbtn{appearance:none;background:none;border:none;border-bottom:2px solid transparent;
     padding:9px 16px;font:inherit;font-size:.94rem;color:var(--muted);cursor:pointer;}
-  .tabbtn:hover{color:var(--ink);}
-  .tabbtn.active{color:var(--ink);font-weight:600;border-bottom-color:var(--accent);}
+  .tabbtn:hover{color:var(--text);}
+  .tabbtn.active{color:var(--text);font-weight:600;border-bottom-color:var(--accent);}
   .tabbtn:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
   .ins-head{display:flex;justify-content:space-between;align-items:baseline;
     flex-wrap:wrap;gap:8px;margin-bottom:10px;}
   .ins-window{font-size:.82rem;color:var(--muted);font-family:var(--mono);}
-  .ins-lede{font-size:.9rem;color:var(--ink);margin-bottom:12px;}
-  .ins-row{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden;}
-  .ins-row.lagging{border-left:3px solid var(--neg);}
-  .ins-summary{display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:center;
+  .ins-lede{font-size:.9rem;color:var(--text);margin-bottom:12px;}
+  .ins-row{border:1px solid var(--line);background:var(--surface);border-radius:8px;margin-bottom:8px;overflow:hidden;}
+  .ins-row.lagging{border-left:3px solid var(--lag);}
+  .ins-summary{color:inherit;display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:center;
     padding:11px 13px;cursor:pointer;background:none;border:none;width:100%;text-align:left;font:inherit;}
-  .ins-summary:hover{background:var(--hover,rgba(0,0,0,.02));}
+  .ins-summary:hover{background:rgba(255,255,255,.035);}
   .ins-summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
   .ins-fund{min-width:0;}
-  .ins-fund .nm{font-weight:600;font-size:.93rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .ins-fund .nm{font-weight:600;font-size:.93rem;color:var(--text);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .ins-fund .cat{font-size:.76rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
   .ins-num{font-family:var(--mono);font-size:.9rem;text-align:right;white-space:nowrap;}
-  .ins-num .lbl{display:block;font-family:var(--sans,inherit);font-size:.68rem;
+  .ins-num .lbl{display:block;font-family:var(--sans);font-size:.68rem;
     color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
   .ins-caret{color:var(--muted);font-size:.8rem;transition:transform .15s;}
   .ins-row.open .ins-caret{transform:rotate(90deg);}
@@ -226,21 +226,21 @@
     color:var(--muted);font-weight:600;text-align:right;padding:4px 8px;border-bottom:1px solid var(--line);}
   table.ptable th:first-child{text-align:left;}
   table.ptable td{padding:5px 8px;text-align:right;font-family:var(--mono);
-    border-bottom:1px solid var(--line-faint,rgba(0,0,0,.05));}
+    border-bottom:1px solid var(--line);}
   table.ptable td:first-child{text-align:left;font-family:inherit;}
   table.ptable tr.young td{color:var(--muted);font-style:italic;}
   .qband{display:inline-block;font-size:.68rem;padding:1px 6px;border-radius:9px;
-    font-family:var(--sans,inherit);letter-spacing:.02em;}
-  .q1{background:rgba(22,120,60,.13);color:var(--pos);}
-  .q2{background:rgba(22,120,60,.07);color:var(--pos);}
-  .q3{background:rgba(170,40,40,.07);color:var(--neg);}
-  .q4{background:rgba(170,40,40,.13);color:var(--neg);}
+    font-family:var(--sans);letter-spacing:.02em;}
+  .q1{background:rgba(92,194,144,.18);color:var(--beat);}
+  .q2{background:rgba(92,194,144,.10);color:var(--beat);}
+  .q3{background:rgba(232,139,128,.10);color:var(--lag);}
+  .q4{background:rgba(232,139,128,.18);color:var(--lag);}
   ol.top5{list-style:none;margin:0;padding:0;}
   ol.top5 li{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;
-    align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line-faint,rgba(0,0,0,.05));}
+    align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line);}
   ol.top5 .pos{font-family:var(--mono);color:var(--muted);font-size:.8rem;}
   ol.top5 .xr{font-family:var(--mono);font-size:.88rem;}
-  ol.top5 .gap{font-family:var(--mono);font-size:.8rem;color:var(--pos);}
+  ol.top5 .gap{font-family:var(--mono);font-size:.8rem;color:var(--beat);}
   .ins-note{font-size:.8rem;color:var(--muted);margin-top:9px;line-height:1.5;}
   .ins-foot{font-size:.78rem;color:var(--muted);line-height:1.6;margin-top:18px;
     padding-top:12px;border-top:1px solid var(--line);}
@@ -3018,9 +3018,16 @@ function rankCandidates(navDoc, dates, amount, valueDate, ownCode){
 }
 
 /* ---------------------------------------------------------------- rendering */
+const QUARTILE_HELP = {
+  1:"Among the best 25% of funds in this category over this period",
+  2:"Better than most of the category, but not in the top 25%",
+  3:"Below the category midpoint",
+  4:"Among the weakest 25% of funds in this category over this period"
+};
 function qBadge(q){
   if(!q) return "";
-  return '<span class="qband q'+q+'">'+QUARTILE_WORD[q]+"</span>";
+  return '<span class="qband q'+q+'" title="'+escapeHtml(QUARTILE_HELP[q])+'">'+
+         QUARTILE_WORD[q]+"</span>";
 }
 function signedPP(x){
   if(x===null||x===undefined||!isFinite(x)) return "—";
@@ -3124,7 +3131,8 @@ async function renderInsights(){
     " lag their benchmark by more than "+LAG_THRESHOLD_PP+" pp."+
     "</div>"+
     items.map(insightsRowHtml).join("")+
-    '<div class="ins-foot">Track-record figures are lumpsum point-to-point returns for the fund itself, '+
+    '<div class="ins-foot"><b>Quartiles</b> split the category into four equal groups by return over that period: top quartile is the best 25%, bottom quartile the weakest 25%. They are only shown where the category has at least 8 funds with enough history &mdash; over a handful of funds a quartile means nothing, so only the rank is given.<br><br>'+
+    'Track-record figures are lumpsum point-to-point returns for the fund itself, '+
     "published nightly; your XIRR above is money-weighted over your own instalments, so the two "+
     "will not agree. Peers are ranked over <b>your</b> SIP dates and amount, within your plan "+
     "(Direct vs Direct). Ranking uses realised return only and ignores risk — a fund can reach the "+
