@@ -41,6 +41,8 @@ const MIN_TOP_UNIVERSE = 10, TOP_N = 5;
 const HORIZON_LABELS = [["6m","6 Month"],["1y","1 Year"],["2y","2 Years"],["3y","3 Years"],
                         ["5y","5 Years"],["7y","7 Years"],["10y","10 Years"]];
 const QUARTILE_WORD = {1:"Top quartile",2:"2nd quartile",3:"3rd quartile",4:"Bottom quartile"};
+// qBadge() reads this; the real strings are asserted against index.html below.
+const QUARTILE_HELP = {1:"a",2:"b",3:"c",4:"d"};
 const NAME_STOPWORDS = new Set(["direct","regular","plan","growth","option","opt",
                                 "payout","reinvestment","idcw","dividend"]);
 const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","DSP","PGIM",
@@ -190,6 +192,41 @@ if(loaded){
      /No track record published/.test(periodTableHtml(periods,"Nope","118533")));
   ok("a null document does not throw",
      /No track record published/.test(periodTableHtml(null,"Direct","118533")));
+
+  // ------------------------------------------------------- theme integrity
+  // The first build of this tab referenced --ink, --pos and --neg, none of which
+  // exist in the stylesheet. A CSS variable with no fallback and no definition
+  // makes the whole declaration invalid, so the fund names fell back to the UA
+  // default button colour: black text on a dark surface, unreadable. Nothing
+  // errored. This asserts every variable the Insights CSS uses actually exists.
+  const themeDefined = new Set((HTML.match(/(--[a-z0-9-]+)\s*:/g) || [])
+    .map(m => m.replace(/\s*:$/, "")));
+  const cssStart = HTML.indexOf("/* ---- Insights tab");
+  const cssEnd = HTML.indexOf("@media(max-width:760px){", cssStart);
+  ok("the Insights CSS block is present", cssStart > 0 && cssEnd > cssStart);
+  const cssBlock = HTML.slice(cssStart, cssEnd);
+  const usedVars = [...new Set((cssBlock.match(/var\((--[a-z0-9-]+)/g) || [])
+    .map(m => m.slice(4)))];
+  const undefinedVars = usedVars.filter(v => !themeDefined.has(v));
+  ok("every CSS variable used by Insights is defined by the theme"
+     + (undefinedVars.length ? " (missing: " + undefinedVars.join(", ") + ")" : ""),
+     undefinedVars.length === 0);
+
+  // A <button> inherits font but NOT colour, so this is load-bearing.
+  ok("the row button inherits its text colour", /\.ins-summary\{color:inherit/.test(cssBlock));
+
+  // Light-theme fallbacks on a dark surface are invisible.
+  ok("no black-based overlay fallbacks remain", !/rgba\(0,0,0,/.test(cssBlock));
+
+  // Quartile chips must be legible, i.e. use the theme's own accent colours.
+  ok("quartile chips use theme colours",
+     /\.q1\{[^}]*var\(--beat\)/.test(cssBlock) && /\.q4\{[^}]*var\(--lag\)/.test(cssBlock));
+
+  // The label alone did not convey the meaning; it needs to explain itself.
+  ok("quartile chips carry an explanatory tooltip", /QUARTILE_HELP/.test(HTML));
+  ok("all four quartiles have help text",
+     [1,2,3,4].every(q => new RegExp(q + ':"[^"]{10,}"').test(HTML)));
+  ok("the footer explains what a quartile is", /split the category into four equal groups/.test(HTML));
 
   // ------------------------------------------------------------ wiring
   ok("the tab bar exists in the markup", /id="tabbar"/.test(HTML));
