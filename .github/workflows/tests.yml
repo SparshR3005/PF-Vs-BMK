@@ -82,3 +82,12 @@ jobs:
       # and this goes red rather than silently shrinking the ranking universe.
       - name: Probe filter drift guard
         run: python tests/test_probe_ranks.py
+
+      # The ranking maths: weekly grid spacing, horizon eligibility, rank/quartile
+      # assignment, and the publish gate that refuses to overwrite good data with
+      # a collapsed fetch.
+      - name: Ranking computation tests
+        run: python tests/test_fetch_ranks.py
+
+      - name: Syntax check ranking scripts
+        run: python -m py_compile mf_universe.py probe_ranks.py fetch_ranks.py
