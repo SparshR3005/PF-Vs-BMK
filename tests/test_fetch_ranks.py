@@ -550,5 +550,70 @@ ok("a real leap day is still accepted",
 ok("a non-leap 29 Feb is rejected",
    R.parse_dmy("29-02-2025") is None)
 
+# ------------------------------------------------- future-dated NAV rows
+# `as_of` is a MAX across every fund in a category, so ONE malformed future-dated
+# row redefines "now" for all of them. Combined with the staleness rule, every
+# healthy fund then looks dead. Measured before the fix: a single row dated 2030
+# took a 6-fund cohort's 1-year universe from 6 to 0. Clamping as_of afterwards is
+# not sufficient -- the row must be dropped before it can reach max().
+def _cohort(n, years=8):
+    out = []
+    for i in range(n):
+        out.append({"code": f"FD{i}", "name": f"Fund {i}", "plan": "Direct",
+                    "pts": to_pts(daily_rows(years, rate=0.08 + 0.01 * i))})
+    return out
+
+
+_c = _cohort(6)
+_clean_as_of = max(f["pts"][-1][0] for f in _c)
+eq("a healthy cohort ranks every fund",
+   R.compute_period_table(_c, _clean_as_of)["Direct"]["universe"]["1y"], 6)
+
+ok("MAX_FUTURE_DAYS is defined", hasattr(R, "MAX_FUTURE_DAYS"))
+_MFD = getattr(R, "MAX_FUTURE_DAYS", 2)   # keep going if absent, so all gaps report
+
+# The grid builder re-parses rows itself, so it needs its own guard rather than
+# trusting an as_of that a bad row may already have poisoned.
+# as_of must be BEYOND the sentinel, or the pre-existing `d > as_of` check drops
+# the row on its own and the test proves nothing about the future guard.
+_rows = daily_rows(6) + [{"date": "01-01-2030", "nav": "999"}]
+_g = R.build_weekly_grid(_rows, date(2031, 1, 1), years=30)
+ok("build_weekly_grid drops a future-dated row", _g is not None)
+if _g:
+    _t0, _off, _vals, _ = _g
+    _last = _t0 + timedelta(days=_off[-1])
+    ok("no grid point lies beyond today's tolerance",
+       _last <= date.today() + timedelta(days=_MFD))
+    ok("and the sentinel NAV never entered the grid", 999.0 not in _vals)
+
+# The guard has to sit before the max(): clamping as_of afterwards still lets the
+# bad row define "now" for the category.
+_parse = _src_main = (ROOT / "fetch_ranks.py").read_text(encoding="utf-8")
+_loop_src = _parse[_parse.index("        as_of = None"):_parse.index("        if as_of is None:")]
+ok("future rows are dropped inside the parse loop", "dropped_future" in _loop_src)
+ok("...and the drop precedes the as_of max()",
+   "dropped_future" in _loop_src and "max(as_of" in _loop_src
+   and _loop_src.index("dropped_future") < _loop_src.index("max(as_of"))
+ok("the count is surfaced in the log", "future-dated NAV row" in _parse)
+
+# ------------------------------------------------- per-category isolation
+# write_json_atomic raises by design, but nothing caught it: categories run in
+# alphabetical order, so an exception on CONTRA aborted main() and the remaining
+# nine wrote nothing at all -- no files, no manifest entries.
+_src = (ROOT / "fetch_ranks.py").read_text(encoding="utf-8")
+_main = _src[_src.index("def main("):]
+# Tolerate comments between the loop header and the try, but require that the
+# first executable statement in the loop body IS the try.
+_loop = _main[_main.index("for cat in sorted(by_cat):"):]
+_first_stmt = next((ln.strip() for ln in _loop.split("\n")[1:]
+                    if ln.strip() and not ln.strip().startswith("#")), "")
+eq("the first statement inside the category loop is a try", _first_stmt, "try:")
+ok("a category failure is counted rather than raised", "failed += 1" in _main)
+ok("a failed category is marked stale, not dropped from the manifest",
+   '"status": "stale", "error"' in _main)
+ok("the run still exits non-zero when a category failed",
+   "if failed:\n        return 1" in _main)
+ok("the summary line reports category errors", "category error(s)" in _main)
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
