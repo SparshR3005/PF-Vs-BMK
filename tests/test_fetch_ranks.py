@@ -193,11 +193,22 @@ with tempfile.TemporaryDirectory() as td:
     ok("no .tmp file is left behind", not list(Path(td).glob("*.tmp")))
 
     ok("a similar count publishes", R.safe_to_publish(p, 48)[0])
-    ok("a growing count publishes", R.safe_to_publish(p, 80)[0])
+    ok("modest growth publishes", R.safe_to_publish(p, 60)[0])
     ok("a COLLAPSED count is refused (mfapi junk must not wipe good data)",
        not R.safe_to_publish(p, 12)[0])
-    ok("exactly at the threshold publishes", R.safe_to_publish(p, 40)[0])
-    ok("just under the threshold is refused", not R.safe_to_publish(p, 39)[0])
+    ok("exactly at the lower threshold publishes", R.safe_to_publish(p, 40)[0])
+    ok("just under the lower threshold is refused", not R.safe_to_publish(p, 39)[0])
+
+    # The gate must be two-sided. mfapi was observed serving a duplicated /mf list
+    # (exact 2.0000 ratio across every category). A one-sided gate lets the doubled
+    # file through as "growth", then refuses every correct night after it as a
+    # collapse -- pinning the data to the corrupt version forever.
+    ok("a DOUBLED count is refused as upstream duplication",
+       not R.safe_to_publish(p, 100)[0])
+    ok("just over the growth ceiling is refused", not R.safe_to_publish(p, 81)[0])
+    ok("exactly at the growth ceiling publishes", R.safe_to_publish(p, 80)[0])
+    _, why = R.safe_to_publish(p, 100)
+    ok("the surge refusal explains itself", "duplicat" in why.lower())
 
     bad = Path(td) / "corrupt.json"
     bad.write_text("{not json")
@@ -217,6 +228,40 @@ ok("horizons increase monotonically",
 ok("SECTORAL is excluded from ranking", "SECTORAL" in R.UNRANKABLE_KEYS)
 ok("the plural Thematic variant now resolves (was rejected outright)",
    R.category_key("Equity Schemes - Thematic Fund") == "SECTORAL")
+
+# --------------------------------------------------- duplicate-list resilience
+# Reproduces the real incident: mfapi served /mf with every entry duplicated.
+def _run_discovery(schemes):
+    calls = []
+
+    def stub(url, timeout, attempts=3):
+        if url.endswith("/mf"):
+            return schemes, 0.1, 100, 200
+        calls.append(url)
+        return ({"meta": {"scheme_category": "Equity Scheme - Mid Cap Fund"},
+                 "data": [{"date": "17-07-2026", "nav": "100"}]}, 0.1, 100, 200)
+
+    real = R.get_json
+    R.get_json = stub
+    try:
+        out = R.discover_universe(5, 2, lambda m: None)
+    finally:
+        R.get_json = real
+    return out, calls
+
+
+base = [{"schemeCode": 300000 + i,
+         "schemeName": f"AMC{i} Mid Cap Fund - Direct Plan - Growth",
+         "isinGrowth": f"INF{i}"} for i in range(10)]
+
+clean, clean_calls = _run_discovery(list(base))
+eq("clean list yields one entry per scheme", len(clean), 10)
+
+dupes, dupe_calls = _run_discovery(list(base) + list(base))
+eq("a fully duplicated /mf list still yields one entry per scheme", len(dupes), 10)
+eq("duplicated codes are not fetched twice", len(dupe_calls), len(clean_calls))
+eq("no duplicate schemeCode survives discovery",
+   len({c["code"] for c in dupes}), len(dupes))
 
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
