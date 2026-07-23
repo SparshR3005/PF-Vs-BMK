@@ -1799,7 +1799,7 @@ function render(){
     const gainCell='<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span><div class="sub2">'+pct(v.absR)+'</div>';
     const compCell=b?(anyShorter?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'<span>'+pct(v.bxCmp)+'</span>'):'—';
     rows+=`<tr>
-      <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name))}</div>
+      <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name, s.plan||detectPlanFromName(s.name)||true))}</div>
           ${bmkLine}${verdict}${notes}</td>
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
       <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
@@ -2600,8 +2600,16 @@ function titleCaseName(name){
 
 // Shorten a scheme name: drop plan/option words, collapse any "Growth"
 // wording to a trailing "Gr", and normalise inconsistent AMFI casing.
-function shortSchemeName(name){
+// keepPlan=true re-appends the plan ("Direct"/"Regular") for the on-screen
+// table, which has no separate Plan column — Excel and Insights both do.
+function shortSchemeName(name, keepPlan){
   let n = String(name||"");
+  // Prefer an explicitly supplied plan (the holding's own field, which reflects
+  // the user's Direct/Regular choice); fall back to whatever the name carries.
+  const planMatch = /\b(direct|regular)\b/i.exec(n);
+  const plan = (typeof keepPlan === "string" && keepPlan)
+    ? keepPlan.toLowerCase()
+    : (planMatch ? planMatch[1].toLowerCase() : "");
   // drop parenthesised plan/option groups outright, e.g. "JM Midcap Fund (Direct)"
   n = n.replace(/\(([^)]*)\)/g, function(m, inner){
     const toks = String(inner).toLowerCase().split(/[\s-]+/).filter(Boolean);
@@ -2621,6 +2629,10 @@ function shortSchemeName(name){
        .replace(/[-–—]\s*$/g,"").replace(/\s*[-–—]\s*/g," - ")
        .replace(/\s{2,}/g," ").replace(/\s*-\s*$/,"").trim();
   n = titleCaseName(n);
+  if(keepPlan && plan){
+    const label = plan.charAt(0).toUpperCase() + plan.slice(1);
+    n = (n ? n + " - " + label : label);
+  }
   if(hadGrowth) n = (n ? n + " Gr" : "Gr");
   return n.trim();
 }
