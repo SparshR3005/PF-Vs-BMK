@@ -77,6 +77,12 @@ jobs:
       - name: Scheme matching / category / benchmark tests
         run: node tests/test_matching.js
 
+      # Insights tab: name normalisation against real AMFI string variants,
+      # candidate eligibility, top-five suppression on thin cohorts, and the
+      # period-table rendering.
+      - name: Insights tab tests
+        run: node tests/test_insights.js
+
       # probe_ranks.py re-implements index.html's universe filters in Python.
       # This asserts the two copies still agree; edit one list without the other
       # and this goes red rather than silently shrinking the ranking universe.
