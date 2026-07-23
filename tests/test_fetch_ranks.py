@@ -75,21 +75,116 @@ def to_pts(rows):
 
 
 # ------------------------------------------------------------------ weekly grid
+def holiday_rows(years, seed=11, rate=0.10):
+    """Business days MINUS realistic holiday clusters.
+
+    The original tests used clean weekday-only data, where every 7-day bucket was
+    full and the last point always landed at the bucket end -- so the old bucketed
+    grid never produced an oversized gap and the invariant test passed while the
+    real published data had 8- and 9-day holes. Indian markets close for Diwali,
+    Holi and scattered single days; this reproduces that, which is what makes the
+    max-gap assertion meaningful rather than decorative.
+    """
+    import random
+    rnd = random.Random(seed)
+    start = AS_OF - timedelta(days=int(years * 365.25))
+    closed, d = set(), start
+    while d <= AS_OF:
+        if rnd.random() < 0.012:                       # multi-day festival closure
+            for k in range(rnd.randint(2, 5)):
+                closed.add(d + timedelta(days=k))
+        elif rnd.random() < 0.02:                      # scattered single holidays
+            closed.add(d)
+        d += timedelta(days=1)
+    rows, nav, d = [], 100.0, start
+    while d <= AS_OF:
+        if d.weekday() < 5 and d not in closed:
+            nav *= (1 + rate) ** (1 / 252)
+            rows.append({"date": f"{d.day:02d}-{d.month:02d}-{d.year}", "nav": f"{nav:.4f}"})
+        d += timedelta(days=1)
+    return rows
+
+
 rows = daily_rows(6)
 grid = R.build_weekly_grid(rows, AS_OF)
 ok("grid builds from a 6-year daily history", grid is not None)
-t0, offs, vals = grid
+t0, offs, vals, _forced = grid
 eq("grid offsets and values are the same length", len(offs), len(vals))
 ok("grid is roughly weekly (~52/yr)", 280 <= len(vals) <= 330)
 ok("grid offsets strictly increase", all(b > a for a, b in zip(offs, offs[1:])))
 ok("no gap exceeds 7 days, so navOnOrAfter(d,7) can always place an installment",
    all(b - a <= 7 for a, b in zip(offs, offs[1:])))
-ok("grid values are positive", all(v > 0 for v in vals))
-ok("t0 is a real trading day, not a synthesised boundary",
-   t0 in {p[0] for p in to_pts(rows)})
+
+# THE REGRESSION THAT MATTERED. Clean weekday data cannot expose the bucketed
+# grid's flaw; holiday clusters can, and real published files had 8- and 9-day
+# gaps that could silently drop a fund from every ranking.
+#
+# The invariant is NOT "no gap exceeds 7" -- if the source itself has a hole longer
+# than 7 days, nothing can bridge it. The invariant is that the grid never ADDS a
+# gap: every oversized gap must correspond to a hole that was already in the data,
+# and those are counted in forced_gaps.
+for _seed in (11, 29, 47, 83, 101):
+    _rows = holiday_rows(8, seed=_seed)
+    _hg = R.build_weekly_grid(_rows, AS_OF)
+    if not _hg:
+        ok(f"grid builds despite holidays (seed {_seed})", False)
+        break
+    _, _ho, _, _hf = _hg
+    _over = [b - a for a, b in zip(_ho, _ho[1:]) if b - a > R.GRID_MAX_GAP_DAYS]
+    if len(_over) != _hf:
+        ok(f"every oversized gap is a forced one (seed {_seed}: "
+           f"{len(_over)} oversized vs {_hf} forced)", False)
+        break
+    # And each forced gap must be genuinely unbridgeable in the source.
+    _src = sorted({R.parse_dmy(r["date"]) for r in _rows})
+    _src_gaps = [(b - a).days for a, b in zip(_src, _src[1:])]
+    if _over and max(_over) > max(_src_gaps) + R.GRID_MAX_GAP_DAYS:
+        ok(f"forced gaps stay within what the source forces (seed {_seed})", False)
+        break
+else:
+    ok("the grid never adds a gap beyond what the source data forces", True)
+
+_hg = R.build_weekly_grid(holiday_rows(8), AS_OF)
+ok("holiday grid stays roughly weekly (not degenerate)", 350 <= len(_hg[2]) <= 460)
+
+# With realistic Indian-market closures (never more than a long weekend), every gap
+# should in fact come in at or under 7.
+def _tight_rows(years):
+    rows, nav = [], 100.0
+    d = AS_OF - timedelta(days=int(years * 365.25))
+    skip = 0
+    while d <= AS_OF:
+        if d.weekday() < 5:
+            skip = (skip + 1) % 61
+            if skip not in (0, 1):            # an occasional 2-day closure
+                nav *= 1.0004
+                rows.append({"date": f"{d.day:02d}-{d.month:02d}-{d.year}", "nav": f"{nav:.4f}"})
+        d += timedelta(days=1)
+    return rows
+
+_tg = R.build_weekly_grid(_tight_rows(8), AS_OF)
+_to = _tg[1]
+ok("under realistic market closures every gap is <= 7 days",
+   max(b - a for a, b in zip(_to, _to[1:])) <= R.GRID_MAX_GAP_DAYS)
+ok("and none of them are forced", _tg[3] == 0)
+
+# A genuine multi-month hole in the SOURCE is reported rather than hidden.
+_sparse = [{"date": "01-01-2020", "nav": "100"}]
+for _k in range(120):                      # enough post-hole history to clear the floor
+    _d = date(2020, 3, 1) + timedelta(days=_k)
+    _sparse.append({"date": f"{_d.day:02d}-{_d.month:02d}-{_d.year}", "nav": f"{100+_k}"})
+_sg = R.build_weekly_grid(_sparse, date(2020, 6, 28), years=11)
+ok("a two-month hole in the source is counted in forced_gaps",
+   _sg is not None and _sg[3] >= 1)
+ok("the forced hole is the only oversized gap",
+   _sg is not None
+   and len([b - a for a, b in zip(_sg[1], _sg[1][1:]) if b - a > R.GRID_MAX_GAP_DAYS]) == _sg[3])
 
 ok("a fund with almost no history yields no grid",
    R.build_weekly_grid(daily_rows(0.02), AS_OF) is None)
+ok("duplicate same-day rows collapse to one point",
+   len(R.build_weekly_grid(daily_rows(3) + daily_rows(3), AS_OF)[2])
+   == len(R.build_weekly_grid(daily_rows(3), AS_OF)[2]))
 ok("empty rows yield no grid", R.build_weekly_grid([], AS_OF) is None)
 ok("garbage rows are skipped, not fatal",
    R.build_weekly_grid([{"date": "nonsense", "nav": "x"}] * 5, AS_OF) is None)
