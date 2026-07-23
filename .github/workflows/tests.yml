@@ -76,3 +76,9 @@ jobs:
 
       - name: Scheme matching / category / benchmark tests
         run: node tests/test_matching.js
+
+      # probe_ranks.py re-implements index.html's universe filters in Python.
+      # This asserts the two copies still agree; edit one list without the other
+      # and this goes red rather than silently shrinking the ranking universe.
+      - name: Probe filter drift guard
+        run: python tests/test_probe_ranks.py
