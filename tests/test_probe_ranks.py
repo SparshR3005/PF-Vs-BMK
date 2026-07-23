@@ -178,5 +178,38 @@ eq("blank-isin rule is skipped when the field is absent entirely",
    run_funnel(no_isin), [9])
 
 
+# ------------------------------------------------------- sampling bias regression
+# The first version of stage2 sampled with a fixed stride:
+#     survivors[::len(survivors)//sample_n]
+# That silently assumes the scheme list has no periodic structure. mfapi's does --
+# schemes arrive grouped by AMC, and AMCs register funds in contiguous blocks -- so
+# a stride landing in step with those blocks samples one slice of the market and
+# reports it as the whole. It was caught by a fixture whose categories varied with
+# code % 5 against a stride of exactly 5: every sampled fund came back rejected.
+# stage2 now uses a seeded random sample. This guards that it stays that way.
+def strided(pop, k):
+    return pop[::max(1, len(pop) // max(1, k))][:k]
+
+
+population = list(range(400))
+stride_sample = strided(population, 80)
+ok("a fixed stride produces a degenerate sample (all one residue class)",
+   len({x % 5 for x in stride_sample}) == 1)
+
+import random as _random  # noqa: E402
+rand_sample = _random.Random(20260723).sample(population, 80)
+ok("the seeded random sample spreads across residue classes",
+   len({x % 5 for x in rand_sample}) == 5)
+
+ok("stage2 source uses rng.sample, not a stride",
+   "rng.sample(survivors" in (ROOT / "probe_ranks.py").read_text(encoding="utf-8"))
+ok("stage2 source no longer contains the strided slice",
+   "survivors[::" not in (ROOT / "probe_ranks.py").read_text(encoding="utf-8"))
+
+eq("the seeded sample is reproducible across runs",
+   _random.Random(20260723).sample(population, 10),
+   _random.Random(20260723).sample(population, 10))
+
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
