@@ -14,7 +14,7 @@ on:
       concurrency:
         description: "Parallel detail fetches (start at 6; lower it if you see 429s)"
         required: false
-        default: "6"
+        default: "8"
       full:
         description: "Fetch EVERY candidate for exact per-category counts (slow)"
         required: false
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     # The sampled run finishes in ~1-2 min. --full can take far longer, which is
     # itself the thing being measured, so leave real headroom.
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       # Pinned to commit SHAs, matching tri-fetch.yml.
       - name: Checkout
