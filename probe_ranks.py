@@ -53,127 +53,28 @@ from datetime import date, datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-API = "https://api.mfapi.in"
-UA = "PF-Vs-BMK-probe/1.0 (+https://github.com/SparshR3005/PF-Vs-BMK)"
 
-# ---------------------------------------------------------------- ported filters
-# Every constant below is copied from index.html. Do not "improve" them here in
-# isolation -- the client and this script must agree, or the universe measured
-# will not be the universe the UI can actually rank against.
-# tests/test_probe_ranks.py re-parses index.html and fails on any drift.
-
-NON_EQUITY_NAME_TOKENS = [
-    "liquid", "overnight", "gilt", "money market", "ultra short", "low duration",
-    "short duration", "medium duration", "long duration", "banking and psu",
-    "corporate bond", "credit risk", "debt", "duration", "floater", "dynamic bond", "bond",
-    "hybrid", "balanced", "arbitrage", "equity savings", "multi asset", "asset allocation",
-    "gold", "silver", "commodit", "fund of fund", "fof", "overseas", "international", "global",
-    "index fund", "exchange traded", "etf", "retirement", "children", "pension",
-]
-
-# Growth-option gate. IDCW/payout NAV is reduced at each distribution and mfapi
-# does not add the dividend back, so those variants show structurally understated
-# returns -- including them would fill the bottom of every ranking with a
-# measurement artifact rather than genuine underperformance.
-INCOME_TOKENS = ["idcw", "dividend", "payout", "reinvest", "bonus"]
-
-CATEGORY_CANON = {
-    "equity scheme - large cap fund":         "LARGE_CAP",
-    "equity scheme - large & mid cap fund":   "LARGE_MID",
-    "equity scheme - large and mid cap fund": "LARGE_MID",
-    "equity scheme - mid cap fund":           "MID_CAP",
-    "equity scheme - small cap fund":         "SMALL_CAP",
-    "equity scheme - multi cap fund":         "MULTI_CAP",
-    "equity scheme - flexi cap fund":         "FLEXI_CAP",
-    "equity scheme - focused fund":           "FOCUSED",
-    "equity scheme - value fund":             "VALUE",
-    "equity scheme - contra fund":            "CONTRA",
-    "equity scheme - dividend yield fund":    "DIV_YIELD",
-    "equity scheme - sectoral/ thematic":     "SECTORAL",
-    "equity scheme - sectoral/thematic":      "SECTORAL",
-    "equity scheme - elss":                   "ELSS",
-    "elss":                                   "ELSS",
-}
-
-# Decided in design review: Sectoral/Thematic is NOT rankable. mfapi collapses
-# every sector into one category string and never says which, so a flat ranking
-# would compare an IT fund against a Pharma fund. Counted here so we know the
-# size of what we are deliberately forgoing.
-UNRANKABLE_KEYS = {"SECTORAL"}
-
-
-def norm_name(s):
-    return re.sub(r"\s+", " ", str(s or "").lower()).strip()
-
-
-def norm_category(c):
-    return re.sub(r"\s+", " ", str(c or "").lower()).strip()
-
-
-def category_key(category):
-    """Canonical SEBI key, or None when absent/junk/non-equity. Fails closed."""
-    return CATEGORY_CANON.get(norm_category(category))
-
-
-def name_looks_non_equity(n):
-    return any(t in n for t in NON_EQUITY_NAME_TOKENS)
-
-
-def classify_plan(n):
-    """Direct when the name says so; otherwise Regular (mirrors the client's
-    else-branch, which treats a name mentioning neither as Regular)."""
-    if "direct" in n:
-        return "Direct"
-    return "Regular"
-
+# ---------------------------------------------------------------- shared filters
+# These now live in mf_universe.py so there is exactly ONE Python copy, imported by
+# both this probe and the production fetcher. The dependency points at the shared
+# module, never at the probe: this script is disposable, mf_universe.py is not.
+from mf_universe import (  # noqa: E402
+    API,
+    CATEGORY_CANON,
+    INCOME_TOKENS,
+    NON_EQUITY_NAME_TOKENS,
+    UNRANKABLE_KEYS,
+    category_key,
+    classify_plan,
+    get_json,
+    name_looks_non_equity,
+    norm_category,
+    norm_name,
+    parse_dmy,
+    unwrap_list,
+)
 
 # ---------------------------------------------------------------- http
-def get_json(url, timeout, attempts=3):
-    """GET with retry/backoff. Returns (payload, elapsed_s, nbytes, status)."""
-    last = None
-    for i in range(attempts):
-        started = time.monotonic()
-        try:
-            req = Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-            with urlopen(req, timeout=timeout) as res:
-                raw = res.read()
-                elapsed = time.monotonic() - started
-                # mfapi has been observed serving JSON under a text/html content
-                # type, so never gate parsing on the content-type header.
-                return json.loads(raw.decode("utf-8", "replace")), elapsed, len(raw), res.status
-        except HTTPError as e:
-            last = e
-            # 429/5xx are worth backing off on; 404 is final.
-            if e.code == 404:
-                return None, time.monotonic() - started, 0, 404
-            if e.code == 429:
-                time.sleep(2.0 * (i + 1))
-                continue
-        except (URLError, TimeoutError, json.JSONDecodeError, ValueError) as e:
-            last = e
-        time.sleep(0.6 * (i + 1))
-    return None, 0.0, 0, getattr(last, "code", 0)
-
-
-def unwrap_list(raw):
-    """Tolerate a shape change exactly as the client does: today /mf returns a
-    bare array, but guard against a future paginated wrapper so the whole list
-    doesn't silently vanish."""
-    if isinstance(raw, list):
-        return raw, True
-    if isinstance(raw, dict):
-        for k in ("data", "schemes"):
-            if isinstance(raw.get(k), list):
-                paginated = (
-                    raw.get("nextPage") is not None
-                    or raw.get("next") is not None
-                    or raw.get("hasMore") is True
-                    or (raw.get("page") is not None
-                        and raw.get("totalPages") is not None
-                        and raw["page"] < raw["totalPages"])
-                )
-                return raw[k], not paginated
-    return None, False
 
 
 # ---------------------------------------------------------------- stage 1
@@ -247,17 +148,6 @@ def stage1(timeout):
 
 
 # ---------------------------------------------------------------- stage 2
-def parse_dmy(v):
-    """mfapi serves dates as DD-MM-YYYY (confirmed against index.html's parser)."""
-    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", str(v or ""))
-    if not m:
-        return None
-    d, mo, y = (int(x) for x in m.groups())
-    try:
-        return date(y, mo, d)
-    except ValueError:
-        return None
-
 
 def fetch_detail(entry, timeout):
     code = entry["schemeCode"]
