@@ -611,7 +611,20 @@ function promptDialog(label, value="", { title="Enter a value", validate=null, o
 /* ============================================================
    BENCHMARK CONFIG   (unchanged logic)
    ============================================================ */
-const FLEXI_OVERRIDES = [
+/* Name-based benchmark overrides, checked BEFORE category and sector routing.
+   Two distinct jobs live here:
+     - flexi-cap entries, which pin the benchmark when the category field is
+       missing or unrecognised (the category default already agrees);
+     - funds whose benchmark cannot be inferred from their name at all. Sector
+       routing reads the name because MFAPI never says WHICH sector, and a fund
+       called "DSP India T.I.G.E.R." or "Franklin Build India" carries no sector
+       word to match — T.I.G.E.R. expands to "The Infrastructure Growth and
+       Economic Reforms", but only in a brochure. Both were found by diffing
+       SECTOR_KEYWORDS against an AMFI-sourced per-scheme mapping: of 50 sectoral
+       schemes, keyword routing agreed on 32, correctly declined to guess on 12,
+       and missed exactly these 2. No reasonable keyword list would catch them.
+   Renamed from its old flexi-only name because it no longer holds only flexi funds. */
+const NAME_BENCH_OVERRIDES = [
   { name: "parag parikh flexi cap", key: "NIFTY500" },
   { name: "hdfc flexi cap",         key: "NIFTY500" },
   { name: "kotak flexi cap",        key: "NIFTY500" },
@@ -627,6 +640,10 @@ const FLEXI_OVERRIDES = [
   { name: "bank of india flexi cap", key: "NIFTY500" },
   { name: "jm flexicap",            key: "NIFTY500" },
   { name: "quant flexi cap",        key: "NIFTY500" },
+  // Infrastructure funds carrying no infrastructure word in the name.
+  { name: "t.i.g.e.r",              key: "NIFTY_INFRA" },
+  { name: "india tiger",            key: "NIFTY_INFRA" },   // dotless spelling
+  { name: "franklin build india",   key: "NIFTY_INFRA" },
 ];
 /* Sector routing is NAME-based and must stay that way: MFAPI collapses every
    sector fund into the single category "Equity Scheme - Sectoral/ Thematic" and
@@ -894,7 +911,7 @@ function resolveBenchmarkKey(schemeName, category){
   const n = normName(stripRenameNote(schemeName));
   const cat = (category || "").toLowerCase();
   const catKey = categoryKey(category);          // exact SEBI key, or null
-  for(const o of FLEXI_OVERRIDES){ if(n.includes(o.name)) return { key:o.key, approx:false }; }
+  for(const o of NAME_BENCH_OVERRIDES){ if(n.includes(o.name)) return { key:o.key, approx:false }; }
 
   // Sectoral/Thematic collapses every sector into one category string, so the
   // sector can only come from the name.
