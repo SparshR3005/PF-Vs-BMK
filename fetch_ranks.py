@@ -285,6 +285,41 @@ def annualised(abs_pct, days):
     return result if math.isfinite(result) else None
 
 
+def exclusion_reason(pts, as_of):
+    """Why does this fund carry no horizon at all? Diagnostic only.
+
+    The run log used to report every exclusion as "too young". That was accurate
+    when youth was the only cause, but staleness checks were later added underneath
+    and the message never caught up. The result: a run that correctly dropped 12
+    dormant ELSS schemes reported them as too young, while the arithmetic said
+    otherwise -- the nav grids were unchanged, so no new funds had entered and the
+    same funds had simply lost every horizon. Funds do not get younger. Anyone
+    investigating was sent looking for something that could not exist.
+
+    Classified against the SHORTEST horizon: if a fund cannot manage even that, the
+    reason it fails there is the reason it fails everywhere.
+    """
+    if not pts:
+        return "no NAV data"
+    shortest = min(d for _, d in HORIZONS)
+    start = as_of - timedelta(days=shortest)
+    if pts[0][0] > start:
+        return "too young"
+    b = nav_on_or_before(pts, as_of)
+    if b is None:
+        return "no NAV data"
+    if (as_of - b[0]).days > MAX_TERMINAL_STALE_DAYS:
+        return "stale"
+    a = nav_on_or_before(pts, start)
+    if a is None:
+        return "no opening NAV"
+    if (start - a[0]).days > MAX_BOUNDARY_STALE_DAYS:
+        return "gap at window open"
+    if a[1] <= 0 or not math.isfinite(a[1]) or not math.isfinite(b[1]):
+        return "bad NAV value"
+    return "other"
+
+
 def rank_desc(pairs):
     """[(key, value)] -> {key: rank}, best value = rank 1. Ties share a rank.
 
@@ -711,8 +746,20 @@ def main():
                 "plans": plan_tables,
             }
             p_path = OUT_DIR / f"periods_{cat}.json"
+            excluded_tally = {}
             if published < len(usable):
-                log(f"{cat}: {len(usable)-published} fund(s) too young for any horizon -- excluded")
+                ranked_codes = set()
+                for pt in plan_tables.values():
+                    ranked_codes.update(pt.get("funds") or {})
+                for f in usable:
+                    if f["code"] in ranked_codes:
+                        continue
+                    why = exclusion_reason(f["pts"], as_of)
+                    excluded_tally[why] = excluded_tally.get(why, 0) + 1
+                detail = ", ".join(f"{n} {why}" for why, n
+                                   in sorted(excluded_tally.items(), key=lambda kv: -kv[1]))
+                log(f"{cat}: {len(usable)-published} fund(s) carry no horizon -- "
+                    f"excluded ({detail})")
             allowed, why = safe_to_publish(p_path, published)
             if args.force and not allowed:
                 allowed, why = True, why + "  [OVERRIDDEN by --force]"
@@ -729,6 +776,11 @@ def main():
             # manifest look self-contradictory.
             cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
                           "ranked": published, "plans": {}}
+            # Why funds were left out, by cause. A bare count invites the wrong guess,
+            # which is exactly what happened when 12 stale ELSS schemes were reported
+            # as young ones.
+            if excluded_tally:
+                cat_status["excluded"] = excluded_tally
             for plan in ("Direct", "Regular"):
                 cohort = [f for f in usable if f["plan"] == plan]
                 if not cohort:
