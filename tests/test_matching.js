@@ -59,7 +59,7 @@ try {
   extractConst("CATEGORY_DEFAULTS"),
   extractConst("SECTOR_KEYWORDS"),
   extractConst("BENCH_FUNDS"),
-  extractConst("FLEXI_OVERRIDES"),
+  extractConst("NAME_BENCH_OVERRIDES"),
   extractConst("RENAME_WORD_ALIASES"),
   'const FALLBACK_KEY = "NIFTY500";',
   extractFn("normName"),
@@ -316,6 +316,58 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
   });
   ok("every benchmark degrades to an existing TRI before the first fetch",
      stranded.length === 0, stranded.join(","));
+})();
+
+// ============================================ name-based benchmark overrides
+// Sector routing reads the fund NAME, because MFAPI collapses every sector into
+// one category string and never says which. That works until a fund's name omits
+// its sector entirely. Diffing SECTOR_KEYWORDS against an AMFI-sourced per-scheme
+// mapping over 50 sectoral schemes found exactly two such funds: keyword routing
+// agreed on 32, correctly declined to guess on 12, and missed these.
+(function testNameOverrides() {
+  const infra = [
+    "DSP India T.I.G.E.R. Fund - Direct Plan - Growth",
+    "DSP India T.I.G.E.R. Fund - Regular Plan - Growth",
+    "DSP India TIGER Fund - Direct Plan - Growth",     // dotless spelling
+    "Franklin Build India Fund - Direct - Growth",
+    "Franklin Build India Fund Growth Plan",
+  ];
+  for (const nm of infra) {
+    const r = A.resolveBenchmarkKey(nm, "Equity Scheme - Sectoral/ Thematic");
+    ok(`infra override: ${nm.slice(0, 34)} -> NIFTY_INFRA`, r.key === "NIFTY_INFRA");
+    ok(`...and is not flagged approximate: ${nm.slice(0, 26)}`, r.approx === false);
+  }
+
+  // The miss these replaced: neither name contains a sector word, so without the
+  // override both fell to the broad-market proxy.
+  ok("neither name carries a sector keyword",
+     !/infra|infrastructure/i.test("DSP India T.I.G.E.R. Fund") &&
+     !/infra|infrastructure/i.test("Franklin Build India Fund"));
+
+  // The override list must not hijack unrelated funds.
+  ok("a plain infrastructure fund still routes by keyword",
+     A.resolveBenchmarkKey("ICICI Prudential Infrastructure Fund - Direct - Growth",
+                         "Equity Scheme - Sectoral/ Thematic").key === "NIFTY_INFRA");
+  ok("an unrelated sector fund is untouched",
+     A.resolveBenchmarkKey("Nippon India Pharma Fund - Direct - Growth",
+                         "Equity Scheme - Sectoral/ Thematic").key === "NIFTY_PHARMA");
+  ok("a fund merely containing 'india' is not caught",
+     A.resolveBenchmarkKey("ICICI Prudential India Opportunities Fund - Direct - Growth",
+                         "Equity Scheme - Sectoral/ Thematic").key !== "NIFTY_INFRA");
+  ok("flexi overrides still resolve",
+     A.resolveBenchmarkKey("Parag Parikh Flexi Cap Fund - Direct Plan - Growth",
+                         "Equity Scheme - Flexi Cap Fund").key === "NIFTY500");
+
+  // Every override must point at a benchmark that actually exists and has a file.
+  // The list itself isn't exported, so read the keys straight out of index.html
+  // and assert each points at a real benchmark.
+  const decl = HTML.slice(HTML.indexOf("const NAME_BENCH_OVERRIDES = ["));
+  const keys = [...decl.slice(0, decl.indexOf("\n];")).matchAll(/key:\s*"([^"]+)"/g)]
+                 .map(m => m[1]);
+  ok("the override list was found and is non-empty", keys.length > 0);
+  ok("every override key names a real benchmark",
+     keys.every(k => A.BENCH_FUNDS[k]));
+  ok("the two infra overrides are present", keys.filter(k => k === "NIFTY_INFRA").length >= 2);
 })();
 
 // ==================================================== import template
