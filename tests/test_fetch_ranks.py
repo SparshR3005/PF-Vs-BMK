@@ -550,6 +550,49 @@ ok("a real leap day is still accepted",
 ok("a non-leap 29 Feb is rejected",
    R.parse_dmy("29-02-2025") is None)
 
+# ------------------------------------------------- exclusion diagnostics
+# A run once reported 12 dormant ELSS schemes as "too young". The arithmetic said
+# otherwise: nav grids were unchanged, so no new funds had entered and the same
+# funds had lost every horizon. Funds do not get younger. The message predated the
+# staleness checks and was never updated, so it sent anyone investigating after
+# something that could not exist. Exclusions must now name their actual cause.
+_ex_as_of = AS_OF
+
+
+def _pts_ending(days_ago, years=8):
+    return to_pts(daily_rows(years, ...)) if False else to_pts([
+        r for r in daily_rows(years)
+        if R.parse_dmy(r["date"]) <= _ex_as_of - timedelta(days=days_ago)])
+
+
+ok("exclusion_reason exists", hasattr(R, "exclusion_reason"))
+# Degrade rather than abort, so a missing helper reports every downstream gap in
+# one run instead of hiding them behind an AttributeError.
+_reason = getattr(R, "exclusion_reason", lambda pts, as_of: "<missing>")
+eq("a fund dormant for a year reads as stale",
+   _reason(_pts_ending(365), _ex_as_of), "stale")
+eq("a fund dormant for 20 days reads as stale",
+   _reason(_pts_ending(20), _ex_as_of), "stale")
+eq("one day past the staleness bound reads as stale",
+   _reason(_pts_ending(R.MAX_TERMINAL_STALE_DAYS + 1), _ex_as_of), "stale")
+ok("a fund inside the staleness bound is NOT called stale",
+   _reason(_pts_ending(R.MAX_TERMINAL_STALE_DAYS - 1), _ex_as_of) != "stale")
+eq("a genuinely new fund still reads as too young",
+   _reason(to_pts(daily_rows(0.17)), _ex_as_of), "too young")
+eq("an empty series reads as no data", _reason([], _ex_as_of), "no NAV data")
+
+# The two causes must be distinguishable -- that was the whole failure.
+ok("stale and young are not conflated",
+   _reason(_pts_ending(365), _ex_as_of)
+   != _reason(to_pts(daily_rows(0.17)), _ex_as_of))
+
+_ex_src = (ROOT / "fetch_ranks.py").read_text(encoding="utf-8")
+ok("the old misleading log line is gone",
+   "too young for any horizon" not in _ex_src)
+ok("the log now reports causes", "carry no horizon" in _ex_src)
+ok("the tally is built from exclusion_reason", "exclusion_reason(f[\"pts\"]" in _ex_src)
+ok("causes are surfaced in the manifest too", 'cat_status["excluded"]' in _ex_src)
+
 # ------------------------------------------------- future-dated NAV rows
 # `as_of` is a MAX across every fund in a category, so ONE malformed future-dated
 # row redefines "now" for all of them. Combined with the staleness rule, every
