@@ -95,12 +95,6 @@
   ::-webkit-scrollbar-thumb:hover{background:var(--faint);background-clip:content-box;}
 
   .row{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px;}
-  .plan-toggle{display:flex;gap:8px;align-items:center;margin-bottom:20px;flex-wrap:wrap;}
-  .plan-toggle .opt{display:flex;gap:8px;align-items:center;font-size:13.5px;color:var(--muted);cursor:pointer;
-    padding:7px 13px;border:1px solid var(--line);border-radius:99px;background:var(--surface-2);
-    transition:border-color .18s,color .18s,background .18s;}
-  .plan-toggle .opt:hover{border-color:var(--line-2);color:var(--text);}
-  .plan-toggle .opt:has(input:checked){border-color:var(--brass);color:var(--brass-2);background:var(--brass-dim);}
   .search-wrap{position:relative;}
   .results{position:absolute;z-index:20;left:0;right:0;top:calc(100% + 6px);background:var(--surface-2);
     border:1px solid var(--line-2);border-radius:var(--radius-sm);max-height:280px;overflow-y:auto;
@@ -165,7 +159,6 @@
   .c-flat{background:var(--surface-3);color:var(--muted);box-shadow:inset 0 0 0 1px var(--line-2);}
 
   /* summary KPI — instrument panel */
-  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:14px;margin-bottom:2px;}
   .stat{position:relative;background:linear-gradient(180deg,var(--surface-3),var(--surface-2));
     border:1px solid var(--line);border-radius:var(--radius-sm);padding:15px 16px 16px;overflow:hidden;
     transition:border-color .2s,transform .2s var(--ease);}
@@ -176,6 +169,48 @@
   .stat .v{font-family:var(--mono);font-size:22px;font-weight:600;margin-top:8px;
     font-variant-numeric:tabular-nums;letter-spacing:-.025em;line-height:1.12;color:var(--text);}
   .stat .v.pos{color:var(--beat);} .stat .v.neg{color:var(--lag);}
+
+  /* hero verdict banner (Q20) */
+  .verdict-banner{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;
+    margin:0 0 18px;padding:11px 15px;border-radius:var(--radius-sm);line-height:1.45;}
+  .verdict-banner .vb-icon{font-size:15px;line-height:1;}
+  .verdict-banner.vb-beat{background:linear-gradient(180deg,rgba(92,194,144,.14),rgba(92,194,144,.05));
+    border:1px solid rgba(92,194,144,.34);color:#8ff0c0;}
+  .verdict-banner.vb-flat{background:var(--surface-3);border:1px solid var(--line-2);color:#b6c7c1;}
+  .verdict-banner.vb-lag{background:linear-gradient(180deg,rgba(232,139,128,.14),rgba(232,139,128,.05));
+    border:1px solid rgba(232,139,128,.34);color:#f0b8b0;}
+
+  /* three headline XIRR cards, then a quieter strip of totals */
+  .hero-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px;}
+  .stat.hero .v{font-size:28px;}
+  .stat.hero .sub2{margin-top:7px;font-family:var(--mono);font-size:10.5px;letter-spacing:.02em;}
+  .stat.hero::before{opacity:.85;}
+  .stat.spread .v{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+  .stat.spread .word{font-family:var(--sans);font-size:12.5px;font-weight:600;letter-spacing:0;}
+  .strip-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;}
+  .strip-grid .stat{padding:12px 14px 13px;}
+  .strip-grid .stat::before{display:none;}
+  .strip-grid .stat .v{font-size:17px;margin-top:6px;}
+  .sum-rule{height:1px;background:linear-gradient(90deg,var(--line-2),transparent 72%);margin:0 0 14px;}
+
+  /* Direct / Regular pill toggle (replaces radio inputs, same semantics) */
+  .plan-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:16px;}
+  .plan-row .plan-lbl{font-family:var(--mono);font-size:11px;text-transform:uppercase;
+    letter-spacing:.14em;color:var(--muted);}
+  .plan-row .hint{font-size:12px;color:var(--faint);}
+  .pill{font-family:var(--sans);font-size:13.5px;font-weight:500;padding:7px 15px;border-radius:99px;
+    cursor:pointer;border:1px solid var(--line);background:var(--surface-2);color:var(--muted);
+    transition:border-color .18s,background .18s,color .18s;}
+  .pill:hover{border-color:var(--line-2);color:var(--text);}
+  .pill[aria-pressed="true"]{border-color:var(--brass);background:var(--brass-dim);
+    color:var(--brass-2);font-weight:600;}
+
+  /* grouped, flowing action bar for portfolio + data actions (Q22/Q23/Q24) */
+  .actionbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+  .actionbar .agroup{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .actionbar .asep{width:1px;align-self:stretch;min-height:26px;background:var(--line);margin:0 3px;}
+  .actionbar .astat{font-size:12.5px;color:var(--muted);margin:0;min-height:0;flex:1 1 180px;}
+  @media(max-width:640px){ .actionbar .asep{display:none;} }
 
   .foot{color:var(--faint);font-size:11px;margin-top:18px;line-height:1.7;font-family:var(--mono);letter-spacing:.01em;}
 
@@ -265,19 +300,18 @@
     border-bottom:1px solid var(--line);}
   table.ptable td:first-child{text-align:left;font-family:inherit;}
   table.ptable tr.young td{color:var(--muted);font-style:italic;}
-  .qband{display:inline-block;font-size:.67rem;padding:2px 8px;border-radius:99px;
-    font-family:var(--sans);letter-spacing:.03em;font-weight:600;}
-  .q1{background:rgba(92,194,144,.18);color:var(--beat);}
-  .q2{background:rgba(92,194,144,.10);color:var(--beat);}
-  .q3{background:rgba(232,139,128,.10);color:var(--lag);}
-  .q4{background:rgba(232,139,128,.18);color:var(--lag);}
+  table.ptable td.col-abs.pos{color:var(--beat);}
+  table.ptable td.col-abs.neg{color:var(--lag);}
   ol.top5{list-style:none;margin:0;padding:0;}
   ol.top5 li{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;
     align-items:baseline;padding:6px 0;border-bottom:1px solid var(--line);}
   ol.top5 li:last-child{border-bottom:none;}
   ol.top5 .pos{font-family:var(--mono);color:var(--muted);font-size:.8rem;}
   ol.top5 .xr{font-family:var(--mono);font-size:.88rem;}
-  ol.top5 .gap{font-family:var(--mono);font-size:.8rem;color:var(--beat);}
+  ol.top5 .gap{font-family:var(--mono);font-size:.8rem;color:var(--muted);}
+  ol.top5 li.own .nm{color:var(--brass-2);font-weight:700;}
+  ol.top5 li.own{background:var(--brass-dim);border-radius:6px;padding-left:8px;padding-right:8px;}
+  ol.top5 li.own .gap{color:var(--brass);}
   .ins-note{font-size:.8rem;color:var(--muted);margin-top:10px;line-height:1.55;}
   .ins-foot{font-size:.78rem;color:var(--muted);line-height:1.65;margin-top:20px;
     padding-top:14px;border-top:1px solid var(--line);}
@@ -285,7 +319,9 @@
     .ins-summary{grid-template-columns:1fr auto auto;gap:8px;}
     .ins-summary .hide-sm{display:none;}
     table.ptable{font-size:.8rem;}
-    table.ptable .col-abs{display:none;}
+    /* Return is the column that pairs with Category avg, so the annualised
+       rate is the one that goes on a narrow screen — not the absolute. */
+    table.ptable .col-ann{display:none;}
   }
   @media(max-width:760px){
     body{padding:28px 14px 60px;}
@@ -294,7 +330,9 @@
     .wrap{max-width:100%;}
     .stat .v{font-size:20px;}
     .card{padding:17px 16px;}
-    .summary-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;}
+    .hero-grid{grid-template-columns:1fr;gap:10px;}
+    .stat.hero .v{font-size:24px;}
+    .strip-grid{grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:8px;}
   }
   @media(prefers-reduced-motion:reduce){
     *{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;}
@@ -357,12 +395,19 @@
       </div>
     </div>
     <div class="divider"></div>
-    <div class="pm-bar">
-      <button class="btn blue" id="updateNavBtn" style="display:none;">↻ Refresh</button>
-      <button class="btn ghost" id="importBtn">⤒ Import from Excel</button>
-      <button class="btn ghost" id="templateBtn">⤓ Download import template</button>
-      <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.csv">
-      <span class="status" id="pmStatus" style="margin:0;"></span>
+    <div class="actionbar" role="group" aria-label="Portfolio data actions">
+      <div class="agroup">
+        <button class="btn blue" id="updateNavBtn" style="display:none;">↻ Refresh</button>
+      </div>
+      <div class="asep" aria-hidden="true"></div>
+      <div class="agroup">
+        <button class="btn ghost" id="importBtn">⤒ Import from Excel</button>
+        <button class="btn ghost" id="exportBtn" style="display:none;">⤓ Export to Excel</button>
+        <button class="btn blue" id="templateBtn">⤓ Import template</button>
+        <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.csv">
+      </div>
+      <span class="status astat" id="pmStatus" aria-live="polite"></span>
+      <span class="status astat" id="exportStatus" aria-live="polite" style="flex:0 1 auto;"></span>
     </div>
     <div class="privacy-note">
       <span><b>Privacy:</b> portfolio inputs are stored only in this browser under this website's origin. A person opening the same link on another device or browser does not receive these portfolios.</span>
@@ -373,11 +418,11 @@
   <div class="card">
     <div class="loadbar" id="loadbar"><span class="spinner"></span> Loading…</div>
 
-    <div class="plan-toggle">
-      <span style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);">Plan:</span>
-      <label class="opt"><input type="radio" name="plan" value="Direct" checked style="width:auto;"> Direct</label>
-      <label class="opt"><input type="radio" name="plan" value="Regular" style="width:auto;"> Regular</label>
-      <span style="font-size:12px;color:var(--muted);">(Growth only)</span>
+    <div class="plan-row" role="group" aria-label="Plan">
+      <span class="plan-lbl" id="planLbl">Plan</span>
+      <button type="button" class="pill" id="planDirect" data-plan="Direct" aria-pressed="true">Direct</button>
+      <button type="button" class="pill" id="planRegular" data-plan="Regular" aria-pressed="false">Regular</button>
+      <span class="hint">Growth only</span>
     </div>
 
     <label for="search">Scheme</label>
@@ -421,14 +466,15 @@
 
   <div id="panePortfolio" role="tabpanel" aria-labelledby="tabPortfolio">
   <div class="card" id="summaryCard" style="display:none;">
-    <div class="summary-grid" id="summaryGrid"></div>
+    <div id="verdictBanner" style="display:none;"></div>
+    <div class="hero-grid" id="heroGrid"></div>
+    <div class="sum-rule"></div>
+    <div class="strip-grid" id="stripGrid"></div>
   </div>
 
   <div class="card">
-    <div class="toolbar" id="toolbar" style="display:none;">
-      <button class="btn ghost" id="exportBtn">⤓ Export to Excel</button>
+    <div class="toolbar" id="toolbar" style="display:none;justify-content:flex-end;">
       <button class="btn small" id="clearBtn" style="border-color:var(--muted);color:var(--muted);">Clear all</button>
-      <span class="status" id="exportStatus" style="margin:0;"></span>
     </div>
     <div id="tableWrap">
       <div class="empty">No schemes added yet.</div>
@@ -505,7 +551,10 @@ let listReady = false;
 let listComplete = false;   // #9: true only when /mf returned the FULL list (not one page)
 
 const $ = id => document.getElementById(id);
-function getPlan(){ return document.querySelector('input[name=plan]:checked').value; }
+function getPlan(){
+  const on = document.querySelector('.plan-row .pill[aria-pressed="true"]');
+  return on ? on.dataset.plan : "Direct";
+}
 
 /* ============================================================
    TOAST NOTIFICATIONS + ACCESSIBLE DIALOGS
@@ -1325,8 +1374,14 @@ function pickScheme(s){
   updateAddState();
 }
 
-document.querySelectorAll('input[name=plan]').forEach(r=>{
-  r.addEventListener("change", ()=>{
+/* Pill toggle behaves exactly like the radio group it replaces: changing plan
+   invalidates the selected scheme, because a Direct code is not a Regular code. */
+document.querySelectorAll('.plan-row .pill').forEach(function(btn){
+  btn.addEventListener("click", function(){
+    if(btn.getAttribute("aria-pressed") === "true") return;
+    document.querySelectorAll('.plan-row .pill').forEach(function(b){
+      b.setAttribute("aria-pressed", String(b === btn));
+    });
     selectedScheme = null;
     $("selected").textContent = "";
     $("search").value = "";
@@ -1753,7 +1808,9 @@ function perfBand(alpha){
   if(alpha==null) return {cls:"c-flat", word:"No benchmark", key:"na"};
   const a = alpha*100;
   if(a >= 3)  return {cls:"c-darkgreen", word:"Strongly beating", key:"strong_beat"};
-  if(a >= 0)  return {cls:"c-green",     word:"Beating",          key:"beat"};
+  if(a > 0)   return {cls:"c-green",     word:"Beating",          key:"beat"};
+  // Exactly flat is its own state: calling a 0.00 pp spread "beating" overstates it.
+  if(a === 0) return {cls:"c-flat",      word:"Matched",          key:"match"};
   if(a > -3)  return {cls:"c-red",       word:"Lagging",          key:"lag"};
   return              {cls:"c-darkred",  word:"Strongly lagging", key:"strong_lag"};
 }
@@ -1833,6 +1890,7 @@ function render(){
   if(!schemes.length){
     wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
+    $("exportBtn").style.display="none";
     $("tabbar").style.display="none";$("paneInsights").style.display="none";
     $("panePortfolio").style.display="";
     $("updateNavBtn").style.display="none";
@@ -1840,6 +1898,7 @@ function render(){
     return;
   }
   $("toolbar").style.display="flex";
+  $("exportBtn").style.display="";
   // Refresh is only meaningful once there's something to re-value. Shown here (and
   // hidden above) so it appears exactly when the active portfolio has holdings.
   $("updateNavBtn").style.display="";
@@ -1853,18 +1912,56 @@ function render(){
   const anyShorter = schemes.some(sipBeganBeforeTri);
   if(port){
     $("summaryCard").style.display="block";
-    $("summaryGrid").innerHTML=`
+
+    /* Hero verdict (Q20). Uses the SAME alpha as the spread card, and prints the
+       lag case as a positive magnitude — "trailing by -2.34 pp" double-negates. */
+    const vb = $("verdictBanner");
+    if(port.alpha==null){
+      vb.style.display="none"; vb.innerHTML="";
+    }else{
+      const aPP = port.alpha*100;
+      const cls = aPP>0 ? "vb-beat" : (aPP===0 ? "vb-flat" : "vb-lag");
+      const icon = aPP>0 ? "▲" : (aPP===0 ? "■" : "▼");
+      const txt = aPP>0
+        ? "Beating the index by "+aPP.toFixed(2)+" pp per year"
+        : (aPP===0 ? "Matching the index"
+                   : "Trailing the index by "+Math.abs(aPP).toFixed(2)+" pp per year");
+      vb.style.display="flex";
+      vb.className="verdict-banner "+cls;
+      vb.innerHTML='<span class="vb-icon" aria-hidden="true">'+icon+"</span><span>"+txt+"</span>";
+    }
+
+    /* Headline row: the three (or four) money-weighted rates that answer the
+       page's question. `Comparable fund XIRR` appears only when at least one SIP
+       predates its TRI, so the full-window and like-for-like figures never get
+       read as the same number (Q16). */
+    $("heroGrid").innerHTML=`
+    <div class="stat hero"><div class="k">Portfolio XIRR</div>
+      <div class="v ${signClass(port.xirr)}">${pct(port.xirr)}</div>
+      <div class="sub2">money-weighted · your instalments</div></div>
+    ${anyShorter?`<div class="stat hero"><div class="k">Comparable fund XIRR</div>
+      <div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div>
+      <div class="sub2">fund, over the benchmark-matched window</div></div>`:''}
+    <div class="stat hero"><div class="k">Benchmark XIRR</div>
+      <div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div>
+      <div class="sub2">blended Nifty TRI</div></div>
+    <div class="stat hero spread"><div class="k">Alpha vs benchmark</div>
+      <div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span><span class="word '+signClass(port.alpha)+'">'+alphaBand.word+'</span>':'N/A'}</div>
+      <div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
+
+    $("stripGrid").innerHTML=`
     <div class="stat"><div class="k">Holdings</div><div class="v">${schemes.length-errorCount}${errorCount?' <span class="approx">(+'+errorCount+' unvalued)</span>':''}</div></div>
     <div class="stat"><div class="k">Total invested</div><div class="v">${inr(port.invested)}</div></div>
     <div class="stat"><div class="k">Current value</div><div class="v">${inr(port.current)}</div></div>
     <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>
-    <div class="stat"><div class="k">Absolute return</div><div class="v ${signClass(port.absReturn)}">${pct(port.absReturn)}</div></div>
-    <div class="stat"><div class="k">Portfolio XIRR</div><div class="v ${signClass(port.xirr)}">${pct(port.xirr)}</div></div>
-    ${anyShorter?`<div class="stat"><div class="k">Comparable fund XIRR</div><div class="v">${port.anyBench?pct(port.cmpFundXirr):'N/A'}</div></div>`:''}
-    <div class="stat"><div class="k">Benchmark XIRR</div><div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div></div>
-    <div class="stat"><div class="k">XIRR spread vs benchmark</div><div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span>':'N/A'}</div><div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
+    <div class="stat"><div class="k">Absolute return</div><div class="v ${signClass(port.absReturn)}">${pct(port.absReturn)}</div></div>`;
   }else{
+    /* Every holding failed to value. Hide the card AND empty it: leaving the
+       previous portfolio's cards in the DOM means a stale verdict flashes back
+       the moment anything re-shows the card. */
     $("summaryCard").style.display="none";
+    $("verdictBanner").style.display="none"; $("verdictBanner").innerHTML="";
+    $("heroGrid").innerHTML=""; $("stripGrid").innerHTML="";
   }
 
   let rows="";
@@ -1884,7 +1981,9 @@ function render(){
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
     if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market benchmark':'category benchmark')+')</span></div>';}
     else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category benchmark · no overlapping data)</span></div>';}
-    const verdict=v.alpha==null?'':'<div class="verdict '+(v.alpha>=0?'pos':'neg')+'">'+band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.</div>';
+    const verdict=v.alpha==null?'':'<div class="verdict '+signClass(band.key==="match"?null:v.alpha)+'">'+
+      (band.key==="match" ? 'Matched the benchmark'
+                          : band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.')+'</div>';
     // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
     let notes="";
     if(s.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+s.navStaleDays+' days ago ('+fmtDate(s.fundValueDate)+') — value may be stale/suspended</div>';
@@ -1902,14 +2001,14 @@ function render(){
   });
   if(port){
     const pBand=perfBand(port.alpha);
-    rows+=`<tr class="portfolio"><td>PORTFOLIO (valued holdings)<div class="fund-meta">each holding valued at its own latest NAV (newest ${fmtDate(port.valueDate)})</div></td>
+    rows+=`<tr class="portfolio"><td>PORTFOLIO (valued holdings)</td>
       <td class="num">${inr(port.invested)}</td><td class="num">${inr(port.current)}</td>
       <td class="num"><span class="${signClass(port.gain)}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
       <td class="num"><span class="${signClass(port.xirr)}" style="font-weight:600;">${pct(port.xirr)}</span></td>
       <td class="num">${port.anyBench?(anyShorter?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':pct(port.benchXirr)):'—'}</td>
       <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
   }
-  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR</th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">XIRR spread</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR</th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
   wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
     const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
@@ -1936,7 +2035,11 @@ function render(){
   $("tabbar").style.display="flex";
   if($("paneInsights").style.display!=="none") renderInsights();
   $("foot").style.display="block";
-  $("foot").innerHTML="Benchmark = a category-matched Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends — a stand-in for the fund's officially disclosed benchmark, not necessarily the exact one. The <b>XIRR spread</b> is the fund's money-weighted XIRR minus the benchmark's over the same installments: a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
+  $("foot").innerHTML="Benchmark = a category-matched Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends. "+
+    "<b>Alpha</b> here is the fund's money-weighted XIRR minus the benchmark's over the same installments: a return spread, <b>not</b> risk-adjusted alpha (Jensen's α). "+
+    "Every holding is valued at <b>its own</b> latest NAV, so the PORTFOLIO row blends slightly different valuation dates"+
+    ((port&&port.valueDate)?" (newest "+escapeHtml(fmtDate(port.valueDate))+")":"")+". "+
+    "Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · grey exactly 0 pp · red 0 to −3 pp · dark red ≤ −3 pp.";
   // Re-scope the freshness banner to the benchmarks THIS portfolio actually uses.
   checkTriFreshness();
 }
@@ -3074,7 +3177,6 @@ const MIN_TOP_UNIVERSE = 10;
 const MIN_RANK_UNIVERSE = 8;
 const TOP_N = 5;
 const LAG_THRESHOLD_PP = 3;
-const QUARTILE_WORD = {1:"Top quartile",2:"2nd quartile",3:"3rd quartile",4:"Bottom quartile"};
 
 let ranksManifest = null;
 const ranksCache = Object.create(null);
@@ -3198,7 +3300,12 @@ function rankCandidates(navDoc, dates, amount, valueDate, ownCode){
   const mid = Math.floor(pool.length/2);
   const median = pool.length ? (pool.length%2 ? pool[mid].xirr
                                 : (pool[mid-1].xirr+pool[mid].xirr)/2) : null;
-  const top = pool.filter(function(r){ return String(r.code)!==String(ownCode); }).slice(0,TOP_N);
+  /* Q3: the top list is the top of the pool as it actually stands — the user's own
+     fund is NOT filtered out. Removing it produced a list where a fund ranked 2nd
+     saw four names above it, three of which it had beaten. */
+  const top = pool.slice(0,TOP_N).map(function(r){
+    return {code:r.code, name:r.name, xirr:r.xirr, own:String(r.code)===String(ownCode)};
+  });
   /* `universe` is the ELIGIBLE pool (funds that ran the whole window), which can be
      far smaller than the category: the published grids hold funds with many
      different inception dates (LARGE_CAP Direct: 33 funds across 14 distinct t0
@@ -3210,17 +3317,9 @@ function rankCandidates(navDoc, dates, amount, valueDate, ownCode){
 }
 
 /* ---------------------------------------------------------------- rendering */
-const QUARTILE_HELP = {
-  1:"Among the best 25% of funds in this category over this period",
-  2:"Better than most of the category, but not in the top 25%",
-  3:"Below the category midpoint",
-  4:"Among the weakest 25% of funds in this category over this period"
-};
-function qBadge(q){
-  if(!q) return "";
-  return '<span class="qband q'+q+'" title="'+escapeHtml(QUARTILE_HELP[q])+'">'+
-         QUARTILE_WORD[q]+"</span>";
-}
+/* Quartiles are deliberately not surfaced: a four-way split of a category whose
+   eligible population changes with every horizon invites a verdict the data does
+   not support. fetch_ranks.py still publishes `q`; the UI simply ignores it. */
 function signedPP(x){
   if(x===null||x===undefined||!isFinite(x)) return "—";
   return (x>=0?"+":"−")+Math.abs(x).toFixed(2)+" pp";
@@ -3237,38 +3336,51 @@ function periodTableHtml(periodsDoc, plan, code){
     const k = pair[0], label = pair[1];
     const abs = f.abs ? f.abs[k] : undefined;
     if(abs===undefined){
-      rows += '<tr class="young"><td>'+label+'</td><td class="col-abs">—</td><td>—</td><td>—</td>'+
-              '<td colspan="2">not enough history</td></tr>';
+      rows += '<tr class="young"><td>'+label+'</td><td class="col-abs">—</td><td>—</td>'+
+              '<td class="col-ann">—</td><td>not enough history</td></tr>';
       continue;
     }
+    /* fetch_ranks.py builds `avg` from the same CUMULATIVE returns as `abs`
+       (MIN_ANNUALISE_DAYS gates `ann` separately), so the only like-for-like
+       comparison on this row is Return vs Category avg. Colouring the annualised
+       cell against it would pit a CAGR against a cumulative figure — at 5 years
+       that reads as a 60 pp shortfall on a fund that is actually ahead. The two
+       absolute columns therefore sit adjacent, and only Return is coloured. */
+    const avgVal = (p.avg && p.avg[k]!==undefined) ? p.avg[k] : null;
+    const absCls = avgVal!=null ? (abs>=avgVal ? "pos" : "neg") : "";
+    // `ann` is absent for sub-year horizons by design; nothing to annualise.
     const ann = (f.ann && f.ann[k]!==undefined) ? f.ann[k].toFixed(2)+"%" : "—";
-    const avg = (p.avg && p.avg[k]!==undefined) ? p.avg[k].toFixed(2)+"%" : "—";
+    const avg = avgVal!=null ? avgVal.toFixed(2)+"%" : "—";
     const rk  = (f.rank && f.rank[k]!==undefined) ? f.rank[k] : null;
     const uni = (p.universe && p.universe[k]) || 0;
-    const q   = (f.q && f.q[k]) || null;
-    rows += "<tr><td>"+label+'</td><td class="col-abs">'+abs.toFixed(2)+"%</td><td>"+ann+
-            "</td><td>"+avg+"</td><td>"+(rk?rk+" of "+uni:"—")+"</td><td>"+qBadge(q)+"</td></tr>";
+    rows += "<tr><td>"+label+'</td><td class="col-abs '+absCls+'">'+abs.toFixed(2)+"%</td>"+
+            "<td>"+avg+'</td><td class="col-ann">'+ann+"</td><td>"+(rk?rk+" of "+uni:"—")+"</td></tr>";
   }
   return '<table class="ptable"><thead><tr><th>Period</th><th class="col-abs">Return</th>'+
-         "<th>Annualised</th><th>Category avg</th><th>Rank</th><th></th></tr></thead>"+
+         "<th>Category avg</th><th class=\"col-ann\">Annualised</th><th>Rank</th></tr></thead>"+
          "<tbody>"+rows+"</tbody></table>";
 }
 
 function topListHtml(res, ownXirr){
   if(!res.universe) return '<div class="ins-note">No comparable peers with a full history over this window.</div>';
-  if(res.universe < MIN_TOP_UNIVERSE){
-    return '<div class="ins-note">Only '+res.universe+" fund"+(res.universe===1?"":"s")+
-           " in this category ran the full window, so a top-five list would be noise. "+
-           "Your rank above is the meaningful figure.</div>";
-  }
-  if(!res.top.length) return '<div class="ins-note">No peer outperformed over this window.</div>';
+  if(!res.top.length) return '<div class="ins-note">No peer ran the full window.</div>';
   let li = "";
   res.top.forEach(function(r,i){
-    const gap = (ownXirr!=null) ? signedPP((r.xirr-ownXirr)*100) : "";
-    li += '<li><span class="pos">'+(i+1)+'</span><span class="nm">'+escapeHtml(normaliseFundName(r.name))+
-          '</span><span class="xr">'+(r.xirr*100).toFixed(2)+'%</span><span class="gap">'+gap+"</span></li>";
+    const gapPP = (ownXirr!=null) ? (r.xirr-ownXirr)*100 : null;
+    const gap = r.own ? "your fund"
+              : (gapPP!=null ? '<span class="'+(gapPP>=0?"pos":"neg")+'">'+signedPP(gapPP)+"</span>" : "");
+    li += '<li'+(r.own?' class="own"':'')+'><span class="pos">'+(i+1)+'</span><span class="nm">'+
+          escapeHtml(normaliseFundName(r.name))+'</span><span class="xr">'+
+          (r.xirr*100).toFixed(2)+'%</span><span class="gap">'+gap+"</span></li>";
   });
-  return '<ol class="top5">'+li+"</ol>";
+  /* Shown at every pool size (Q2), but a five-name list drawn from a handful of
+     survivors is a different claim from a five-name list drawn from forty, so the
+     pool size is stated rather than the list being suppressed. */
+  const thin = res.universe < MIN_TOP_UNIVERSE
+    ? '<div class="ins-note">Drawn from only '+res.universe+" fund"+(res.universe===1?"":"s")+
+      " that ran your full window — too small a pool to read as a category ranking.</div>"
+    : "";
+  return '<ol class="top5">'+li+"</ol>"+thin;
 }
 
 function insightsRowHtml(item, idx){
@@ -3323,13 +3435,11 @@ async function renderInsights(){
     " lag their benchmark by more than "+LAG_THRESHOLD_PP+" pp."+
     "</div>"+
     items.map(insightsRowHtml).join("")+
-    '<div class="ins-foot"><b>Quartiles</b> split the category into four equal groups by return over that period: top quartile is the best 25%, bottom quartile the weakest 25%. They are only shown where the category has at least 8 funds with enough history &mdash; over a handful of funds a quartile means nothing, so only the rank is given.<br><br>'+
+    '<div class="ins-foot">'+
     'Track-record figures are lumpsum point-to-point returns for the fund itself, '+
     "published nightly; your XIRR above is money-weighted over your own instalments, so the two "+
     "will not agree. Peers are ranked over <b>your</b> SIP dates and amount, within your plan "+
-    "(Direct vs Direct). Ranking uses realised return only and ignores risk — a fund can reach the "+
-    "top by taking considerably more of it. Past performance does not predict future returns, and "+
-    "merged or closed funds are absent, so surviving cohorts flatter.</div>";
+    "(Direct vs Direct). Merged or closed funds are absent, so surviving cohorts flatter.</div>";
 
   host.querySelectorAll(".ins-row").forEach(function(row){
     const btn = row.querySelector(".ins-summary");
@@ -3399,10 +3509,9 @@ async function fillInsightDetail(pane, item, gen){
         " in this category started after your SIP began and "+
         (dropped===1?"was":"were")+" excluded, so the comparison is like-for-like.</span>" : "")+
       "</div>";
-    const lagging = item.alphaPP!=null && item.alphaPP <= -LAG_THRESHOLD_PP;
-    if(lagging) html += topListHtml(res, own);
-    else html += '<div class="ins-note">Within '+LAG_THRESHOLD_PP+
-      " pp of its benchmark, so no alternatives are listed.</div>";
+    /* Q2: shown for every holding, not only laggards — a fund can beat its index
+       and still sit mid-table among funds that ran the same window. */
+    html += '<div class="ins-sub">Top peers over your window</div>'+topListHtml(res, own);
   }
   if(catInfo.status === "stale"){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s data failed its last publish check '+
