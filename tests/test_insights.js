@@ -225,9 +225,9 @@ if(loaded){
   ok("the annualised cell is never the coloured one",
      !/col-ann[^>]*(pos|neg)/.test(beatTbl) && !/col-ann[^>]*(pos|neg)/.test(tbl));
   ok("the annualised column is tagged so narrow screens drop it, not Return",
-     /<th class="col-ann">Annualised<\/th>/.test(tbl));
+     /<th class="col-ann">Annualized<\/th>/.test(tbl));
   ok("header order puts Category avg beside Return",
-     /<th class="col-abs">Return<\/th><th>Category avg<\/th>/.test(tbl));
+     /<th class="col-abs">Return<\/th><th>Category Avg<\/th>/.test(tbl));
   ok("every row has exactly five cells",
      (tbl.match(/<tr>(?!<th)/g) || []).length >= 0 &&
      tbl.split("<tr").slice(2).every(r => {

@@ -54,6 +54,9 @@
   .wrap{max-width:1080px;margin:0 auto;}
 
   /* header */
+  .eb-rule{display:inline-block;width:30px;height:1px;vertical-align:middle;margin-right:10px;
+    background:linear-gradient(90deg,transparent,var(--brass));}
+  .eb-rule.flip{margin:0 0 0 10px;background:linear-gradient(90deg,var(--brass),transparent);}
   .eyebrow{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.24em;
     text-transform:uppercase;color:var(--brass);margin:0 0 16px;display:flex;align-items:center;gap:12px;}
   .eyebrow::before{content:"";width:30px;height:1px;
@@ -126,6 +129,7 @@
   .btn:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
 
   .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px;}
+  .lbl-opt{color:var(--faint);font-weight:400;letter-spacing:.08em;}
   .selected{font-family:var(--mono);font-size:13px;color:var(--brass);margin:12px 0 0;min-height:20px;letter-spacing:.01em;}
 
   /* table */
@@ -375,9 +379,9 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">SIP Performance · Nifty TRI Benchmark</div>
+  <div class="eyebrow"><span class="eb-rule"></span>SIP Performance · Nifty TRI Benchmark<span class="eb-rule flip"></span></div>
   <h1>Are your funds beating the index?</h1>
-  <p class="sub">Pick a scheme, enter your SIP details, and see your money-weighted XIRR next to the matching Nifty Total Return Index over the same window — so you can see whether active management beat a low-cost index fund.</p>
+  <p class="sub">Pick a scheme, enter your SIP details, and compare your money-weighted XIRR with the matching Nifty Total Return Index over the same investment period. See whether active management has earned its fees—or if a low-cost index fund would have delivered better results.</p>
 
   <div id="triBanner" class="tri-banner" style="display:none;"></div>
 
@@ -410,7 +414,7 @@
       <span class="status astat" id="exportStatus" aria-live="polite" style="flex:0 1 auto;"></span>
     </div>
     <div class="privacy-note">
-      <span><b>Privacy:</b> portfolio inputs are stored only in this browser under this website's origin. A person opening the same link on another device or browser does not receive these portfolios.</span>
+      <span><b>Private:</b> portfolios live only in this browser — never uploaded.</span>
       <button class="btn small" id="eraseLocalBtn" style="border-color:var(--muted);color:var(--muted);">Erase browser data</button>
     </div>
   </div>
@@ -441,7 +445,7 @@
         <input type="date" id="startDate">
       </div>
       <div>
-        <label for="endDate">SIP end date (optional)</label>
+        <label for="endDate">SIP end date <span class="lbl-opt">· optional</span></label>
         <input type="date" id="endDate">
       </div>
       <div>
@@ -477,7 +481,7 @@
       <button class="btn small" id="clearBtn" style="border-color:var(--muted);color:var(--muted);">Clear all</button>
     </div>
     <div id="tableWrap">
-      <div class="empty">No schemes added yet.</div>
+      <div class="empty">No schemes yet — search a fund above and add your SIP.</div>
     </div>
     <div class="foot" id="foot" style="display:none;"></div>
   </div>
@@ -1888,7 +1892,7 @@ function portfolioMetrics(){
 function render(){
   const wrap=$("tableWrap");
   if(!schemes.length){
-    wrap.innerHTML='<div class="empty">No schemes added yet.</div>';
+    wrap.innerHTML='<div class="empty">No schemes yet — search a fund above and add your SIP.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
     $("exportBtn").style.display="none";
     $("tabbar").style.display="none";$("paneInsights").style.display="none";
@@ -1945,7 +1949,7 @@ function render(){
     <div class="stat hero"><div class="k">Benchmark XIRR</div>
       <div class="v">${port.anyBench?pct(port.benchXirr):'N/A'}</div>
       <div class="sub2">blended Nifty TRI</div></div>
-    <div class="stat hero spread"><div class="k">Alpha vs benchmark</div>
+    <div class="stat hero spread"><div class="k">Portfolio XIRR vs benchmark</div>
       <div class="v">${port.alpha!=null?'<span class="chip '+alphaBand.cls+'">'+pp(port.alpha)+'</span><span class="word '+signClass(port.alpha)+'">'+alphaBand.word+'</span>':'N/A'}</div>
       <div class="sub2">${port.comparableCount} comparable holding(s)</div></div>`;
 
@@ -1981,9 +1985,9 @@ function render(){
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
     if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">('+(s.benchApprox?'broad-market benchmark':'category benchmark')+')</span></div>';}
     else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(category benchmark · no overlapping data)</span></div>';}
-    const verdict=v.alpha==null?'':'<div class="verdict '+signClass(band.key==="match"?null:v.alpha)+'">'+
-      (band.key==="match" ? 'Matched the benchmark'
-                          : band.word+' the benchmark by '+Math.abs(v.alpha*100).toFixed(2)+' pp p.a.')+'</div>';
+    /* The band word sits under the Alpha chip (mockup), not as a second sentence
+       under the fund name — two renderings of one signal on every row. */
+    const verdict='';
     // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
     let notes="";
     if(s.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+s.navStaleDays+' days ago ('+fmtDate(s.fundValueDate)+') — value may be stale/suspended</div>';
@@ -1996,7 +2000,7 @@ function render(){
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num">${gainCell}</td>
       <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
       <td class="num">${compCell}</td>
-      <td class="num">${v.alpha!=null?'<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span>':'—'}</td>
+      <td class="num">${v.alpha!=null?'<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span><div class="verdict '+signClass(band.key==="match"?null:v.alpha)+'">'+band.word+'</div>':'—'}</td>
       <td class="num"><button class="btn small" data-i="${i}">Remove</button></td></tr>`;
   });
   if(port){
@@ -2006,9 +2010,9 @@ function render(){
       <td class="num"><span class="${signClass(port.gain)}">${(port.gain>=0?'+':'')+inr(port.gain)}</span><div class="sub2">${pct(port.absReturn)}</div></td>
       <td class="num"><span class="${signClass(port.xirr)}" style="font-weight:600;">${pct(port.xirr)}</span></td>
       <td class="num">${port.anyBench?(anyShorter?pct(port.cmpFundXirr)+'<div class="sub2">benchmark '+pct(port.benchXirr)+'</div>':pct(port.benchXirr)):'—'}</td>
-      <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span>':'—'}</td><td></td></tr>`;
+      <td class="num">${port.alpha!=null?'<span class="chip '+pBand.cls+'">'+pp(port.alpha)+'</span><div class="verdict '+signClass(pBand.key==="match"?null:port.alpha)+'">'+pBand.word+'</div>':'—'}</td><td></td></tr>`;
   }
-  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain / Abs %</th><th style="text-align:right;">Fund XIRR</th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain · Abs</th><th style="text-align:right;">Fund XIRR</th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th style="text-align:right;">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
   wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
     const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
@@ -3357,7 +3361,7 @@ function periodTableHtml(periodsDoc, plan, code){
             "<td>"+avg+'</td><td class="col-ann">'+ann+"</td><td>"+(rk?rk+" of "+uni:"—")+"</td></tr>";
   }
   return '<table class="ptable"><thead><tr><th>Period</th><th class="col-abs">Return</th>'+
-         "<th>Category avg</th><th class=\"col-ann\">Annualised</th><th>Rank</th></tr></thead>"+
+         "<th>Category Avg</th><th class=\"col-ann\">Annualized</th><th>Rank</th></tr></thead>"+
          "<tbody>"+rows+"</tbody></table>";
 }
 
@@ -3487,7 +3491,7 @@ async function fillInsightDetail(pane, item, gen){
     const dates = scheduleDates(item.start, item.end||item.valueDate);
     const res = rankCandidates(navs, dates, item.amount, item.valueDate, item.code);
     const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
-    html += '<div class="ins-sub">Your window — same SIP dates and amount, '+escapeHtml(item.plan)+" plan</div>";
+    html += '<div class="ins-sub">Your window — same SIP dates &amp; amount, '+escapeHtml(item.plan)+" plan</div>";
     /* Only funds that ran the ENTIRE window are eligible, so `universe` can be a
        small fraction of the category over a long SIP. Below MIN_RANK_UNIVERSE a
        rank is noise dressed as a verdict ("2 of 3"), so state the position without
@@ -3511,7 +3515,7 @@ async function fillInsightDetail(pane, item, gen){
       "</div>";
     /* Q2: shown for every holding, not only laggards — a fund can beat its index
        and still sit mid-table among funds that ran the same window. */
-    html += '<div class="ins-sub">Top peers over your window</div>'+topListHtml(res, own);
+    html += '<div class="ins-sub">Top peers in category</div>'+topListHtml(res, own);
   }
   if(catInfo.status === "stale"){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s data failed its last publish check '+
