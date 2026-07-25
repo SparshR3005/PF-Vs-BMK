@@ -78,8 +78,10 @@ jobs:
         run: node tests/test_matching.js
 
       # Insights tab: name normalisation against real AMFI string variants,
-      # candidate eligibility, top-five suppression on thin cohorts, and the
-      # period-table rendering.
+      # candidate eligibility, the thin-cohort caveat on the peer list, and the
+      # period-table rendering (including that Return -- not the annualised rate --
+      # is the cell coloured against the category average; they are the only two
+      # columns in the same units).
       - name: Insights tab tests
         run: node tests/test_insights.js
 

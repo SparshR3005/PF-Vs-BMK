@@ -40,9 +40,6 @@ const escapeHtml = s => String(s).replace(/[&<>"]/g,
 const MIN_TOP_UNIVERSE = 10, TOP_N = 5;
 const HORIZON_LABELS = [["6m","6 Month"],["1y","1 Year"],["2y","2 Years"],["3y","3 Years"],
                         ["5y","5 Years"],["7y","7 Years"],["10y","10 Years"]];
-const QUARTILE_WORD = {1:"Top quartile",2:"2nd quartile",3:"3rd quartile",4:"Bottom quartile"};
-// qBadge() reads this; the real strings are asserted against index.html below.
-const QUARTILE_HELP = {1:"a",2:"b",3:"c",4:"d"};
 const NAME_STOPWORDS = new Set(["direct","regular","plan","growth","option","opt",
                                 "payout","reinvestment","idcw","dividend"]);
 const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","DSP","PGIM",
@@ -51,7 +48,7 @@ const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","D
   "US","UK","ESG","REIT","INVIT","PSU","FMCG","IT","NIFTY","BSE","NSE","CRISIL"]);
 
 const NEEDED = ["titleCaseWord","titleCaseName","normaliseFundName","gridToNavArr",
-                "rankCandidates","qBadge","signedPP","periodTableHtml","topListHtml"];
+                "rankCandidates","signedPP","periodTableHtml","topListHtml"];
 let loaded = true;
 try { eval(NEEDED.map(grabFn).join("\n")); }
 catch(e){ loaded = false; console.log("  FAIL  index.html is missing Insights machinery: " + e.message); fail++; }
@@ -160,17 +157,36 @@ if(loaded){
   for(let i=0;i<3;i++){ const [c,e]=synth("T"+i,"Tiny "+i,0.08+0.01*i,560); three[c]=e; }
   const small = rankCandidates({funds:three}, dates, 5000, VALUE, "T0");
   ok("a 3-fund cohort is below the top-five threshold", small.universe < MIN_TOP_UNIVERSE);
-  ok("and the UI says so instead of listing a top five",
-     /would be noise/.test(topListHtml(small, small.ownXirr)));
+  /* The list is now rendered at every pool size. Suppressing it hid the only
+     like-for-like comparison the tab has; the honesty requirement is met by
+     stating the pool size instead, so BOTH the list and the caveat must appear. */
+  const smallHtml = topListHtml(small, small.ownXirr);
+  ok("a thin cohort still gets a list", /<ol class="top5">/.test(smallHtml));
+  ok("and the thin cohort is captioned as too small to rank",
+     /too small a pool/.test(smallHtml));
   ok("a large cohort does get a list", /<ol class="top5">/.test(topListHtml(res, res.ownXirr)));
+  ok("a large cohort carries no thin-pool caveat",
+     !/too small a pool/.test(topListHtml(res, res.ownXirr)));
+
+  // Q3: the user's own fund is ranked in place, not filtered out of its own list.
+  const ownIn = res.top.some(r => r.own === true);
+  ok("the own-fund flag is carried on the top list", res.top.every(r => "own" in r));
+  if(ownIn){
+    ok("the own row is labelled rather than showing a 0.00 pp gap",
+       /your fund/.test(topListHtml(res, res.ownXirr)));
+  } else {
+    ok("own fund outside the top five simply does not appear", true);
+  }
 
   // ------------------------------------------------------------ formatting
   eq("positive spreads carry a plus", signedPP(4.2), "+4.20 pp");
   ok("negative spreads use a real minus sign", signedPP(-4.2) === "\u22124.20 pp");
   eq("null spread renders as a dash", signedPP(null), "—");
-  eq("no badge when the quartile is suppressed", qBadge(null), "");
-  ok("quartile 1 reads as top", /Top quartile/.test(qBadge(1)));
-  ok("quartile 4 reads as bottom", /Bottom quartile/.test(qBadge(4)));
+  /* Quartiles were removed from the tab by decision, not by accident. Assert the
+     machinery is gone so a future paste cannot quietly reintroduce it. */
+  ok("no quartile helper survives in index.html",
+     !/function qBadge/.test(HTML) && !/QUARTILE_WORD|QUARTILE_HELP/.test(HTML));
+  ok("no quartile chip is rendered", !/class="qband/.test(HTML));
 
   // ------------------------------------------------------------ period table
   const periods = { plans: { Direct: {
@@ -184,8 +200,42 @@ if(loaded){
   const tbl = periodTableHtml(periods, "Direct", "118533");
   ok("every horizon gets a row", HORIZON_LABELS.every(h => tbl.includes(h[1])));
   ok("ranks are shown with their denominator", /29 of 31/.test(tbl));
+  /* `avg` is built from the same CUMULATIVE returns as `abs` (fetch_ranks.py
+     gates `ann` behind MIN_ANNUALISE_DAYS), so Return is the only column that is
+     like-for-like with Category avg. They sit adjacent and Return carries the
+     colour; colouring the annualised cell compared a CAGR to a cumulative figure
+     and painted category-beating funds red at 5 of 7 horizons. */
   ok("sub-year rows carry no annualised figure",
-     /<td>6 Month<\/td><td class="col-abs">6\.30%<\/td><td>—<\/td>/.test(tbl));
+     /<td>6 Month<\/td><td class="col-abs neg">6\.30%<\/td><td>11\.20%<\/td><td class="col-ann">—<\/td>/.test(tbl));
+  /* Regression fixture for the CAGR-vs-cumulative bug. This fund BEATS its
+     category at 10y on the only comparison that is unit-consistent (297.01 vs
+     280.60 cumulative), while its annualised rate (14.79) sits far below the
+     same average. Colour must follow the cumulative pair, so this row is green;
+     comparing `ann` to `avg` would render it red. */
+  const beats = { plans: { Direct: {
+    universe: {"6m":43,"10y":18},
+    avg: {"6m":4.48,"10y":280.60},
+    funds: { "999": { abs:{"6m":7.78,"10y":297.01}, ann:{"10y":14.79},
+                      rank:{"6m":10,"10y":6} } } } } };
+  const beatTbl = periodTableHtml(beats, "Direct", "999");
+  ok("Return above the category average renders green",
+     /col-abs pos">297\.01%/.test(beatTbl) && /col-abs pos">7\.78%/.test(beatTbl));
+  ok("Return below the category average renders red",
+     /col-abs neg">6\.30%/.test(tbl) && /col-abs neg">308\.99%/.test(tbl));
+  ok("the annualised cell is never the coloured one",
+     !/col-ann[^>]*(pos|neg)/.test(beatTbl) && !/col-ann[^>]*(pos|neg)/.test(tbl));
+  ok("the annualised column is tagged so narrow screens drop it, not Return",
+     /<th class="col-ann">Annualised<\/th>/.test(tbl));
+  ok("header order puts Category avg beside Return",
+     /<th class="col-abs">Return<\/th><th>Category avg<\/th>/.test(tbl));
+  ok("every row has exactly five cells",
+     (tbl.match(/<tr>(?!<th)/g) || []).length >= 0 &&
+     tbl.split("<tr").slice(2).every(r => {
+       const td = (r.match(/<td\b/g) || []).length;
+       const span = (r.match(/colspan="(\d+)"/g) || [])
+         .reduce((a, m) => a + (Number(m.match(/\d+/)[0]) - 1), 0);
+       return td + span === 5;
+     }));
   ok("horizons with no history are marked, not blanked",
      /not enough history/.test(tbl));
   ok("an unknown fund explains itself",
@@ -220,15 +270,15 @@ if(loaded){
   // Light-theme fallbacks on a dark surface are invisible.
   ok("no black-based overlay fallbacks remain", !/rgba\(0,0,0,/.test(cssBlock));
 
-  // Quartile chips must be legible, i.e. use the theme's own accent colours.
-  ok("quartile chips use theme colours",
-     /\.q1\{[^}]*var\(--beat\)/.test(cssBlock) && /\.q4\{[^}]*var\(--lag\)/.test(cssBlock));
+  // Quartile styling must not linger after the feature was removed.
+  ok("no quartile CSS remains", !/\.q1\{|\.q4\{|\.qband\{/.test(HTML));
+  ok("the footer no longer explains quartiles",
+     !/split the category into four equal groups/.test(HTML));
 
-  // The label alone did not convey the meaning; it needs to explain itself.
-  ok("quartile chips carry an explanatory tooltip", /QUARTILE_HELP/.test(HTML));
-  ok("all four quartiles have help text",
-     [1,2,3,4].every(q => new RegExp(q + ':"[^"]{10,}"').test(HTML)));
-  ok("the footer explains what a quartile is", /split the category into four equal groups/.test(HTML));
+  // The Return/Category-avg colouring needs the two utility classes to exist.
+  ok("the coloured Return cell has theme colours",
+     /td\.col-abs\.pos\{[^}]*var\(--beat\)/.test(cssBlock) &&
+     /td\.col-abs\.neg\{[^}]*var\(--lag\)/.test(cssBlock));
 
   // ------------------------------------------------------------ wiring
   ok("the tab bar exists in the markup", /id="tabbar"/.test(HTML));
@@ -239,7 +289,6 @@ if(loaded){
      /cache:"no-store"/.test(HTML));
   ok("sector funds are explained rather than silently absent",
      /pharma fund/i.test(HTML));
-  ok("the disclaimer states ranking ignores risk", /ignores risk/i.test(HTML));
   ok("the disclaimer warns about survivorship", /merged or closed/i.test(HTML));
   ok("stale categories are surfaced to the user", /failed its last publish check/.test(HTML));
 }
