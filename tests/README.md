@@ -1,11 +1,26 @@
 # Tests
 
 ```bash
-python3 tests/test_fetch_tri.py     # 11 tests — TRI continuity gate, fetch resilience
-node    tests/test_app.js           # 33 assertions — export, import, retry, storage, search
-node    tests/test_matching.js      # 79 assertions — scheme matching, SEBI category guard,
-                                    #                 benchmark mapping, rename aliases
+python3 tests/test_fetch_tri.py     #  36 — TRI continuity gate, fetch resilience,
+                                    #       canonical-name drift, staleness audit
+python3 tests/test_fetch_ranks.py   # 141 — ranking maths, publish gates, dedupe
+python3 tests/test_probe_ranks.py   #  71 — universe filters, client/Python parity
+node    tests/test_app.js           #  33 — export, import, retry, storage, search
+node    tests/test_matching.js      # 121 — matching, SEBI category guard, benchmark
+                                    #       mapping + reachability, rename aliases
+node    tests/test_insights.js      #  99 — ranking, NAV parsing, SIP window, plan
 ```
+
+Two of these assert things about the COMMITTED DATA, not just the code:
+
+- `test_committed_index_names_match_the_configured_canonical_names` diffs every
+  `INDEX_MAP` entry in `fetch_tri.py` against the `index` field of the file it
+  produced under `data/tri/`. A wrong canonical name is answered by niftyindices
+  with an empty list rather than an error, so without this the only symptom is an
+  index that quietly stops updating while the job stays green — which is exactly
+  what happened to `NIFTY_HEALTHCARE` for nine days before v9.
+- `fetch_tri.py --audit` (run as a post-commit step in `tri-fetch.yml`, not a test)
+  fails the Action once any index has been frozen beyond ten days.
 
 No test runner, no npm install. Plain Python 3.12 and Node 20. `pytest` works too
 if you prefer it (`python3 -m pytest tests/ -q`).

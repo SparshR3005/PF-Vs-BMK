@@ -425,5 +425,60 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
      A.matchKey("ICICI Prudential Large Cap Fund") !== a);
 })();
 
+// ============================== v9: Nifty India Digital reachability + word order
+(function testIndiaDigitalRouting() {
+  const S = "Equity Scheme - Sectoral/ Thematic";
+  const key = (name) => A.resolveBenchmarkKey(name, S).key;
+
+  // BEFORE this rule NIFTY_INDIA_DIGITAL was dead weight: it was fetched nightly by
+  // fetch_tri.py, committed to data/tri/, and no route in the file could ever
+  // select it — the bare word "digital" belongs to the NIFTY_IT entry, and nothing
+  // listed NIFTY_INDIA_DIGITAL as its .fb target either.
+  ok("a fund named after the index reaches Nifty India Digital TRI",
+     key("Nifty India Digital Fund - Direct Plan - Growth") === "NIFTY_INDIA_DIGITAL");
+  ok("...regardless of the AMC prefix",
+     key("ICICI Prudential Nifty India Digital Fund - Growth") === "NIFTY_INDIA_DIGITAL");
+
+  // WORD ORDER IS THE WHOLE DISTINCTION and this is the regression that matters.
+  // "Digital India" funds are TECHNOLOGY funds, not India-Digital-index funds:
+  // ABSL's own SID describes it as "an open ended equity scheme investing in the
+  // Technology, Telecom, Media, Entertainment and other related ancillary sectors"
+  // and its stated benchmark is BSE Teck TRI. Routing them to NIFTY_INDIA_DIGITAL
+  // would be exactly the confidently-wrong spread this project exists to avoid.
+  ok("Aditya Birla Digital India stays on Nifty IT (it is a technology fund)",
+     key("Aditya Birla Sun Life Digital India Fund - Direct Plan - Growth") === "NIFTY_IT");
+  ok("Tata Digital India stays on Nifty IT",
+     key("Tata Digital India Fund - Direct Plan - Growth") === "NIFTY_IT");
+  ok("a plain technology fund is unaffected",
+     key("SBI Technology Opportunities Fund - Direct Plan - Growth") === "NIFTY_IT");
+  ok("a plain IT fund is unaffected",
+     key("Franklin India Technology Fund - Growth") === "NIFTY_IT");
+
+  // Ordering is load-bearing: the india-digital rule must sit ABOVE the IT rule,
+  // because the IT rule also matches the substring "digital".
+  const SK = HTML.match(/const SECTOR_KEYWORDS = \[[\s\S]*?\n\];/)[0];
+  ok("india-digital rule is declared before the IT rule",
+     SK.indexOf("NIFTY_INDIA_DIGITAL") < SK.indexOf('key: "NIFTY_IT"'));
+
+  // Reachability audit. Some keys are intentionally fallback-only (NIFTY50 and
+  // NIFTY200 exist to catch a missing broad-market file, MIDCAP100/SMALLCAP100 to
+  // catch a missing 150/250). Every OTHER key must be selectable by some route, or
+  // the fetcher is spending a nightly request on data nothing can use.
+  const FALLBACK_ONLY = new Set(["NIFTY50","NIFTY200","NIFTY_NEXT_50","NIFTY_TOTAL_MARKET",
+                                 "NIFTY_MIDCAP100","NIFTY_SMALLCAP100"]);
+  const routed = new Set(["NIFTY500"]);
+  [/const CATEGORY_KEY_BENCH = \{[\s\S]*?\n\};/, /const CATEGORY_DEFAULTS = \[[\s\S]*?\n\];/,
+   /const NAME_BENCH_OVERRIDES = \[[\s\S]*?\n\];/, /const SECTOR_KEYWORDS = \[[\s\S]*?\n\];/]
+    .forEach(re => {
+      const blk = HTML.match(re);
+      if (blk) (blk[0].match(/"(NIFTY[A-Z0-9_]*)"/g) || [])
+        .forEach(t => routed.add(t.replace(/"/g, "")));
+    });
+  const unreachable = Object.keys(A.BENCH_FUNDS)
+    .filter(k => !routed.has(k) && !FALLBACK_ONLY.has(k));
+  ok("no benchmark is fetched nightly but unreachable by every route",
+     unreachable.length === 0, unreachable.join(","));
+})();
+
 console.log(`\n${fail ? "FAILED" : "ALL PASSED"} (${pass} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);

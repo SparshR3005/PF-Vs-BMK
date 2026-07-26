@@ -362,6 +362,128 @@ def test_rejects_non_finite_committed_value():
     new[(start + _td(days=5)).isoformat()] = float("inf")
     assert ft.continuity_problem(_doc(new), _doc(old))
 
+
+# ------------------------------------------------- canonical-name drift (v9 #1)
+# NIFTY_HEALTHCARE's `name` was edited from "NIFTY HEALTHCARE" to
+# "NIFTY HEALTHCARE INDEX". The endpoint answers a wrong canonical name with an
+# EMPTY list, not an error, so fetch_index() logged "likely wrong canonical name;
+# skipping", the index kept its last-good file, and — because it is OPTIONAL — the
+# run exited 0. Nine consecutive green nights published nothing for it.
+#
+# rows_to_doc() writes `"index": name` verbatim from INDEX_MAP, so every committed
+# file carries the exact string that last fetched it. Comparing the two turns a
+# silent config edit into a red test on the very next push.
+def test_committed_index_names_match_the_configured_canonical_names():
+    out = ROOT / "data" / "tri"
+    if not out.is_dir():
+        return                                    # fresh clone, nothing published yet
+    import json
+    drift = []
+    for key, meta in ft.INDEX_MAP.items():
+        path = out / meta["file"]
+        if not path.exists():
+            continue
+        committed = json.loads(path.read_text(encoding="utf-8")).get("index")
+        if committed != meta["name"]:
+            drift.append("%s: config %r but committed data says %r"
+                         % (key, meta["name"], committed))
+    assert not drift, (
+        "INDEX_MAP name(s) no longer match the data they produced — the endpoint "
+        "returns an EMPTY list for a wrong name and the run still exits 0:\n  "
+        + "\n  ".join(drift))
+
+
+def test_every_index_map_entry_has_a_file_named_after_its_key():
+    # loadTriFile() in index.html fetches data/tri/<KEY>.json, so `file` drifting
+    # away from `<key>.json` silently breaks that benchmark in the browser only.
+    bad = [k for k, m in ft.INDEX_MAP.items() if m["file"] != k + ".json"]
+    assert not bad, "file name must be <key>.json: %s" % bad
+
+
+# -------------------------------------------------- persistent staleness (v9 #1)
+def _manifest(tmp_path, entries):
+    import json
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps({"generated_utc": "2026-07-25T00:00:00Z",
+                             "indices": entries}), encoding="utf-8")
+    return p
+
+
+def _entry(key, days_old, today=None):
+    today = today or ft.today_ist()
+    end = (today - datetime.timedelta(days=days_old)).isoformat()
+    return {"key": key, "index": key, "file": key + ".json",
+            "count": 5000, "start": "2005-04-01", "end": end, "fresh": days_old <= 7}
+
+
+def test_audit_passes_when_every_series_is_current():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _manifest(Path(d), [_entry("NIFTY500", 1), _entry("NIFTY_IT", 3)])
+        code, lines = ft.audit_manifest(path)
+    assert code == 0, lines
+
+
+def test_audit_fails_on_a_persistently_stale_optional_index():
+    # The NIFTY_HEALTHCARE case: still publishing, still green, frozen for weeks.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _manifest(Path(d), [_entry("NIFTY500", 1), _entry("NIFTY_HEALTHCARE", 21)])
+        code, lines = ft.audit_manifest(path)
+    assert code == 1
+    assert any("NIFTY_HEALTHCARE" in ln for ln in lines), lines
+
+
+def test_audit_marks_a_stale_required_index_as_required():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _manifest(Path(d), [_entry("NIFTY500", 30)])
+        code, lines = ft.audit_manifest(path)
+    assert code == 1
+    assert any("REQUIRED" in ln for ln in lines), lines
+
+
+def test_audit_fails_on_an_entry_with_no_end_date():
+    # fresh:false with end:null is what a never-successfully-fetched index looks
+    # like. Treating "no data" as "not stale" is how one stays invisible forever.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        e = _entry("NIFTY_TRANSPORT", 1); e["end"] = None
+        path = _manifest(Path(d), [e])
+        code, lines = ft.audit_manifest(path)
+    assert code == 1
+    assert any("NO DATA" in ln for ln in lines), lines
+
+
+def test_audit_respects_a_custom_ceiling():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _manifest(Path(d), [_entry("NIFTY_IT", 9)])
+        assert ft.audit_manifest(path, limit=10)[0] == 0
+        assert ft.audit_manifest(path, limit=6)[0] == 1
+
+
+def test_audit_fails_loudly_on_a_missing_or_unreadable_manifest():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        assert ft.audit_manifest(Path(d) / "nope.json")[0] == 1
+        bad = Path(d) / "index.json"
+        bad.write_text("{not json", encoding="utf-8")
+        assert ft.audit_manifest(bad)[0] == 1
+
+
+# ------------------------------------------------------ continuity override (v9)
+def test_force_is_available_as_a_continuity_escape_hatch():
+    # continuity_problem() refuses any series missing the prior terminal date. That
+    # is correct 99% of the time and unrecoverable the other 1%: if NSE withdraws a
+    # committed date, EVERY future run fails on it and the index is wedged for good.
+    # --force is the documented manual override.
+    import argparse, inspect
+    src = inspect.getsource(ft.main)
+    assert "--force" in src, "main() must expose a --force override"
+    assert "args.force" in src, "--force must actually bypass the gate"
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

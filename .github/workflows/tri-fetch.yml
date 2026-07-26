@@ -72,3 +72,16 @@ jobs:
             # once rather than failing the run and skipping a day of data.
             git push || (git pull --rebase --autostash && git push)
           fi
+
+      # An OPTIONAL index that fails keeps its last-good file and is flagged in the
+      # manifest, and the run still exits 0 — deliberately, so one dead sector never
+      # blocks the broad-market data every holding depends on. The gap was that
+      # nothing ever escalated: NIFTY_HEALTHCARE's canonical name was edited, the
+      # endpoint answered with an empty list rather than an error, and the index sat
+      # frozen for nine days behind nine green ticks.
+      #
+      # This runs AFTER the commit on purpose. Failing earlier would mean one wedged
+      # index blocks the 38 healthy ones; failing here publishes everything that
+      # worked and still turns the Action red so it gets seen.
+      - name: Fail if any benchmark has gone persistently stale
+        run: python fetch_tri.py --audit

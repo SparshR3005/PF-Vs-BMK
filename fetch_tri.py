@@ -9,6 +9,7 @@ Key detail: the live endpoint is the ROUTED path /BackPage/getTotalReturnIndexSt
 Responses come back as content-type text/html but the body is JSON -> parse the body
 regardless of content-type.
 """
+import argparse
 import json
 import math
 import re
@@ -26,6 +27,20 @@ OUT_DIR = Path("data/tri")
 START_DATE = "01-Jan-1999"          # DD-MMM-YYYY, endpoint format
 MIN_ROWS = 200                       # a real series has thousands; guards against []/wall
 MAX_STALE_DAYS = 7
+
+# An OPTIONAL index that fails keeps its last-good file and is flagged in the
+# manifest -- deliberately, so one bad sector fetch never blocks the broad-market
+# data every holding depends on. But "flagged" is not "noticed": the job still
+# exits 0, so a PERMANENT failure (a renamed index, a retired series) looks
+# identical to a one-night blip forever. NIFTY_HEALTHCARE sat dead for nine days
+# behind nine green ticks exactly this way.
+#
+# --audit reads the COMMITTED manifest after the commit step and exits non-zero
+# once any index has been stale longer than this, which turns the Action red
+# without ever blocking the data that did fetch. 10 days clears the worst
+# realistic holiday cluster (Diwali/weekend) with room to spare, so tripping it
+# means something is actually broken rather than closed.
+MAX_OPTIONAL_STALE_DAYS = 10
 PER_INDEX_ATTEMPTS = 4
 NAV_TIMEOUT_MS = 45000
 
@@ -79,7 +94,14 @@ INDEX_MAP = {
     "NIFTY_PSU_BANK":       {"name": "NIFTY PSU BANK",             "file": "NIFTY_PSU_BANK.json"},
     "NIFTY_IT":             {"name": "NIFTY IT",                   "file": "NIFTY_IT.json"},
     "NIFTY_PHARMA":         {"name": "NIFTY PHARMA",               "file": "NIFTY_PHARMA.json"},
-    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE INDEX",     "file": "NIFTY_HEALTHCARE.json"},
+    # "NIFTY HEALTHCARE", not "NIFTY HEALTHCARE INDEX". The endpoint returns [] for
+    # the longer spelling, which fetch_index() reports as "EMPTY result -> likely
+    # wrong canonical name; skipping" and the run then exits 0 because this is an
+    # OPTIONAL index. That is exactly what happened: the name was changed, the file
+    # stopped updating on 2026-07-20, and nine days of green runs went by before
+    # anyone noticed. check_name_drift() in tests/test_fetch_tri.py now asserts the
+    # committed doc["index"] still matches this string, so the same edit fails CI.
+    "NIFTY_HEALTHCARE":     {"name": "NIFTY HEALTHCARE",           "file": "NIFTY_HEALTHCARE.json"},
     "NIFTY_FMCG":           {"name": "NIFTY FMCG",                 "file": "NIFTY_FMCG.json"},
     "NIFTY_CONSUMPTION":    {"name": "NIFTY INDIA CONSUMPTION",    "file": "NIFTY_CONSUMPTION.json"},
     "NIFTY_CONSUMER_DUR":   {"name": "NIFTY CONSUMER DURABLES",    "file": "NIFTY_CONSUMER_DUR.json"},
@@ -435,7 +457,90 @@ def continuity_problem(new_doc: dict, old_doc) -> str:
     return ""
 
 
-def main():
+def audit_manifest(path=None, limit=MAX_OPTIONAL_STALE_DAYS):
+    """Read the COMMITTED manifest and report indices stale beyond `limit` days.
+
+    Returns (exit_code, lines). Deliberately does NOT touch the network or launch a
+    browser: it is a post-commit assertion about what is now on disk, so it can run
+    as its own workflow step AFTER the data has been safely committed. Failing
+    before the commit would mean a single dead sector index blocks the 38 healthy
+    ones -- the exact fail-open/fail-closed trade the soft gate exists to make.
+    """
+    path = path or (OUT_DIR / "index.json")
+    try:
+        manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return 1, ["ERROR: cannot read manifest %s (%s)" % (path, exc)]
+
+    entries = manifest.get("indices") or []
+    if not entries:
+        return 1, ["ERROR: manifest lists no indices"]
+
+    today = today_ist()
+    stale, unknown = [], []
+    for entry in entries:
+        key = entry.get("key") or "?"
+        end = entry.get("end")
+        if not end:
+            unknown.append(key)
+            continue
+        try:
+            age = (today - datetime.strptime(end, "%Y-%m-%d").date()).days
+        except ValueError:
+            unknown.append(key)
+            continue
+        if age > limit:
+            stale.append((age, key, end))
+
+    if not stale and not unknown:
+        return 0, ["All %d index series are within %d days." % (len(entries), limit)]
+
+    lines = []
+    for age, key, end in sorted(stale, reverse=True):
+        required = " (REQUIRED)" if key in REQUIRED_KEYS else ""
+        lines.append("  STALE %4dd  %-24s last covered %s%s" % (age, key, end, required))
+    for key in sorted(unknown):
+        lines.append("  NO DATA      %-24s manifest carries no usable end date" % key)
+    lines.append(
+        "%d of %d index series are stale beyond %d days. The nightly fetch is "
+        "publishing, but these are frozen on last-good data — check the run log "
+        "for 'EMPTY result' (a wrong canonical name) or a continuity refusal."
+        % (len(stale) + len(unknown), len(entries), limit)
+    )
+    return 1, lines
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Fetch Nifty TRI series from niftyindices.com into data/tri/.")
+    parser.add_argument(
+        "--audit", action="store_true",
+        help="don't fetch; read the committed manifest and exit 1 if any index is "
+             "stale beyond --stale-days. Intended as a post-commit workflow step.")
+    parser.add_argument(
+        "--stale-days", type=int, default=MAX_OPTIONAL_STALE_DAYS,
+        help="staleness ceiling used by --audit (default: %d)" % MAX_OPTIONAL_STALE_DAYS)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="fetch and validate everything, write nothing")
+    parser.add_argument(
+        "--only", metavar="KEY", action="append",
+        help="fetch only these INDEX_MAP keys (repeatable). Skips the required-index "
+             "gate, since a subset run cannot satisfy it; never writes the manifest, "
+             "because a partial run cannot describe the whole dataset.")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="bypass the continuity gate. For the one case it cannot handle: NSE "
+             "revising or withdrawing a committed date, which makes every future run "
+             "fail on 'prior end date absent' forever. Verify the diff by hand first.")
+    args = parser.parse_args(argv)
+
+    if args.audit:
+        code, lines = audit_manifest(limit=args.stale_days)
+        for line in lines:
+            print(line)
+        return code
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     end = today_ist().strftime("%d-%b-%Y")
     failures = []          # human-readable reason per index that didn't pass
@@ -473,6 +578,13 @@ def main():
                 print("    initial prime failed (%s) — continuing" % exc)
 
             items = list(INDEX_MAP.items())
+            if args.only:
+                wanted = set(args.only)
+                unknown = sorted(wanted - set(INDEX_MAP))
+                if unknown:
+                    print("ERROR: unknown --only key(s): %s" % ", ".join(unknown))
+                    return 1
+                items = [(k, m) for k, m in items if k in wanted]
             for index, (key, meta) in enumerate(items, start=1):
                 name = meta["name"]
                 filename = meta["file"]
@@ -495,6 +607,10 @@ def main():
                 # Continuity gate: never let a validated-but-truncated/mismatched
                 # series overwrite good committed history (see continuity_problem).
                 cont = continuity_problem(doc, read_existing_doc(OUT_DIR / filename))
+                if cont and args.force:
+                    print("    [%s] continuity check FAILED but --force is set: %s"
+                          % (name, cont))
+                    cont = ""
                 if cont:
                     failures.append(f"{name}: continuity check failed — {cont}")
                     continue
@@ -514,7 +630,9 @@ def main():
     # ---- SOFT COMPLETENESS GATE ----
     # Fail closed (commit nothing, preserve the last-good dataset) only when a
     # required broad-market index is missing/invalid, or nothing was fetched.
-    required_missing = sorted(k for k in REQUIRED_KEYS if k not in staged)
+    # A subset run cannot satisfy the required-index gate by construction, so it is
+    # skipped rather than failed; --only is a diagnostic path, not a publish path.
+    required_missing = [] if args.only else sorted(k for k in REQUIRED_KEYS if k not in staged)
     if required_missing or not staged:
         print("\nERROR: required benchmark(s) missing/invalid — nothing was updated.")
         for k in required_missing:
@@ -524,8 +642,9 @@ def main():
         sys.exit(1)
 
     # Publish the fresh docs atomically; leave failed optional indices as last-good.
-    for key, (filename, doc) in staged.items():
-        write_json_atomic(OUT_DIR / filename, doc)
+    if not args.dry_run:
+        for key, (filename, doc) in staged.items():
+            write_json_atomic(OUT_DIR / filename, doc)
 
     # Manifest lists every configured index: staged -> fresh:true;
     # optional-that-failed -> fresh:false with its last-good end date (or null),
@@ -551,17 +670,24 @@ def main():
                 "count": count, "start": start, "end": prev_end,
                 "fresh": False,
             })
-    write_json_atomic(OUT_DIR / "index.json", manifest, pretty=True)
+    # A partial run must never rewrite the manifest: every index missing from the
+    # subset would be republished as fresh:false with a last-good date, which is
+    # indistinguishable from a real failure to the client's staleness banner.
+    if not args.dry_run and not args.only:
+        write_json_atomic(OUT_DIR / "index.json", manifest, pretty=True)
 
     published = len(staged)
     skipped = len(INDEX_MAP) - published
     print(f"\nWrote {published} fresh TRI file(s); "
           f"{skipped} optional index(es) kept last-good and flagged stale.")
+    if args.dry_run:
+        print("(dry run — nothing was written)")
     if failures:
         print("Non-fatal failures this run:")
         for failure in failures:
             print(f"  - {failure}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

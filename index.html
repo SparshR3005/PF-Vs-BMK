@@ -720,6 +720,19 @@ const SECTOR_KEYWORDS = [
   { words: [], subs: ["consumer durable"], key: "NIFTY_CONSUMER_DUR" },
   { words: [], subs: ["pharma"], key: "NIFTY_PHARMA" },
   { words: [], subs: ["healthcare","health care"], key: "NIFTY_HEALTHCARE" },
+  /* "india digital" is NSE's own index naming (Nifty India Digital) and must be
+     tested BEFORE the IT rule, which claims the bare word "digital".
+
+     The two are NOT interchangeable and word order is the whole distinction:
+     "Digital India" funds (Aditya Birla Sun Life, Tata) are technology sector
+     funds — ABSL's own SID calls it "an open ended equity scheme investing in the
+     Technology, Telecom, Media, Entertainment and other related ancillary
+     sectors", benchmarked to BSE Teck TRI — so they belong on Nifty IT and are
+     left there. Only a fund named after the INDEX ("... India Digital ...") routes
+     to NIFTY_INDIA_DIGITAL. Without this rule that TRI file was fetched nightly
+     and could never be selected by anything: no route reached it and no other
+     index fell back to it. */
+  { words: [], subs: ["india digital"], key: "NIFTY_INDIA_DIGITAL" },
   { words: ["it"], subs: ["information technology","technology","digital"], key: "NIFTY_IT" },
   { words: [], subs: ["fmcg"], key: "NIFTY_FMCG" },
   { words: [], subs: ["consumption","consumer"], key: "NIFTY_CONSUMPTION" },
@@ -3415,11 +3428,23 @@ function insightsItems(){
   for(const s of schemes){
     if(!s || s.error || !s.fund) continue;
     const v = schemeView(s);
+    // The scheme object stores the SIP end as the STRING `endStr`; there has never
+    // been an `s.end`. Reading it produced `undefined`, so `item.end||item.valueDate`
+    // in fillInsightDetail() always fell through to the fund's latest NAV date and
+    // every holding with an end date was ranked over a window it never ran. A SIP
+    // that stopped in Jan-2021 was scheduled 103 instalments instead of 37, and the
+    // pane printed 13.41% where the row header (correctly bounded) printed 14.90%.
+    const endVal = s.endStr ? parseInput(s.endStr) : null;
+    // Plan drives WHICH peer cohort is loaded (navs_<CAT>_<PLAN>.json), so record
+    // whether we actually know it or merely assumed it. MFAPI names a Direct plan
+    // explicitly but usually says nothing for Regular, so "Regular" is the right
+    // default — it is just not a fact, and the pane should not imply it is.
+    const knownPlan = s.plan || detectPlanFromName(s.name) || "";
     out.push({
-      code:s.code, name:s.name||("Code "+s.code), plan:s.plan||detectPlanFromName(s.name)||"Regular",
+      code:s.code, name:s.name||("Code "+s.code), plan:knownPlan||"Regular", planInferred:!knownPlan,
       cat:categoryKey(s.category), catLabel:(s.category||"Uncategorised").replace(/^equity schemes?\s*-\s*/i,""),
       xirr:v.fxFull, alphaPP:(v.alpha!=null? v.alpha*100 : null),
-      start:s.start, end:s.end, amount:s.amount, valueDate:s.fundValueDate
+      start:s.start, end:endVal, amount:s.amount, valueDate:s.fundValueDate
     });
   }
   out.sort(function(a,b){
@@ -3499,7 +3524,21 @@ async function fillInsightDetail(pane, item, gen){
     const dates = scheduleDates(item.start, item.end||item.valueDate);
     const res = rankCandidates(navs, dates, item.amount, item.valueDate, item.code);
     const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
-    html += '<div class="ins-sub">Your window — same SIP dates &amp; amount, '+escapeHtml(item.plan)+" plan</div>";
+    /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
+       failures with different remedies, and the single message "its history does
+       not cover it" was wrong for the first one. A Direct holding whose plan we had
+       to guess loads the Regular cohort, finds no matching code, and was told its
+       history was too short — sending the user to look at a date range when the
+       real problem is the plan. */
+    const inCohort = !!(navs.funds && Object.prototype.hasOwnProperty.call(navs.funds, String(item.code)));
+    // State the window explicitly when the SIP has an end date: the peer list is
+    // then NOT "to today", and a reader comparing it against the portfolio tab
+    // needs to know which window produced these numbers.
+    const windowNote = item.end
+      ? " — instalments to "+escapeHtml(fmtDate(item.end))+", valued "+escapeHtml(fmtDate(item.valueDate))
+      : "";
+    html += '<div class="ins-sub">Your window — same SIP dates &amp; amount, '+escapeHtml(item.plan)+
+            " plan"+windowNote+"</div>";
     /* Only funds that ran the ENTIRE window are eligible, so `universe` can be a
        small fraction of the category over a long SIP. Below MIN_RANK_UNIVERSE a
        rank is noise dressed as a verdict ("2 of 3"), so state the position without
@@ -3514,7 +3553,13 @@ async function fillInsightDetail(pane, item, gen){
               " in this category ran your full window, so a category rank isn't "+
               "meaningful here. Among those, your fund places "+res.ownRank+"."
             : "Your fund ranks <b>"+res.ownRank+" of "+res.universe+"</b> over this window.")
-        : "Your fund could not be ranked over this window (its history does not cover it).")+
+        : (inCohort
+            ? "Your fund could not be ranked over this window (its history does not cover it)."
+            : "Your fund isn't in the published <b>"+escapeHtml(item.plan)+"</b> cohort for this category"+
+              (item.planInferred
+                ? ", and its plan was inferred rather than stated — if this is a Direct-plan holding, "+
+                  "set the plan on the holding so it is ranked against Direct peers."
+                : ", so it has no position in this list.")))+
       (res.median!=null ? " Category median "+(res.median*100).toFixed(2)+"%"+
         (own!=null ? ", your fund "+(own*100).toFixed(2)+"%." : ".") : "")+
       (dropped > 0 ? ' <span class="approx">'+dropped+" fund"+(dropped===1?"":"s")+

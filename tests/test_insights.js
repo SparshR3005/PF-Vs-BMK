@@ -357,6 +357,82 @@ if(loaded){
   eq("rows remain date-sorted after dedupe", r.arr.map(function(x){return isoDate(x.date);}).join(","),
      "2025-01-01,2025-01-02,2025-01-03");
 
+
+  // =============================== v9: the Insights tab must honour the SIP end date
+  // insightsItems() built its item from `s.end`, a property the scheme object has
+  // NEVER had -- computeScheme() stores the SIP end as the STRING `endStr`. So
+  // `item.end` was always undefined and `item.end||item.valueDate` in
+  // fillInsightDetail() always fell through to the fund's LATEST NAV DATE. Every
+  // holding with an end date was therefore ranked, and its peers listed, over a
+  // window the user never invested through.
+  // `var`, not `let`: a direct eval hoists its function declarations to the nearest
+  // VARIABLE scope (module level), so a block-scoped `let` here would be invisible
+  // to the extracted insightsItems(). Same reason CATEGORY_CANON is lifted out of
+  // its `const` and bound as a var -- it is still read from index.html, so the real
+  // table is under test rather than a copy.
+  var schemes = [];
+  var CATEGORY_CANON = {};
+  var itemsLoaded = true;
+  try {
+    CATEGORY_CANON = eval("(" + HTML.match(/const CATEGORY_CANON = (\{[\s\S]*?\n\});/)[1] + ")");
+    eval([grabFn("normName"), grabFn("normCategory"), grabFn("categoryKey"),
+          grabFn("normalisePlan"), grabFn("detectPlanFromName"),
+          grabFn("schemeView"), grabFn("insightsItems")].join("\n"));
+  } catch(e){ itemsLoaded = false; ok("could not load insightsItems: " + e.message, false); }
+
+  if(itemsLoaded){
+    const holding = (over) => Object.assign({
+      code:"118269", name:"Canara Robeco Large Cap Fund - Direct Plan - Growth",
+      category:"Equity Scheme - Large Cap Fund", plan:"Direct",
+      startStr:"2018-01-05", endStr:"", start:parseInput("2018-01-05"), amount:10000,
+      fundValueDate:parseInput("2026-07-24"),
+      fund:{xirr:0.149, invested:370000, currentValue:600000},
+      fundCmp:{xirr:0.149}, benchCmp:{xirr:0.121}
+    }, over||{});
+
+    schemes = [holding({endStr:"2021-01-05"})];
+    let it = insightsItems()[0];
+    ok("an end-dated holding exposes a real Date for item.end",
+       it.end instanceof Date);
+    eq("...and it is the stored endStr, not the valuation date",
+       it.end && isoDate(it.end), "2021-01-05");
+
+    schemes = [holding()];
+    it = insightsItems()[0];
+    ok("an open-ended holding leaves item.end null", it.end === null);
+
+    // The defect, measured end to end: the schedule handed to rankCandidates().
+    schemes = [holding({endStr:"2021-01-05"})];
+    it = insightsItems()[0];
+    const correct = scheduleDates(it.start, it.end || it.valueDate).length;
+    const buggy   = scheduleDates(it.start, undefined || it.valueDate).length;
+    eq("a stopped SIP schedules only its own instalments", correct, 37);
+    ok("...which is far short of the to-today schedule the old code used",
+       buggy === 103 && correct < buggy);
+
+    // Plan drives WHICH cohort file is loaded, so an assumed plan must be labelled.
+    schemes = [holding({plan:"", name:"Some Fund - Growth"})];
+    it = insightsItems()[0];
+    eq("an undetectable plan still defaults to Regular", it.plan, "Regular");
+    ok("...but is flagged as inferred, not stated", it.planInferred === true);
+
+    schemes = [holding({plan:"", name:"Axis Bluechip Fund - Direct Plan - Growth"})];
+    ok("a plan read from the name is NOT flagged as inferred",
+       insightsItems()[0].planInferred === false);
+
+    schemes = [holding({plan:"Direct"})];
+    ok("an explicitly stored plan is NOT flagged as inferred",
+       insightsItems()[0].planInferred === false);
+  }
+
+  // Shipped-file guards: these are the exact edits, so a bad paste goes red.
+  ok("index.html no longer reads the non-existent s.end",
+     !/\bend:\s*s\.end\b/.test(HTML));
+  ok("index.html derives the insights end date from endStr",
+     /s\.endStr\s*\?\s*parseInput\(s\.endStr\)\s*:\s*null/.test(HTML));
+  ok("fillInsightDetail distinguishes a missing plan cohort from a short history",
+     /inCohort/.test(HTML) && /isn't in the published/.test(HTML));
+
   // ---- parity: the shipped file must still contain both guards
   ok("index.html round-trips the parsed MFAPI date",
      /dt\.getFullYear\(\)!==year/.test(HTML) && /dt\.getDate\(\)!==day/.test(HTML));
