@@ -3,9 +3,28 @@ name: Fetch ranking data
 on:
   workflow_dispatch:
   schedule:
-    # 15:30 UTC = 21:00 IST, an hour after the TRI job, so the two never contend
-    # for the same runner window and a failure in one is unambiguous.
-    - cron: "30 15 * * 1-5"
+    # 22:00 UTC Mon-Fri = 03:30 IST Tue-Sat.
+    #
+    # This USED to be 15:30 UTC (21:00 IST), which made every published grid one
+    # full trading day stale. mfapi.in refreshes 6x daily — 10:05, 14:05, 18:05,
+    # 21:05, 03:09 and 05:05 IST — while SEBI gives AMCs until 23:00 IST to upload
+    # a day's NAV to AMFI. A 21:00 IST run therefore read mfapi's 18:05 snapshot,
+    # taken five hours before the AMCs had even filed: Monday's run ranked funds on
+    # Friday's NAV.
+    #
+    # 03:30 IST sits after the 03:09 pass, which is the first one to carry the
+    # previous trading day. Tue-Sat covers Mon-Fri: a trading day D publishes by
+    # 23:00 on D, so the D+1 early-morning run is the first that can see it.
+    # Sunday and Monday 03:30 IST are skipped because Saturday and Sunday produce
+    # no NAV.
+    #
+    # Scheduled workflows are queued, not guaranteed — 5-30 min of drift is normal.
+    # The 21-minute gap to the 03:09 pass is deliberate slack, and drift only ever
+    # makes this MORE correct, since later is fresher.
+    #
+    # Still nowhere near the TRI job (14:30 UTC), so the two never contend for a
+    # runner window and a failure in one is unambiguous.
+    - cron: "0 22 * * 1-5"
 
 permissions:
   contents: write
