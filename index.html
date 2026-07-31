@@ -915,7 +915,18 @@ const CATEGORY_CANON = {
   "elss":                                  "ELSS",   // MFAPI returns this bare
 };
 function normCategory(category){
-  return String(category||"").toLowerCase().replace(/\s+/g," ").trim();
+  return String(category||"").toLowerCase().replace(/\s+/g," ").trim()
+    /* MFAPI serves BOTH "Equity Scheme - X" and "Equity Schemes - X" for the same
+       SEBI category, and which one a scheme gets changes over time without notice.
+       v8 handled this by adding one plural KEY ("equity schemes - thematic fund")
+       after probe_ranks.py found it on ~20 live schemes. That fixed the twenty and
+       left every other category exposed: the plural has since spread to Contra and
+       Mid Cap, and Invesco India Contra / Invesco India Midcap stopped importing
+       with "this tool only benchmarks actively-managed equity funds" — a category
+       the tool fully supports and had been importing for months.
+       Folding the plural away HERE fixes every category at once, including ones
+       MFAPI has not flipped yet, instead of chasing them one bug report at a time. */
+    .replace(/^equity schemes -/, "equity scheme -");
 }
 // Canonical SEBI category key, or null when the category is absent, junk, or a
 // type this tool cannot benchmark against an equity TRI (debt/hybrid/index/FoF).

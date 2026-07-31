@@ -308,5 +308,55 @@ for _k in ("candidates", "category_distribution", "history_depth", "latest_endpo
     ok(f"report contains {_k!r}", _k in _report)
 
 
+# --------------------------------------------- v12: the singular/plural category
+# MFAPI serves BOTH "Equity Scheme - X" and "Equity Schemes - X" for one SEBI
+# category, and flips schemes between them with no notice. v8 met this by adding a
+# single plural KEY ("equity schemes - thematic fund") after probe_ranks.py found
+# it on ~20 live schemes -- which fixed those twenty and left every other category
+# exposed. The plural later spread to Contra and Mid Cap, and Invesco India Contra
+# and Invesco India Midcap stopped importing with "this tool only benchmarks
+# actively-managed equity funds" for categories the tool fully supports.
+#
+# The fix folds the plural away in the NORMALISER, so every category is covered
+# including ones MFAPI has not flipped yet. These tests pin that, and pin that both
+# implementations do it -- a fund the client accepts but the nightly job rejects
+# vanishes from the rankings with nothing erroring.
+for _cat, _want in [
+    ("Equity Schemes - Contra Fund",        "CONTRA"),
+    ("Equity Schemes - Mid Cap Fund",       "MID_CAP"),
+    ("Equity Schemes - Large Cap Fund",     "LARGE_CAP"),
+    ("Equity Schemes - Small Cap Fund",     "SMALL_CAP"),
+    ("Equity Schemes - Flexi Cap Fund",     "FLEXI_CAP"),
+    ("Equity Schemes - Value Fund",         "VALUE"),
+    ("Equity Schemes - Focused Fund",       "FOCUSED"),
+    ("Equity Schemes - ELSS",               "ELSS"),
+    ("Equity Schemes - Thematic Fund",      "SECTORAL"),
+    # the singular spelling must keep working unchanged
+    ("Equity Scheme - Contra Fund",         "CONTRA"),
+    ("Equity Scheme - Mid Cap Fund",        "MID_CAP"),
+]:
+    ok(f"{_cat!r} resolves to {_want}",
+       P.CATEGORY_CANON.get(P.norm_category(_cat)) == _want)
+
+# The fold must be anchored and category-specific: a DEBT scheme must not be
+# laundered into an equity key, and "schemes" elsewhere in the string is not a
+# licence to rewrite it.
+for _cat in ("Debt Scheme - Liquid Fund", "Debt Schemes - Liquid Fund",
+             "Hybrid Scheme - Aggressive Hybrid Fund", "Other Schemes - Index Funds",
+             "Solution Oriented Scheme - Retirement Fund", "", "   "):
+    ok(f"{_cat!r} is still rejected", P.CATEGORY_CANON.get(P.norm_category(_cat)) is None)
+
+ok("the fold is anchored at the start of the string",
+   P.norm_category("Fund of Equity Schemes - Contra Fund") == "fund of equity schemes - contra fund")
+
+_norm_js = re.search(r"function normCategory\(category\)\{(.*?)\n\}", HTML, re.S)
+ok("normCategory exists in index.html", _norm_js is not None)
+if _norm_js:
+    ok("index.html folds the plural too — or the client and the nightly job disagree",
+       "equity schemes -" in _norm_js.group(1) and "equity scheme -" in _norm_js.group(1))
+    ok("...and the fold is anchored there as well",
+       "^equity schemes -" in _norm_js.group(1))
+
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
