@@ -65,6 +65,7 @@ from pathlib import Path
 # The scheme-universe filters live here, in the production job, and the probe
 # imports them from this module. One definition, one place. tests/ asserts this
 # module agrees with index.html, so the Python and the client can never drift.
+import mf_mergers
 from mf_universe import (  # noqa: F401
     API,
     CATEGORY_CANON,
@@ -609,7 +610,33 @@ def discover_universe(timeout, concurrency, log):
     return resolved
 
 
+def _rows_to_points(rows):
+    """[(date, nav)] ascending, skipping anything unparseable. Mirrors the client's
+    parser, including its rejection of roll-over dates like 31-02-2025."""
+    out = []
+    for r in rows or []:
+        try:
+            d = datetime.strptime(str(r.get("date", "")), "%d-%m-%Y").date()
+            v = float(r.get("nav"))
+        except (ValueError, TypeError):
+            continue
+        if v > 0:
+            out.append((d, v))
+    out.sort(key=lambda p: p[0])
+    return out
+
+
 def fetch_histories(funds, timeout, concurrency, log):
+    """Fetch each fund's NAV history, extending any chained scheme with the retired
+    code it continues from.
+
+    This MUST mirror the client's splice. A holding whose Portfolio row starts in
+    2020 but whose peer grid starts at the 2022 merger would be reported as "its
+    history does not cover this window" in Insights while Portfolio shows three
+    years of it — two panes disagreeing about one fund, which is the defect class
+    the drift guard in mf_universe.py exists to prevent."""
+    spliced_ok, spliced_refused = [], []
+
     def one(f):
         payload, _, _, _ = get_json(f"{API}/mf/{f['code']}", timeout)
         if payload is None:
@@ -617,6 +644,25 @@ def fetch_histories(funds, timeout, concurrency, log):
         rows = payload.get("data") or []
         if not rows:
             return None
+
+        old_code = mf_mergers.chained_from(f["code"])
+        if old_code:
+            link = mf_mergers.CHAIN[str(f["code"])]
+            old_payload, _, _, _ = get_json(f"{API}/mf/{old_code}", timeout)
+            old_rows = (old_payload or {}).get("data") or []
+            if old_rows:
+                joined, problem = mf_mergers.splice_series(
+                    _rows_to_points(old_rows), _rows_to_points(rows), link["splice"])
+                if problem:
+                    # Keep the unspliced series: a refused splice must degrade to
+                    # today's behaviour, never drop the fund or fabricate history.
+                    spliced_refused.append(f"{f['code']}<-{old_code}: {problem}")
+                else:
+                    spliced_ok.append(f"{f['code']}<-{old_code} from {joined[0][0]}")
+                    rows = [{"date": d.strftime("%d-%m-%Y"), "nav": f"{v}"} for d, v in joined]
+            else:
+                spliced_refused.append(f"{f['code']}<-{old_code}: retired code returned no rows")
+
         f["rows"] = rows
         return f
 
@@ -630,6 +676,10 @@ def fetch_histories(funds, timeout, concurrency, log):
                 out.append(r)
             if done % 200 == 0:
                 log(f"  history {done}/{len(funds)}")
+    for line in spliced_ok:
+        log(f"  chained {line}")
+    for line in spliced_refused:
+        log(f"  CHAIN REFUSED {line}")
     return out
 
 

@@ -97,5 +97,14 @@ jobs:
       - name: Ranking computation tests
         run: python tests/test_fetch_ranks.py
 
+      # Scheme-continuation chains. Also the drift guard: index.html carries its own
+      # copy of the map (it cannot import Python), so this suite parses index.html at
+      # runtime and fails if the two ever disagree — the same protection
+      # mf_universe.py gives the category filters. A chain applied by one side and
+      # not the other means Portfolio and Insights report different histories for
+      # the same fund.
+      - name: Merger chain and JS/Python drift guard
+        run: python tests/test_mergers.py
+
       - name: Syntax check ranking scripts
         run: python -m py_compile mf_universe.py probe_ranks.py fetch_ranks.py

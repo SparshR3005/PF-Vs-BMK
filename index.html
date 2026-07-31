@@ -382,6 +382,19 @@
   .dlg p{color:var(--muted);font-size:14px;margin:0 0 14px;line-height:1.6;}
   .dlg label{margin-bottom:8px;}
 
+
+/* Sub-tabs. Deliberately lighter than .tabbar: this is a filter WITHIN a view,
+   not a change of view, and rendering it at equal weight made the page look like
+   it had four top-level tabs. */
+.scopebar{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap;}
+.scopebar button{background:transparent;border:1px solid var(--line);color:var(--sub);
+  padding:5px 13px;border-radius:999px;font:inherit;font-size:12.5px;cursor:pointer;
+  letter-spacing:.02em;transition:background .12s,color .12s,border-color .12s;}
+.scopebar button:hover{color:var(--fg);border-color:var(--sub);}
+.scopebar button[aria-selected="true"]{background:color-mix(in srgb,var(--accent) 14%,transparent);border-color:var(--accent);
+  color:var(--accent);font-weight:600;}
+.scopebar .scopenote{align-self:center;color:var(--sub);font-size:12px;margin-left:4px;}
+.leg-note{color:var(--sub);font-size:11.5px;margin-top:2px;letter-spacing:.01em;}
 </style>
 </head>
 <body>
@@ -472,10 +485,12 @@
   </div>
 
   <div id="paneInsights" role="tabpanel" aria-labelledby="tabInsights" style="display:none;">
+    <div class="scopebar" id="scopeBarIns" role="tablist" aria-label="Holdings in scope" style="display:none;"></div>
     <div class="card"><div id="insightsBody"><div class="empty">Loading…</div></div></div>
   </div>
 
   <div id="panePortfolio" role="tabpanel" aria-labelledby="tabPortfolio">
+  <div class="scopebar" id="scopeBarPf" role="tablist" aria-label="Holdings in scope" style="display:none;"></div>
   <div class="card" id="summaryCard" style="display:none;">
     <div id="verdictBanner" style="display:none;"></div>
     <div class="hero-grid" id="heroGrid"></div>
@@ -553,6 +568,10 @@ let detailCache = {};
 // this many calendar days suggests a suspended/closed/stale scheme, not a weekend.
 const NAV_STALE_DAYS = 10;
 let schemes = [];
+/* Which legs the Portfolio and Insights panes are showing. Shared between the two
+   panes on purpose: switching tabs while looking at Live SIP and silently landing
+   on All would misreport every figure on arrival. */
+let pfScope = "all";
 let importPreviewRows = [];
 
 let listDirect = [];
@@ -1634,10 +1653,19 @@ function scheduleDates(start,end){
   return dates;
 }
 
-function runSIP(navArr,dates,amount,valueDate){
+/* A SIP schedule is a list of {date, amount}. It is NOT a list of dates plus one
+   flat amount, because a real SIP rarely is: this portfolio ran 1,500 -> 10,000 ->
+   3,000 in the same fund. Money-weighted return depends on WHEN each rupee went in,
+   so a peer handed a flat amount is not being compared to you at all — the 10,000
+   leg dominates your result in a way a uniform schedule can never reproduce.
+   uniformSchedule() covers the common single-amount case. */
+function uniformSchedule(dates,amount){ return dates.map(d=>({date:d,amount})); }
+
+function runSIP(navArr,schedule,valueDate){
   const installments=[];
   const skipped=[];   // scheduled months on/before valueDate with no NAV within 7 days
-  for(const scheduledDate of dates){
+  for(const entry of schedule){
+    const scheduledDate=entry.date, amount=entry.amount;
     const n=navOnOrAfter(navArr,scheduledDate,7);
     if(!n || n.date>valueDate){
       // Only count it as "skipped" (a data gap) if the month is actually within
@@ -1673,13 +1701,94 @@ function valuationAt(run,navArr,valueDate){
 }
 
 /* ============================================================
+   SCHEME CONTINUATION CHAINS
+   Canonical definition lives in mf_mergers.py; tests/test_mergers.py parses this
+   block at runtime and fails if the two ever drift, the same guard mf_universe.py
+   already gives the category filters.
+
+   When an AMC merges or rebrands a scheme, AMFI sometimes allots the survivor a
+   BRAND-NEW code. The new code's history then starts on the merger date and every
+   earlier NAV lives under the retired code — so a SIP that ran before the merger
+   cannot place a single instalment and the holding is dropped at import.
+
+   L&T -> HSBC took that route across every scheme: Midcap, ELSS, Value and Small
+   Cap all start 2022-11-28, while pre-existing HSBC schemes kept their codes and
+   full history. HSBC Midcap opens at Rs 210.96, not a Rs 10 NFO price, which is
+   what identifies it as the RENAMED CONTINUATION rather than a new fund — so the
+   join is a plain concatenation with no ratio adjustment.
+
+   Note the retired schemes are spelt "L&T Mid Cap Fund" (with a space). "L&T
+   Large and Midcap Fund" is a DIFFERENT scheme and is deliberately not chained.
+   ============================================================ */
+const SCHEME_CHAIN = {
+  "151034": { from:"112496", splice:"2022-11-28", former:"L&T Mid Cap Fund - Regular Plan - Growth" },
+  "151036": { from:"119807", splice:"2022-11-28", former:"L&T Mid Cap Fund - Direct Plan - Growth" }
+};
+const MAX_SPLICE_RATIO_DRIFT = 0.03;   // a rename carries NAV through unchanged
+const MAX_SPLICE_GAP_DAYS    = 10;     // must stay under the 7-day SIP placement window + slack
+
+/* Returns "" if these two series may be joined, else why not. Same posture as
+   fetch_tri.py's continuity gate: refuse and keep what is already correct. A
+   refused splice degrades to exactly today's behaviour; a bad splice would weld a
+   step-change into the middle of a return history and quietly invent performance. */
+function spliceProblem(oldArr, newArr, spliceDate){
+  if(!oldArr || !oldArr.length) return "no rows from the retired code";
+  if(!newArr || !newArr.length) return "no rows from the surviving code";
+  const tail = oldArr.filter(p=>p.date <  spliceDate);
+  const head = newArr.filter(p=>p.date >= spliceDate);
+  if(!tail.length) return "retired code has no rows before the splice date";
+  if(!head.length) return "surviving code has no rows on/after the splice date";
+  const a = tail[tail.length-1], b = head[0];
+  if(!(a.nav>0) || !(b.nav>0)) return "non-positive NAV at the join";
+  const gap = daysBetween(a.date, b.date);
+  if(gap > MAX_SPLICE_GAP_DAYS)
+    return gap+"-day hole at the join — an instalment scheduled in the gap would vanish";
+  const ratio = b.nav / a.nav;
+  if(Math.abs(ratio-1) > MAX_SPLICE_RATIO_DRIFT)
+    return "NAV jumps "+((ratio-1)*100).toFixed(2)+"% across the join — either a ratio "+
+           "merger or the wrong retired code, so the histories are not joined";
+  return "";
+}
+
+/* Rows before the splice come from the old code, rows on/after from the new, so a
+   date present in both can never be counted twice. */
+function spliceNav(oldArr, newArr, spliceDate){
+  const problem = spliceProblem(oldArr, newArr, spliceDate);
+  if(problem) return { navArr:newArr, spliced:false, problem };
+  const joined = oldArr.filter(p=>p.date < spliceDate)
+    .concat(newArr.filter(p=>p.date >= spliceDate))
+    .sort((x,y)=>x.date-y.date);
+  return { navArr:joined, spliced:true, problem:"", from:joined[0].date };
+}
+
+/* NAV for a code, extended with its retired predecessor when one is chained.
+   Failure to fetch the old code is NOT fatal: the holding still values on the new
+   code alone, exactly as it does today. */
+async function getDetailChained(code){
+  const detail = await getDetail(code);
+  const link = SCHEME_CHAIN[String(code)];
+  if(!link) return detail;
+  let oldDetail = null;
+  try { oldDetail = await getDetail(link.from); }
+  catch(e){ return Object.assign({}, detail, {chainNote:"earlier history unavailable ("+link.from+")"}); }
+  const spliceDate = parseInput(link.splice);
+  const r = spliceNav(oldDetail.navArr, detail.navArr, spliceDate);
+  return Object.assign({}, detail, {
+    navArr: r.navArr,
+    chainSpliced: r.spliced,
+    chainFrom: link.from,
+    chainNote: r.spliced ? "" : ("earlier history not joined — "+r.problem)
+  });
+}
+
+/* ============================================================
    CORE: compute one scheme  (extracted so it's reusable for
    manual add, Excel import, and NAV-update)
    spec = { name, code, category?, startStr, endStr?, amount }
    returns the pushable scheme object (or throws on hard failure)
    ============================================================ */
 async function computeScheme(spec){
-  const detail=await getDetail(spec.code);
+  const detail=await getDetailChained(spec.code);
   const fundNav=detail.navArr;
   const start=parseInput(spec.startStr);
   const endVal=spec.endStr?parseInput(spec.endStr):null;
@@ -1732,7 +1841,7 @@ async function computeScheme(spec){
   const navStaleDays=Math.max(0, Math.floor(daysBetween(fundLast, new Date())));
   const fundSipEnd=endVal&&endVal<fundLast?endVal:fundLast;
   const fundDates=scheduleDates(start,fundSipEnd);
-  const fundFull=runSIP(fundNav,fundDates,amount,fundLast);
+  const fundFull=runSIP(fundNav,uniformSchedule(fundDates,amount),fundLast);
   if(!fundFull) throw new Error("No valid SIP instalment could be placed for "+officialName);
 
   const bk=resolveBenchmarkKey(officialName,category);
@@ -1760,8 +1869,8 @@ async function computeScheme(spec){
       return fn && bn && fn.date<=cmpValueDate && bn.date<=cmpValueDate;
     });
     if(common.length){
-      fundCmp=runSIP(fundNav,common,amount,cmpValueDate);
-      benchCmp=runSIP(benchNav,common,amount,cmpValueDate);
+      fundCmp=runSIP(fundNav,uniformSchedule(common,amount),cmpValueDate);
+      benchCmp=runSIP(benchNav,uniformSchedule(common,amount),cmpValueDate);
       if(fundCmp&&benchCmp){cmpFirst=common[0];cmpCount=common.length;}
       else{fundCmp=null;benchCmp=null;}
     }
@@ -1859,11 +1968,101 @@ function schemeView(s){
    the sum of the rows shown above them (no re-valuation at a forced
    common date, which previously dropped the freshest installments).
    ============================================================ */
+/* ---- scheme-level pooling -------------------------------------------------
+   One fund held through several SIP legs (an amount change, or two concurrent
+   SIPs) is ONE position, and its return is the money-weighted return of every
+   rupee that went into it. That is not the average of the legs' XIRRs — it is a
+   single XIRR over the union of their cash flows.
+
+   No re-valuation is needed, and deliberately so. Every leg of a scheme shares
+   one NAV series and therefore one struck valuation date, so each leg's
+   currentValue is already units_i x nav. Summing them equals (sum units) x nav —
+   the same number a pooled valuationAt() would produce, without holding a second
+   copy of the NAV array per holding. The identical-valueDate guard below is what
+   makes that equivalence safe rather than assumed. */
+function poolRuns(runs){
+  const live=(runs||[]).filter(Boolean);
+  if(!live.length) return null;
+  const vd=live[0].valueDate;
+  // If two legs somehow struck different dates, summing their values would be
+  // comparing rupees at two different prices. Refuse rather than blend.
+  if(live.some(r=>!r.valueDate || +r.valueDate!==+vd)) return null;
+  const flows=[];
+  for(const r of live) for(const f of r.flows) flows.push({date:new Date(f.date),amount:f.amount});
+  if(!flows.length) return null;
+  flows.sort((a,b)=>a.date-b.date);
+  const invested=live.reduce((t,r)=>t+r.invested,0);
+  const units=live.reduce((t,r)=>t+r.units,0);
+  const currentValue=live.reduce((t,r)=>t+r.currentValue,0);
+  // xirr() normalises internally, so legs whose instalments land on the same day
+  // merge correctly rather than double-counting.
+  const x=xirr(flows.concat([{date:new Date(vd),amount:currentValue}]));
+  return {invested,currentValue,units,placed:live.reduce((t,r)=>t+r.placed,0),
+          skipped:live.reduce((a,r)=>a.concat(r.skipped||[]),[]),
+          xirr:x,flows,installments:live.reduce((a,r)=>a.concat(r.installments||[]),[]),
+          firstDate:flows[0].date,valueDate:new Date(vd)};
+}
+
+/* Legs in scope for the current sub-tab. "live" keeps only legs with no end date
+   — the leg you are still funding — not every leg of a scheme that happens to
+   have one. That is the user-visible contract: Live SIP answers "how is the money
+   I am putting in NOW doing", so an ended leg's history must not inflate it. */
+function scopeLegs(list,scope){
+  return scope==="live" ? list.filter(s=>!s.endStr) : list;
+}
+
+/* Collapse legs into one row per scheme, preserving input order of first
+   appearance. The group deliberately mimics a scheme object (fund / fundCmp /
+   benchCmp / cmpShorter / cmpFirst), so schemeView(), perfBand(), triWindowFlag()
+   and the row renderer all work on it unchanged. */
+function groupHoldings(list){
+  const order=[],by=Object.create(null);
+  for(const s of list){
+    if(!s || s.error || !s.fund) continue;
+    const key=String(s.code);
+    if(!by[key]){ by[key]={key,legs:[]}; order.push(key); }
+    by[key].legs.push(s);
+  }
+  return order.map(key=>{
+    const g=by[key],legs=g.legs,head=legs[0];
+    const fund=poolRuns(legs.map(s=>s.fund));
+    const fundCmp=poolRuns(legs.map(s=>s.fundCmp));
+    const benchCmp=poolRuns(legs.map(s=>s.benchCmp));
+    // Alpha must come from a matched pair or not at all: if one side pooled and
+    // the other didn't, drop both rather than compare across different windows.
+    const paired=(fundCmp&&benchCmp)?{fundCmp,benchCmp}:{fundCmp:null,benchCmp:null};
+    const cmpFirst=legs.reduce((m,s)=>(s.cmpFirst&&(!m||s.cmpFirst<m))?s.cmpFirst:m,null);
+    return {
+      isGroup:true,legs,code:head.code,name:head.name,plan:head.plan,category:head.category,
+      benchLabel:head.benchLabel,benchApprox:head.benchApprox,benchKey:head.benchKey,
+      fundValueDate:head.fundValueDate,navStaleDays:head.navStaleDays,
+      cmpValueDate:head.cmpValueDate,cmpFirst,
+      fund,fundCmp:paired.fundCmp,benchCmp:paired.benchCmp,
+      cmpShorter:legs.some(s=>s.cmpShorter),
+      fundSkipped:legs.reduce((t,s)=>t+(s.fundSkipped||0),0),
+      startStr:legs.reduce((m,s)=>(!m||s.startStr<m)?s.startStr:m,""),
+      legCount:legs.length,
+      liveCount:legs.filter(s=>!s.endStr).length,
+      amountSpread:[...new Set(legs.map(s=>s.amount))].sort((a,b)=>a-b)
+    };
+  }).filter(g=>g.fund);
+}
+
+/* Sub-tabs only earn their place once the two views can differ. With no end date
+   anywhere, "Live SIP" is identical to "All" and the control is pure noise. */
+function scopeApplies(){ return schemes.some(s=>s && s.endStr); }
+
 function valuedSchemes(){ return schemes.filter(s=>!s.error && s.fund); }
-function portfolioMetrics(){
+function portfolioMetrics(rows){
+  // Accepts either raw holdings or pooled scheme groups — a group exposes the same
+  // fund / fundCmp / benchCmp / cmpValueDate shape, so the union-of-flows maths is
+  // identical either way. Passing groups matters for correctness, not just tidiness:
+  // pooling first and unioning second gives the same XIRR as unioning every leg
+  // directly (union is associative), but it keeps the PORTFOLIO row exactly equal
+  // to the sum of the rows drawn above it under whichever sub-tab is showing.
   // Only aggregate holdings that actually valued; error rows (retained after a
   // failed hydrate) carry no fund/flows and must never enter the totals.
-  const valued = schemes.filter(s=>!s.error && s.fund);
+  const valued = (rows || schemes).filter(s=>!s.error && s.fund);
   if(!valued.length) return null;
 
   // Each holding's terminal (current-value) cash flow is dated at the ACTUAL NAV
@@ -1908,6 +2107,29 @@ function portfolioMetrics(){
           anyBench:comparable.length>0,comparableCount:comparable.length,cmpFundCurrent:cmpFundCur,benchCurrent:cmpBenchCur};
 }
 
+function renderScopeBar(){
+  const show=scopeApplies();
+  const live=scopeLegs(schemes.filter(s=>!s.error&&s.fund),"live").length;
+  const all =schemes.filter(s=>!s.error&&s.fund).length;
+  const html=!show ? "" :
+    '<button type="button" role="tab" data-scope="all" aria-selected="'+(pfScope==="all")+'">All</button>'+
+    '<button type="button" role="tab" data-scope="live" aria-selected="'+(pfScope==="live")+'">Live SIP</button>'+
+    '<span class="scopenote">'+(pfScope==="live"
+      ? live+" ongoing SIP leg"+(live===1?"":"s")+" — ended legs excluded"
+      : all+" leg"+(all===1?"":"s")+" across every scheme")+"</span>";
+  for(const id of ["scopeBarPf","scopeBarIns"]){
+    const el=$(id); if(!el) continue;
+    el.style.display=show?"flex":"none";
+    el.innerHTML=html;
+    el.querySelectorAll("button[data-scope]").forEach(b=>b.onclick=()=>{
+      if(pfScope===b.dataset.scope) return;
+      pfScope=b.dataset.scope;
+      render();
+      if($("paneInsights").style.display!=="none") renderInsights();
+    });
+  }
+}
+
 /* ---- render ---- */
 function render(){
   const wrap=$("tableWrap");
@@ -1917,6 +2139,7 @@ function render(){
     $("exportBtn").style.display="none";
     $("tabbar").style.display="none";$("paneInsights").style.display="none";
     $("panePortfolio").style.display="";
+    $("scopeBarPf").style.display="none"; $("scopeBarIns").style.display="none";
     $("updateNavBtn").style.display="none";
     checkTriFreshness();   // no holdings → no in-use benchmark → banner hides itself
     return;
@@ -1927,13 +2150,24 @@ function render(){
   // hidden above) so it appears exactly when the active portfolio has holdings.
   $("updateNavBtn").style.display="";
   const errorCount = schemes.filter(s=>s.error).length;
-  const port=portfolioMetrics();
+  renderScopeBar();
+  const scoped = scopeLegs(schemes.filter(s=>!s.error && s.fund), pfScope);
+  const groups = groupHoldings(scoped);
+  const port=portfolioMetrics(groups);
+  // Every holding has an end date and the user asked for Live SIP: say so rather
+  // than drawing an empty table with a PORTFOLIO row of zeros.
+  if(!groups.length && pfScope==="live" && !schemes.some(s=>s.error)){
+    $("summaryCard").style.display="none"; $("foot").style.display="none";
+    wrap.innerHTML='<div class="empty">No live SIPs — every holding has an end date. Switch to <b>All</b> to see the full portfolio.</div>';
+    $("tabbar").style.display="flex";
+    return;
+  }
   const alphaBand=perfBand(port?port.alpha:null);
   // Show the separate comparable-fund figure ONLY when a SIP predates its TRI, so
   // the comparable window is genuinely shorter than the full window. Otherwise the
   // comparable fund XIRR equals the full-period fund XIRR and is a pure duplicate
   // (same rule the Excel export already applies via showComparableFundXirr).
-  const anyShorter = schemes.some(sipBeganBeforeTri);
+  const anyShorter = groups.some(sipBeganBeforeTri);
   if(port){
     $("summaryCard").style.display="block";
 
@@ -1989,8 +2223,11 @@ function render(){
   }
 
   let rows="";
+  // Error rows keep their raw array index. They never valued, so they belong to no
+  // group, and they stay visible under BOTH sub-tabs — a transient hydrate failure
+  // must never make a holding quietly vanish from the portfolio.
   schemes.forEach((s,i)=>{
-    if(s.error){
+    if(!s.error) return;
       // Retained error row: keep the holding visible with a Retry so a transient
       // failure never silently drops it from the portfolio (see hydrateActive).
       rows+=`<tr>
@@ -1999,30 +2236,38 @@ function render(){
             <div class="bmk-line" style="color:var(--danger);">⚠ Couldn't value: ${escapeHtml(s.error)}</div></td>
         <td class="num" colspan="6" style="color:var(--sub);">retained — value not available right now</td>
         <td class="num"><button class="btn small" data-retry="${i}">Retry</button> <button class="btn small icon" data-i="${i}" title="Remove" aria-label="Remove">×</button></td></tr>`;
-      return;
-    }
-    const v=schemeView(s),band=perfBand(v.alpha),f=s.fund,b=s.benchCmp;
+  });
+  groups.forEach(g=>{
+    const v=schemeView(g),band=perfBand(v.alpha),f=g.fund,b=g.benchCmp;
     let bmkLine='<div class="bmk-line">Benchmark: unavailable</div>';
-    if(s.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+
-      (s.benchApprox?' <span class="approx">(broad-market benchmark)</span>':'')+'</div>';}
-    else if(s.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(s.benchLabel)+' <span class="approx">(no overlapping data)</span></div>';}
-    /* The band word sits under the Alpha chip (mockup), not as a second sentence
-       under the fund name — two renderings of one signal on every row. */
-    const verdict='';
-    // Data-quality notes: stale fund NAV (#11) and skipped SIP months (#17).
+    if(g.benchLabel&&b){bmkLine='<div class="bmk-line">vs '+escapeHtml(g.benchLabel)+
+      (g.benchApprox?' <span class="approx">(broad-market benchmark)</span>':'')+'</div>';}
+    else if(g.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(g.benchLabel)+' <span class="approx">(no overlapping data)</span></div>';}
+    // Say plainly that one row is several SIPs. Without this the collapsed view
+    // hides the very thing that makes the pooled XIRR different from a simple one.
+    let legNote="";
+    if(g.legCount>1){
+      const amts=g.amountSpread.map(a=>inr(a)).join(" · ");
+      legNote='<div class="leg-note">'+g.legCount+" SIP legs pooled · "+escapeHtml(amts)+"/mo · from "+escapeHtml(g.startStr)+"</div>";
+    }else{
+      legNote='<div class="leg-note">'+inr(g.legs[0].amount)+"/mo from "+escapeHtml(g.startStr)+
+        (g.legs[0].endStr?" to "+escapeHtml(g.legs[0].endStr):"")+"</div>";
+    }
     let notes="";
-    if(s.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+s.navStaleDays+' days ago ('+fmtDate(s.fundValueDate)+') — value may be stale/suspended</div>';
-    if(s.fundSkipped>0) notes+='<div class="bmk-line approx">'+s.fundSkipped+' SIP month(s) skipped — no NAV within 7 days (holiday, data gap, or suspension)</div>';
+    if(g.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+g.navStaleDays+' days ago ('+fmtDate(g.fundValueDate)+') — value may be stale/suspended</div>';
+    if(g.fundSkipped>0) notes+='<div class="bmk-line approx">'+g.fundSkipped+' SIP month(s) skipped — no NAV within 7 days (holiday, data gap, or suspension)</div>';
     const gainCell='<span class="'+(v.gain>=0?'pos':'neg')+'">'+(v.gain>=0?'+':'')+inr(v.gain)+'</span><div class="sub2">'+pct(v.absR)+'</div>';
-    const compCell=b?(anyShorter?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(s.cmpShorter?' · shorter window':'')+'</div>':'<span>'+pct(v.bxCmp)+'</span>'):'—';
+    const compCell=b?(anyShorter?'<span>'+pct(v.fxCmp)+'</span><div class="sub2">benchmark '+pct(v.bxCmp)+(g.cmpShorter?' · shorter window':'')+'</div>':'<span>'+pct(v.bxCmp)+'</span>'):'—';
+    const label=shortSchemeName(g.name, g.plan||detectPlanFromName(g.name)||true);
+    const rmTitle=g.legCount>1?("Remove all "+g.legCount+" SIP legs of "+label):("Remove "+label);
     rows+=`<tr>
-      <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name, s.plan||detectPlanFromName(s.name)||true))}</div>
-          ${bmkLine}${verdict}${notes}</td>
+      <td><div class="fund-name">${escapeHtml(label)}</div>
+          ${legNote}${bmkLine}${notes}</td>
       <td class="num">${inr(f.invested)}</td><td class="num">${inr(f.currentValue)}</td><td class="num gain-cell">${gainCell}</td>
       <td class="num"><span class="${signClass(v.fxFull)}" style="font-weight:600;">${pct(v.fxFull)}</span></td>
       <td class="num">${compCell}</td>
       <td class="num alpha-cell">${v.alpha!=null?'<span class="chip '+band.cls+'">'+pp(v.alpha)+'</span><div class="verdict '+signClass(band.key==="match"?null:v.alpha)+'">'+band.word+'</div>':'—'}</td>
-      <td class="num"><button class="btn small icon" data-i="${i}" title="Remove ${escapeHtml(shortSchemeName(s.name, s.plan||true))}" aria-label="Remove ${escapeHtml(shortSchemeName(s.name, s.plan||true))}">×</button></td></tr>`;
+      <td class="num"><button class="btn small icon" data-code="${escapeHtml(String(g.code))}" title="${escapeHtml(rmTitle)}" aria-label="${escapeHtml(rmTitle)}">×</button></td></tr>`;
   });
   if(port){
     const pBand=perfBand(port.alpha);
@@ -2035,6 +2280,14 @@ function render(){
   }
   wrap.innerHTML=`<table><thead><tr><th>Scheme / benchmark</th><th style="text-align:right;">Invested</th><th style="text-align:right;">Current</th><th style="text-align:right;">Gain · Abs</th><th style="text-align:right;">Fund XIRR</th><th style="text-align:right;">${anyShorter?'Comparable XIRR<br><span style="text-transform:none;font-weight:400;">fund / benchmark</span>':'Benchmark XIRR'}</th><th class="alpha-col">Alpha</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.querySelectorAll("button[data-i]").forEach(b=>b.onclick=()=>{schemes.splice(+b.dataset.i,1);saveActive();render();});
+  // A scheme row is every leg of that scheme, so removing it removes them all —
+  // including any leg hidden by the current sub-tab. The button title says so.
+  wrap.querySelectorAll("button[data-code]").forEach(b=>b.onclick=()=>{
+    const code=b.dataset.code;
+    for(let i=schemes.length-1;i>=0;i--) if(schemes[i] && String(schemes[i].code)===code) schemes.splice(i,1);
+    saveActive(); render();
+    if($("paneInsights").style.display!=="none") renderInsights();
+  });
   wrap.querySelectorAll("button[data-retry]").forEach(btn=>btn.onclick=async ()=>{
     const i=+btn.dataset.retry, s=schemes[i]; if(!s) return;
     const opGen=hydrationGeneration, opPortfolio=store.active;
@@ -3289,19 +3542,24 @@ function gridToNavArr(entry){
    -- but day-of-month still shifts ranks on short windows (measured mean 0.80
    places at 1.5 years), which is why it is computed here from the user's real
    dates rather than precomputed per month on the server. */
-function rankCandidates(navDoc, dates, amount, valueDate, ownCode){
+/* `schedule` is [{date, amount}] — the SAME rupee-by-rupee schedule the holding
+   actually ran, including any mid-life amount changes. Handing peers a flat amount
+   instead would rig the comparison: money-weighted return depends on when each
+   rupee went in, so a 1,500 -> 10,000 -> 3,000 history measured against peers fed a
+   flat sum is not a like-for-like ranking at all. */
+function rankCandidates(navDoc, schedule, valueDate, ownCode){
   /* Fail loudly on a malformed document. Silently returning an empty ranking here
      reads downstream as "no peers qualified", which is a legitimate outcome -- so a
      shape error would masquerade as a real finding and never get noticed. */
   if(!navDoc || !navDoc.funds || typeof navDoc.funds !== "object"){
     return {top:[], universe:0, ownRank:null, ownXirr:null, median:null, malformed:true};
   }
-  const scheduled = dates.length;
+  const scheduled = schedule.length;
   const rows = [];
   for(const code in navDoc.funds){
     const entry = navDoc.funds[code];
     let r = null;
-    try{ r = runSIP(gridToNavArr(entry), dates, amount, valueDate); }catch(e){ r = null; }
+    try{ r = runSIP(gridToNavArr(entry), schedule, valueDate); }catch(e){ r = null; }
     if(!r || !isFinite(r.xirr)) continue;
     rows.push({code:code, name:entry.n, xirr:r.xirr, placed:r.placed,
                skipped:r.skipped ? r.skipped.length : 0});
@@ -3423,28 +3681,49 @@ function insightsRowHtml(item, idx){
     '<div class="ins-detail" hidden></div></div>';
 }
 
+/* Build the SIP schedule a group actually ran: every leg's monthly dates carrying
+   that leg's own amount, merged by date. This is what gets handed to peers, so the
+   ranking compares identical rupee timing rather than a flattened average. */
+function groupSchedule(g){
+  const byDate = Object.create(null);
+  for(const leg of g.legs){
+    if(!leg.start || !leg.amount) continue;
+    // Bound each leg by ITS OWN end date. `endStr` is the string form; there has
+    // never been an `s.end`, and reading one silently scheduled stopped SIPs all
+    // the way to today — a SIP that ended in Jan-2021 was given 103 instalments
+    // instead of 37 and printed 13.41% where the row header said 14.90%.
+    const legEnd = leg.endStr ? parseInput(leg.endStr) : (g.fundValueDate || null);
+    if(!legEnd) continue;
+    for(const d of scheduleDates(leg.start, legEnd)){
+      const k = isoDate(d);
+      byDate[k] = (byDate[k] || 0) + leg.amount;
+    }
+  }
+  return Object.keys(byDate).sort()
+    .map(k=>({date:parseInput(k), amount:byDate[k]}))
+    .filter(e=>e.amount>0);
+}
+
 function insightsItems(){
+  // Insights mirrors the Portfolio pane: one row per scheme, honouring the same
+  // sub-tab. Ranking each leg separately listed the same fund three times and
+  // ranked each slice against peers who had run the whole window.
+  const groups = groupHoldings(scopeLegs(schemes.filter(s=>!s.error && s.fund), pfScope));
   const out = [];
-  for(const s of schemes){
-    if(!s || s.error || !s.fund) continue;
-    const v = schemeView(s);
-    // The scheme object stores the SIP end as the STRING `endStr`; there has never
-    // been an `s.end`. Reading it produced `undefined`, so `item.end||item.valueDate`
-    // in fillInsightDetail() always fell through to the fund's latest NAV date and
-    // every holding with an end date was ranked over a window it never ran. A SIP
-    // that stopped in Jan-2021 was scheduled 103 instalments instead of 37, and the
-    // pane printed 13.41% where the row header (correctly bounded) printed 14.90%.
-    const endVal = s.endStr ? parseInput(s.endStr) : null;
+  for(const g of groups){
+    const v = schemeView(g);
     // Plan drives WHICH peer cohort is loaded (navs_<CAT>_<PLAN>.json), so record
     // whether we actually know it or merely assumed it. MFAPI names a Direct plan
     // explicitly but usually says nothing for Regular, so "Regular" is the right
     // default — it is just not a fact, and the pane should not imply it is.
-    const knownPlan = s.plan || detectPlanFromName(s.name) || "";
+    const knownPlan = g.plan || detectPlanFromName(g.name) || "";
+    const schedule = groupSchedule(g);
     out.push({
-      code:s.code, name:s.name||("Code "+s.code), plan:knownPlan||"Regular", planInferred:!knownPlan,
-      cat:categoryKey(s.category), catLabel:(s.category||"Uncategorised").replace(/^equity schemes?\s*-\s*/i,""),
+      code:g.code, name:g.name||("Code "+g.code), plan:knownPlan||"Regular", planInferred:!knownPlan,
+      cat:categoryKey(g.category), catLabel:(g.category||"Uncategorised").replace(/^equity schemes?\s*-\s*/i,""),
       xirr:v.fxFull, alphaPP:(v.alpha!=null? v.alpha*100 : null),
-      start:s.start, end:endVal, amount:s.amount, valueDate:s.fundValueDate
+      schedule, legCount:g.legCount, valueDate:g.fundValueDate,
+      amountSpread:g.amountSpread
     });
   }
   out.sort(function(a,b){
@@ -3520,9 +3799,8 @@ async function fillInsightDetail(pane, item, gen){
   let html = '<div class="ins-sub">Track record — lumpsum, point-to-point, as of '+
              escapeHtml(catInfo.as_of||"")+"</div>"+periodTableHtml(periods, item.plan, item.code);
 
-  if(navs && item.start && item.amount && item.valueDate){
-    const dates = scheduleDates(item.start, item.end||item.valueDate);
-    const res = rankCandidates(navs, dates, item.amount, item.valueDate, item.code);
+  if(navs && item.schedule && item.schedule.length && item.valueDate){
+    const res = rankCandidates(navs, item.schedule, item.valueDate, item.code);
     const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
     /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
        failures with different remedies, and the single message "its history does
@@ -3534,9 +3812,12 @@ async function fillInsightDetail(pane, item, gen){
     // State the window explicitly when the SIP has an end date: the peer list is
     // then NOT "to today", and a reader comparing it against the portfolio tab
     // needs to know which window produced these numbers.
-    const windowNote = item.end
-      ? " — instalments to "+escapeHtml(fmtDate(item.end))+", valued "+escapeHtml(fmtDate(item.valueDate))
-      : "";
+    const first = item.schedule[0].date, last = item.schedule[item.schedule.length-1].date;
+    const varying = item.amountSpread && item.amountSpread.length>1;
+    const windowNote = " — "+item.schedule.length+" instalment"+(item.schedule.length===1?"":"s")+" "+
+      escapeHtml(fmtDate(first))+" to "+escapeHtml(fmtDate(last))+
+      (varying?" ("+escapeHtml(item.amountSpread.map(a=>inr(a)).join(" · "))+"/mo)":"")+
+      ", valued "+escapeHtml(fmtDate(item.valueDate));
     html += '<div class="ins-sub">Your window — same SIP dates &amp; amount, '+escapeHtml(item.plan)+
             " plan"+windowNote+"</div>";
     /* Only funds that ran the ENTIRE window are eligible, so `universe` can be a

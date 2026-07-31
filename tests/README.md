@@ -5,10 +5,13 @@ python3 tests/test_fetch_tri.py     #  36 — TRI continuity gate, fetch resilie
                                     #       canonical-name drift, staleness audit
 python3 tests/test_fetch_ranks.py   # 141 — ranking maths, publish gates, dedupe
 python3 tests/test_probe_ranks.py   #  71 — universe filters, client/Python parity
+python3 tests/test_mergers.py       #  17 — scheme-continuation chains, splice gates,
+                                    #       and the index.html/mf_mergers.py drift guard
 node    tests/test_app.js           #  33 — export, import, retry, storage, search
 node    tests/test_matching.js      # 121 — matching, SEBI category guard, benchmark
                                     #       mapping + reachability, rename aliases
-node    tests/test_insights.js      #  99 — ranking, NAV parsing, SIP window, plan
+node    tests/test_insights.js      # 138 — ranking, NAV parsing, SIP window, plan,
+                                    #       scheme pooling, sub-tab scope, schedules
 ```
 
 Two of these assert things about the COMMITTED DATA, not just the code:

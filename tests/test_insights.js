@@ -57,7 +57,7 @@ catch(e){ loaded = false; console.log("  FAIL  index.html is missing Insights ma
 try { eval([grabFn("navOnOrAfter"), grabFn("navOnOrBefore"), grabFn("addMonths"),
             grabFn("daysBetween"), grabFn("isoDate"), grabFn("parseInput"),
             grabFn("normaliseFlows"), grabFn("xirr"), grabFn("scheduleDates"),
-            grabFn("valuationAt"), grabFn("runSIP")].join("\n")); }
+            grabFn("valuationAt"), grabFn("uniformSchedule"), grabFn("runSIP")].join("\n")); }
 catch(e){ loaded = false; console.log("  FAIL  could not load SIP engine: " + e.message); fail++; }
 
 console.log("Run node tests/test_insights.js");
@@ -121,7 +121,7 @@ if(loaded){
     const [c,e] = synth("F"+i, "Fund "+i+" - Direct Plan - Growth", 0.06+0.01*i, 560);
     funds[c] = e;
   }
-  const res = rankCandidates({funds}, dates, 5000, VALUE, "F3");
+  const res = rankCandidates({funds}, uniformSchedule(dates, 5000), VALUE, "F3");
   ok("all full-history funds are eligible", res.universe === 14);
   eq("top list is capped at five", res.top.length, 5);
   ok("top list is sorted best first",
@@ -136,26 +136,26 @@ if(loaded){
   const withLate = Object.assign({}, funds);
   const [lc, le] = synth("LATE", "Late Fund - Direct Plan - Growth", 0.40, 180, "2023-01-04");
   withLate[lc] = le;
-  const res2 = rankCandidates({funds:withLate}, dates, 5000, VALUE, "F3");
+  const res2 = rankCandidates({funds:withLate}, uniformSchedule(dates, 5000), VALUE, "F3");
   ok("a mid-window launch is excluded, not ranked first",
      res2.top.every(r => String(r.code) !== "LATE"));
   eq("and the eligible universe is unchanged", res2.universe, 14);
 
-  eq("an empty category ranks nothing", rankCandidates({funds:{}}, dates, 5000, VALUE, "X").universe, 0);
+  eq("an empty category ranks nothing", rankCandidates({funds:{}}, uniformSchedule(dates, 5000), VALUE, "X").universe, 0);
 
   // A malformed document must be distinguishable from a genuinely empty cohort.
   // Both give universe 0, so without the flag a shape bug looks like a real result
   // -- which is exactly how two assertions in this file once passed vacuously.
   ok("a malformed document is flagged, not silently empty",
-     rankCandidates({F0:{n:"x",t0:"2016-01-04",d:[0],v:[1]}}, dates, 5000, VALUE, "F0").malformed === true);
+     rankCandidates({F0:{n:"x",t0:"2016-01-04",d:[0],v:[1]}}, uniformSchedule(dates, 5000), VALUE, "F0").malformed === true);
   ok("a genuinely empty cohort is NOT flagged malformed",
-     rankCandidates({funds:{}}, dates, 5000, VALUE, "X").malformed !== true);
-  ok("null document is flagged", rankCandidates(null, dates, 5000, VALUE, "X").malformed === true);
+     rankCandidates({funds:{}}, uniformSchedule(dates, 5000), VALUE, "X").malformed !== true);
+  ok("null document is flagged", rankCandidates(null, uniformSchedule(dates, 5000), VALUE, "X").malformed === true);
 
   // ------------------------------------------------------------ suppression
   const three = {};
   for(let i=0;i<3;i++){ const [c,e]=synth("T"+i,"Tiny "+i,0.08+0.01*i,560); three[c]=e; }
-  const small = rankCandidates({funds:three}, dates, 5000, VALUE, "T0");
+  const small = rankCandidates({funds:three}, uniformSchedule(dates, 5000), VALUE, "T0");
   ok("a 3-fund cohort is below the top-five threshold", small.universe < MIN_TOP_UNIVERSE);
   /* The list is now rendered at every pool size. Suppressing it hid the only
      like-for-like comparison the tab has; the honesty requirement is met by
@@ -358,78 +358,207 @@ if(loaded){
      "2025-01-01,2025-01-02,2025-01-03");
 
 
-  // =============================== v9: the Insights tab must honour the SIP end date
-  // insightsItems() built its item from `s.end`, a property the scheme object has
-  // NEVER had -- computeScheme() stores the SIP end as the STRING `endStr`. So
-  // `item.end` was always undefined and `item.end||item.valueDate` in
-  // fillInsightDetail() always fell through to the fund's LATEST NAV DATE. Every
-  // holding with an end date was therefore ranked, and its peers listed, over a
-  // window the user never invested through.
-  // `var`, not `let`: a direct eval hoists its function declarations to the nearest
-  // VARIABLE scope (module level), so a block-scoped `let` here would be invisible
-  // to the extracted insightsItems(). Same reason CATEGORY_CANON is lifted out of
-  // its `const` and bound as a var -- it is still read from index.html, so the real
-  // table is under test rather than a copy.
+  // ======================== v10: scheme-level pooling, sub-tab scope, schedules
+  // 23 SIP legs across 13 funds is one position per fund, not 23. The pooled return
+  // is a single XIRR over the union of every leg's cash flows -- NOT the average of
+  // the legs' XIRRs, which is wrong whenever the legs differ in size or timing.
   var schemes = [];
+  var pfScope = "all";
   var CATEGORY_CANON = {};
-  var itemsLoaded = true;
+  var v10Loaded = true;
   try {
     CATEGORY_CANON = eval("(" + HTML.match(/const CATEGORY_CANON = (\{[\s\S]*?\n\});/)[1] + ")");
     eval([grabFn("normName"), grabFn("normCategory"), grabFn("categoryKey"),
-          grabFn("normalisePlan"), grabFn("detectPlanFromName"),
-          grabFn("schemeView"), grabFn("insightsItems")].join("\n"));
-  } catch(e){ itemsLoaded = false; ok("could not load insightsItems: " + e.message, false); }
+          grabFn("normalisePlan"), grabFn("detectPlanFromName"), grabFn("schemeView"),
+          grabFn("poolRuns"), grabFn("scopeLegs"), grabFn("groupHoldings"),
+          grabFn("scopeApplies"), grabFn("groupSchedule"), grabFn("insightsItems")].join("\n"));
+  } catch(e){ v10Loaded = false; ok("could not load the v10 grouping layer: "+e.message, false); }
 
-  if(itemsLoaded){
-    const holding = (over) => Object.assign({
-      code:"118269", name:"Canara Robeco Large Cap Fund - Direct Plan - Growth",
-      category:"Equity Scheme - Large Cap Fund", plan:"Direct",
-      startStr:"2018-01-05", endStr:"", start:parseInput("2018-01-05"), amount:10000,
-      fundValueDate:parseInput("2026-07-24"),
-      fund:{xirr:0.149, invested:370000, currentValue:600000},
-      fundCmp:{xirr:0.149}, benchCmp:{xirr:0.121}
-    }, over||{});
+  if(v10Loaded){
+    // Real published series, not a synthetic curve. A smooth exponential gives
+    // every leg an identical XIRR, which would make the pooled-vs-mean test pass
+    // for the wrong reason -- only real return dispersion can show that pooling
+    // and averaging genuinely differ.
+    const TRI = JSON.parse(require("fs").readFileSync(
+      require("path").join(__dirname, "..", "data", "tri", "NIFTY_MIDCAP150.json"), "utf8"));
+    const NAV = Object.keys(TRI.series).sort()
+      .map(d=>({date:parseInput(d), nav:TRI.series[d]}));
+    const VD = NAV[NAV.length-1].date;
+    const leg = (startISO, endISO, amount) => {
+      const end = endISO ? parseInput(endISO) : VD;
+      return runSIP(NAV, uniformSchedule(scheduleDates(parseInput(startISO), end), amount), VD);
+    };
 
-    schemes = [holding({endStr:"2021-01-05"})];
-    let it = insightsItems()[0];
-    ok("an end-dated holding exposes a real Date for item.end",
-       it.end instanceof Date);
-    eq("...and it is the stored endStr, not the valuation date",
-       it.end && isoDate(it.end), "2021-01-05");
+    // ---- poolRuns
+    const a = leg("2018-02-05", "2019-02-05", 1500);
+    const b = leg("2019-03-05", null, 10000);
+    const pooled = poolRuns([a,b]);
+    ok("pooling two legs returns a run", !!pooled);
+    ok("invested is the sum of the legs",
+       Math.abs(pooled.invested-(a.invested+b.invested)) < 1e-6);
+    ok("current value is the sum of the legs",
+       Math.abs(pooled.currentValue-(a.currentValue+b.currentValue)) < 1e-6);
+    ok("units are the sum of the legs",
+       Math.abs(pooled.units-(a.units+b.units)) < 1e-9);
+    ok("instalments placed are the sum of the legs",
+       pooled.placed === a.placed+b.placed);
 
-    schemes = [holding()];
-    it = insightsItems()[0];
-    ok("an open-ended holding leaves item.end null", it.end === null);
+    // The decisive property: pooling must equal ONE SIP run over the merged
+    // schedule. If these diverge the collapsed row is not the position it claims.
+    const merged = {};
+    for(const e of uniformSchedule(scheduleDates(parseInput("2018-02-05"), parseInput("2019-02-05")),1500))
+      merged[isoDate(e.date)] = (merged[isoDate(e.date)]||0)+e.amount;
+    for(const e of uniformSchedule(scheduleDates(parseInput("2019-03-05"), VD),10000))
+      merged[isoDate(e.date)] = (merged[isoDate(e.date)]||0)+e.amount;
+    const direct = runSIP(NAV, Object.keys(merged).sort().map(k=>({date:parseInput(k),amount:merged[k]})), VD);
+    ok("pooled XIRR equals a single run over the merged schedule",
+       Math.abs(pooled.xirr-direct.xirr) < 1e-9, (pooled.xirr-direct.xirr).toExponential(2));
+    ok("...and is NOT the mean of the legs' XIRRs",
+       Math.abs(pooled.xirr-(a.xirr+b.xirr)/2) > 1e-6);
 
-    // The defect, measured end to end: the schedule handed to rankCandidates().
-    schemes = [holding({endStr:"2021-01-05"})];
-    it = insightsItems()[0];
-    const correct = scheduleDates(it.start, it.end || it.valueDate).length;
-    const buggy   = scheduleDates(it.start, undefined || it.valueDate).length;
-    eq("a stopped SIP schedules only its own instalments", correct, 37);
-    ok("...which is far short of the to-today schedule the old code used",
-       buggy === 103 && correct < buggy);
+    // Two legs struck at different NAV dates cannot be summed -- that is adding
+    // rupees measured at two different prices.
+    const early = leg("2018-02-05", null, 1000);
+    const shifted = Object.assign({}, early, {valueDate:new Date(2019,5,1)});
+    ok("legs struck on different dates refuse to pool", poolRuns([early, shifted]) === null);
+    ok("an all-null leg list pools to null", poolRuns([null,null]) === null);
+    ok("a single leg pools to itself",
+       Math.abs(poolRuns([a]).xirr - a.xirr) < 1e-12);
 
-    // Plan drives WHICH cohort file is loaded, so an assumed plan must be labelled.
-    schemes = [holding({plan:"", name:"Some Fund - Growth"})];
-    it = insightsItems()[0];
-    eq("an undetectable plan still defaults to Regular", it.plan, "Regular");
-    ok("...but is flagged as inferred, not stated", it.planInferred === true);
+    // ---- groupHoldings
+    const mk = (code,startStr,endStr,amount,run) => ({
+      code, name:"Fund "+code, plan:"Regular", category:"Equity Scheme - Mid Cap Fund",
+      startStr, endStr:endStr||"", start:parseInput(startStr), amount,
+      fund:run, fundCmp:run, benchCmp:run, cmpValueDate:VD, fundValueDate:VD,
+      navStaleDays:0, fundSkipped:0, benchLabel:"NIFTY MIDCAP 150 TRI"
+    });
+    schemes = [ mk("111","2018-02-05","2019-02-05",1500,a),
+                mk("111","2019-03-05","",10000,b),
+                mk("222","2018-02-05","",3000,leg("2018-02-05",null,3000)) ];
+    const groups = groupHoldings(schemes);
+    eq("three legs across two funds collapse to two rows", groups.length, 2);
+    eq("the multi-leg row reports its leg count", groups[0].legCount, 2);
+    ok("the multi-leg row lists every distinct amount",
+       groups[0].amountSpread.join(",") === "1500,10000");
+    ok("the collapsed row's invested equals the sum of its legs",
+       Math.abs(groups[0].fund.invested-(a.invested+b.invested)) < 1e-6);
+    eq("input order of first appearance is preserved", groups[1].code, "222");
+    ok("a group still satisfies schemeView()", schemeView(groups[0]).fxFull != null);
 
-    schemes = [holding({plan:"", name:"Axis Bluechip Fund - Direct Plan - Growth"})];
-    ok("a plan read from the name is NOT flagged as inferred",
-       insightsItems()[0].planInferred === false);
+    // ---- scope
+    ok("scopeApplies() is true once any leg has an end date", scopeApplies() === true);
+    eq("live scope drops the ended leg", scopeLegs(schemes,"live").length, 2);
+    eq("all scope keeps every leg", scopeLegs(schemes,"all").length, 3);
+    const liveGroups = groupHoldings(scopeLegs(schemes,"live"));
+    eq("the multi-leg fund survives with only its live leg", liveGroups[0].legCount, 1);
+    ok("...and its invested is the live leg alone, not the whole position",
+       Math.abs(liveGroups[0].fund.invested-b.invested) < 1e-6);
+    schemes = [ mk("333","2018-02-05","",1000,leg("2018-02-05",null,1000)) ];
+    ok("scopeApplies() is false when nothing has an end date", scopeApplies() === false);
 
-    schemes = [holding({plan:"Direct"})];
-    ok("an explicitly stored plan is NOT flagged as inferred",
-       insightsItems()[0].planInferred === false);
+    // ---- groupSchedule: what peers actually receive
+    schemes = [ mk("111","2018-02-05","2019-02-05",1500,a), mk("111","2019-03-05","",10000,b) ];
+    const g = groupHoldings(schemes)[0];
+    const sched = groupSchedule(g);
+    ok("the schedule carries per-date amounts, not one flat figure",
+       new Set(sched.map(e=>e.amount)).size === 2);
+    ok("the ended leg stops at ITS end date, not today",
+       sched.filter(e=>e.amount===1500).every(e=>isoDate(e.date) <= "2019-02-05"));
+    ok("the live leg runs to the valuation date",
+       isoDate(sched[sched.length-1].date) > "2019-02-05" &&
+       sched[sched.length-1].date <= VD);
+    ok("dates are strictly ascending",
+       sched.every((e,i)=>i===0 || e.date > sched[i-1].date));
+    // Concurrent legs on the same day must ADD, not overwrite.
+    schemes = [ mk("111","2019-03-05","",10000,b), mk("111","2019-03-05","",3000,leg("2019-03-05",null,3000)) ];
+    const overlap = groupSchedule(groupHoldings(schemes)[0]);
+    ok("two legs sharing a date sum their amounts", overlap[0].amount === 13000);
+
+    // ---- insightsItems is one row per scheme and honours the sub-tab
+    schemes = [ mk("111","2018-02-05","2019-02-05",1500,a),
+                mk("111","2019-03-05","",10000,b),
+                mk("222","2018-02-05","2019-02-05",3000,leg("2018-02-05","2019-02-05",3000)) ];
+    pfScope = "all";
+    eq("Insights shows one row per scheme, not per leg", insightsItems().length, 2);
+    pfScope = "live";
+    const liveItems = insightsItems();
+    eq("Live SIP drops the fully-stopped scheme", liveItems.length, 1);
+    eq("...and keeps the one still running", liveItems[0].code, "111");
+    ok("each item carries a dated schedule for the peer run",
+       Array.isArray(liveItems[0].schedule) && liveItems[0].schedule[0].amount === 10000);
+    pfScope = "all";
   }
 
-  // Shipped-file guards: these are the exact edits, so a bad paste goes red.
-  ok("index.html no longer reads the non-existent s.end",
-     !/\bend:\s*s\.end\b/.test(HTML));
-  ok("index.html derives the insights end date from endStr",
-     /s\.endStr\s*\?\s*parseInput\(s\.endStr\)\s*:\s*null/.test(HTML));
+
+  // ============================ v11: the JS splice must agree with the Python one
+  // Two implementations of one rule drift. tests/test_mergers.py pins the MAP; this
+  // pins the BEHAVIOUR, so a tolerance edited on one side alone goes red.
+  // `var`, not eval'd `const`: a direct eval's const is block-scoped to the eval
+  // and invisible to the extracted spliceProblem(). Values are still READ from
+  // index.html, so the shipped tolerances are what get tested.
+  var MAX_SPLICE_RATIO_DRIFT = 0, MAX_SPLICE_GAP_DAYS = 0;
+  var jsSpliceLoaded = true;
+  try {
+    MAX_SPLICE_RATIO_DRIFT = parseFloat(HTML.match(/const MAX_SPLICE_RATIO_DRIFT\s*=\s*([\d.]+)/)[1]);
+    MAX_SPLICE_GAP_DAYS    = parseInt(HTML.match(/const MAX_SPLICE_GAP_DAYS\s*=\s*(\d+)/)[1],10);
+    eval([grabFn("spliceProblem"), grabFn("spliceNav")].join("\n"));
+  } catch(e){ jsSpliceLoaded = false; ok("could not load the splice logic: "+e.message, false); }
+
+  if(jsSpliceLoaded){
+    const day = (iso, nav) => ({date:parseInput(iso), nav});
+    const SPL = parseInput("2022-11-28");
+    const oldArr = [day("2022-11-23",100), day("2022-11-24",100), day("2022-11-25",100)];
+
+    ok("a clean rename splices", spliceNav(oldArr,[day("2022-11-28",100)],SPL).spliced === true);
+    ok("...and the joined series reaches back to the retired code's first row",
+       isoDate(spliceNav(oldArr,[day("2022-11-28",100)],SPL).navArr[0].date) === "2022-11-23");
+    ok("a 2% move across the join is allowed",
+       spliceNav(oldArr,[day("2022-11-28",102)],SPL).spliced === true);
+    ok("a 4% move is refused",
+       spliceNav(oldArr,[day("2022-11-28",104)],SPL).spliced === false);
+    ok("a ratio merger is refused outright",
+       spliceNav(oldArr,[day("2022-11-28",210)],SPL).spliced === false);
+    ok("a refused splice returns the NEW series untouched — never fewer rows",
+       spliceNav(oldArr,[day("2022-11-28",210)],SPL).navArr.length === 1);
+    ok("a long hole at the join is refused",
+       spliceNav([day("2022-10-05",100)],[day("2022-11-28",100)],SPL).spliced === false);
+    ok("an empty retired series is refused, not crashed",
+       spliceNav([],[day("2022-11-28",100)],SPL).spliced === false);
+
+    // A date in BOTH series must survive once, with the surviving code's value:
+    // two rows for one day make navOnOrAfter and navOnOrBefore disagree, so a SIP
+    // buys at one NAV and is valued at another on the same day.
+    const dup = spliceNav(oldArr.concat([day("2022-11-28",100),day("2022-11-29",100)]),
+                          [day("2022-11-28",100), day("2022-11-29",101)], SPL);
+    const seen = dup.navArr.map(p=>isoDate(p.date));
+    ok("a date present in both series appears exactly once",
+       new Set(seen).size === seen.length);
+    ok("...and takes the surviving code's NAV",
+       dup.navArr[dup.navArr.length-1].nav === 101);
+
+    // Tolerances must equal the Python module's, or the two panes diverge.
+    const py = require("fs").readFileSync(require("path").join(__dirname,"..","mf_mergers.py"),"utf8");
+    eq("ratio tolerance matches mf_mergers.py",
+       MAX_SPLICE_RATIO_DRIFT, parseFloat(py.match(/MAX_SPLICE_RATIO_DRIFT = ([\d.]+)/)[1]));
+    eq("gap limit matches mf_mergers.py",
+       MAX_SPLICE_GAP_DAYS, parseInt(py.match(/MAX_SPLICE_GAP_DAYS = (\d+)/)[1],10));
+  }
+
+  ok("computeScheme fetches through the chain",
+     /const detail=await getDetailChained\(spec\.code\)/.test(HTML));
+
+  // ---- shipped-file guards: the exact edits, so a bad paste goes red
+  ok("rankCandidates takes a schedule, not (dates, amount)",
+     /function rankCandidates\(navDoc, schedule, valueDate, ownCode\)/.test(HTML));
+  ok("runSIP takes a schedule",
+     /function runSIP\(navArr,schedule,valueDate\)/.test(HTML));
+  ok("peers are run on the holding's own schedule",
+     /runSIP\(gridToNavArr\(entry\), schedule, valueDate\)/.test(HTML));
+  ok("index.html no longer reads the non-existent s.end", !/\bend:\s*s\.end\b/.test(HTML));
+  ok("the Portfolio pane renders groups, not raw legs",
+     /const groups = groupHoldings\(scoped\)/.test(HTML));
+  ok("the PORTFOLIO total row is computed from the same groups",
+     /portfolioMetrics\(groups\)/.test(HTML));
   ok("fillInsightDetail distinguishes a missing plan cohort from a short history",
      /inCohort/.test(HTML) && /isn't in the published/.test(HTML));
 
