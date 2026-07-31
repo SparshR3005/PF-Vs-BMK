@@ -1,182 +1,141 @@
-#!/usr/bin/env python3
+"""Scheme-continuation chains: one canonical definition, shared with index.html.
+
+WHY THIS EXISTS
+---------------
+When an AMC merges or rebrands a scheme, AMFI sometimes keeps the surviving
+scheme's code and sometimes allots a brand-new one. When it allots a new one, the
+new code's NAV history begins on the merger date and everything before it lives
+under the retired code. The utility then cannot place a single SIP instalment for
+any period before the merger, and the holding is dropped at import with
+"No valid SIP instalment could be placed".
+
+Measured on the published grids, the L&T -> HSBC transition took the new-code
+route across every scheme:
+
+    151034/151036  HSBC Midcap Fund          first NAV 2022-11-28
+    151076/151078  HSBC ELSS Tax saver Fund  first NAV 2022-11-28
+    151110/151113  HSBC Value Fund           first NAV 2022-11-28
+    151130/151133  HSBC Small Cap Fund       first NAV 2022-11-28
+
+while the pre-existing HSBC schemes (101594, 102252, 104707, 146771, 148409 ...)
+kept their codes and their full history. A uniform 2022-11-28 start across four
+unrelated scheme pairs is the signature of new codes, not of four simultaneous
+fund launches.
+
+WHY A PLAIN CONCATENATION IS CORRECT HERE
+-----------------------------------------
+HSBC Midcap's first NAV is Rs 210.9607 (Regular) / Rs 231.7977 (Direct). A newly
+launched scheme starts at its Rs 10 NFO price; opening in the 200s means the
+series is the RENAMED CONTINUATION of the surviving scheme, carrying NAV straight
+through. HSBC's own notice says renamed schemes had a name change only, with no
+change in NAV or investment value -- it was the schemes merged INTO a survivor
+that had NAV recomputed. L&T Mid Cap Fund was the survivor.
+
+So units carry 1:1 and the two series are concatenated with NO ratio adjustment.
+
+THAT IS AN ASSERTION ABOUT DATA, SO IT IS CHECKED, NOT TRUSTED
+--------------------------------------------------------------
+splice_problem() refuses the join unless the NAV either side of the splice is
+continuous. If a chain is ever wrong -- a transferor mistaken for a survivor, a
+mistyped code, an AMC that really did restate NAV -- the ratio will not be near
+1.0 and the splice is REFUSED rather than silently welding a step-change into the
+middle of someone's return history. A refused splice degrades to exactly today's
+behaviour; a bad splice would invent performance that never happened.
 """
-mf_universe.py -- the single definition of "which mfapi schemes can this tool use".
 
-This logic exists in index.html too (loadSchemeList / CATEGORY_CANON), because the
-client filters the scheme picker and the nightly job filters the ranking universe.
-Two copies of one rule is a bug waiting to happen: add a SEBI category to the
-client, forget the Python, and funds silently vanish from rankings with nothing
-erroring. tests/test_probe_ranks.py parses index.html and fails on any drift.
+from datetime import date, datetime
 
-Both probe_ranks.py and fetch_ranks.py import from here, so there is exactly one
-Python copy. The dependency points at this module, never the other way round --
-the probe is disposable, this is not.
-
-Stdlib only, deliberately: nothing here should add to requirements.txt.
-"""
-
-import json
-import re
-import time
-from datetime import date
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-
-API = "https://api.mfapi.in"
-UA = "PF-Vs-BMK/1.0 (+https://github.com/SparshR3005/PF-Vs-BMK)"
-
-NON_EQUITY_NAME_TOKENS = [
-    "liquid", "overnight", "gilt", "money market", "ultra short", "low duration",
-    "short duration", "medium duration", "long duration", "banking and psu",
-    "corporate bond", "credit risk", "debt", "duration", "floater", "dynamic bond", "bond",
-    "hybrid", "balanced", "arbitrage", "equity savings", "multi asset", "asset allocation",
-    "gold", "silver", "commodit", "fund of fund", "fof", "overseas", "international", "global",
-    "index fund", "exchange traded", "etf", "retirement", "children", "pension",
-]
-
-# Income-OPTION tokens: these identify a dividend/IDCW *payout plan* of a scheme,
-# which must never enter the universe (its NAV is reduced by every payout, so an
-# XIRR against a TRI is meaningless).
+# new (surviving) code -> the retired code its history continues from.
 #
-# "dividend" is deliberately ABSENT from this list. It used to be here, and it
-# silently deleted an entire SEBI equity category: "Equity Scheme - Dividend
-# Yield Fund" is a growth-option EQUITY fund whose NAME contains "dividend".
-# CATEGORY_CANON maps it to DIV_YIELD and treats it as rankable, but no
-# DIV_YIELD file was ever published and those funds never appeared in the
-# picker -- with nothing erroring, because the fund was dropped at ingest.
+# `splice` is the first date the NEW code is authoritative. Rows on/after it come
+# from the new code, rows before it from the old, so a day present in both can
+# never be counted twice.
 #
-# The distinction we actually want is "dividend" NOT followed by "yield", so the
-# payout plan is still excluded while the fund category survives. Kept as a
-# predicate (not a bare token) because a substring test cannot express it.
-INCOME_TOKENS = ["idcw", "payout", "reinvest", "bonus"]
-
-# "dividend" only counts as an income-option marker when it is NOT part of the
-# category phrase "dividend yield". Word-bounded so "dividends" in a longer
-# marketing string can't slip past.
-DIVIDEND_PLAN_RE = re.compile(r"\bdividend\b(?!\s+yield)")
-
-
-def name_looks_income_option(n):
-    """True when the scheme NAME marks an income/payout plan rather than growth.
-
-    Mirrors index.html's loadSchemeList() exactly. Any change here must be made
-    there too -- tests/test_probe_ranks.py fails on drift.
-    """
-    if any(t in n for t in INCOME_TOKENS):
-        return True
-    return bool(DIVIDEND_PLAN_RE.search(n))
-
-CATEGORY_CANON = {
-    "equity scheme - large cap fund":         "LARGE_CAP",
-    "equity scheme - large & mid cap fund":   "LARGE_MID",
-    "equity scheme - large and mid cap fund": "LARGE_MID",
-    "equity scheme - mid cap fund":           "MID_CAP",
-    "equity scheme - small cap fund":         "SMALL_CAP",
-    "equity scheme - multi cap fund":         "MULTI_CAP",
-    "equity scheme - flexi cap fund":         "FLEXI_CAP",
-    "equity scheme - focused fund":           "FOCUSED",
-    "equity scheme - value fund":             "VALUE",
-    "equity scheme - contra fund":            "CONTRA",
-    "equity scheme - dividend yield fund":    "DIV_YIELD",
-    "equity scheme - sectoral/ thematic":     "SECTORAL",
-    "equity scheme - sectoral/thematic":      "SECTORAL",
-    # MFAPI also serves a plural variant on live schemes; without it those funds
-    # are rejected by the app entirely. Must mirror index.html exactly.
-    "equity schemes - thematic fund":         "SECTORAL",
-    "equity scheme - thematic fund":          "SECTORAL",
-    "equity scheme - elss":                   "ELSS",
-    "elss":                                   "ELSS",
+# Codes verified against mfapi's scheme list; note the retired schemes are spelt
+# "L&T Mid Cap Fund" (with a space), which is why searching "L&T Midcap" finds
+# only "L&T Large and Midcap Fund" -- a DIFFERENT scheme, deliberately not chained.
+CHAIN = {
+    "151034": {"from": "112496", "splice": "2022-11-28",
+               "former": "L&T Mid Cap Fund - Regular Plan - Growth"},
+    "151036": {"from": "119807", "splice": "2022-11-28",
+               "former": "L&T Mid Cap Fund - Direct Plan - Growth"},
 }
 
-UNRANKABLE_KEYS = {"SECTORAL"}
+# A rename carries NAV through untouched, so the ratio across the join is 1.0 in
+# principle. The tolerance absorbs the one or two trading days that separate the
+# last old NAV from the first new one -- real market movement, not restatement.
+# 3% is roughly a very bad single session for a midcap fund and far below any
+# plausible merger ratio, which is typically tens of percent.
+MAX_SPLICE_RATIO_DRIFT = 0.03
 
-def norm_name(s):
-    return re.sub(r"\s+", " ", str(s or "").lower()).strip()
-
-
-def norm_category(c):
-    # MFAPI serves both "Equity Scheme - X" and "Equity Schemes - X" for one SEBI
-    # category and flips between them without notice. Fold the plural away here so
-    # every category is covered at once; enumerating plural KEYS (as v8 did for
-    # thematic) only ever fixes the categories that have already broken. Must stay
-    # identical to normCategory() in index.html -- a fund the client accepts but
-    # this module rejects silently vanishes from the rankings.
-    n = re.sub(r"\s+", " ", str(c or "").lower()).strip()
-    return re.sub(r"^equity schemes -", "equity scheme -", n)
+# The join must not open a hole larger than the SIP placement window (7 days), or
+# an instalment scheduled in the gap silently vanishes. 10 allows a merger over a
+# long weekend or a holiday cluster while still catching a real hole.
+MAX_SPLICE_GAP_DAYS = 10
 
 
-def category_key(category):
-    """Canonical SEBI key, or None when absent/junk/non-equity. Fails closed."""
-    return CATEGORY_CANON.get(norm_category(category))
+def _as_date(value):
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value), "%Y-%m-%d").date()
 
 
-def name_looks_non_equity(n):
-    return any(t in n for t in NON_EQUITY_NAME_TOKENS)
+def splice_problem(old_points, new_points, splice, ratio_tol=MAX_SPLICE_RATIO_DRIFT,
+                   gap_limit=MAX_SPLICE_GAP_DAYS):
+    """Return an error string if these two series must not be joined, else ''.
+
+    Both arguments are [(date, nav)] sorted ascending. Mirrors the shape and the
+    spirit of fetch_tri.py's continuity_problem(): refuse the write, keep what is
+    already correct, and say exactly why.
+    """
+    if not old_points:
+        return "no rows from the retired code"
+    if not new_points:
+        return "no rows from the surviving code"
+
+    splice_d = _as_date(splice)
+    tail = [p for p in old_points if _as_date(p[0]) < splice_d]
+    head = [p for p in new_points if _as_date(p[0]) >= splice_d]
+    if not tail:
+        return f"retired code has no rows before {splice_d}"
+    if not head:
+        return f"surviving code has no rows on/after {splice_d}"
+
+    last_old_date, last_old_nav = _as_date(tail[-1][0]), float(tail[-1][1])
+    first_new_date, first_new_nav = _as_date(head[0][0]), float(head[0][1])
+
+    if last_old_nav <= 0 or first_new_nav <= 0:
+        return "non-positive NAV at the join"
+
+    gap = (first_new_date - last_old_date).days
+    if gap > gap_limit:
+        return (f"{gap}-day hole between {last_old_date} and {first_new_date} "
+                f"(limit {gap_limit}) — an instalment scheduled in the gap would vanish")
+
+    ratio = first_new_nav / last_old_nav
+    if abs(ratio - 1.0) > ratio_tol:
+        return (f"NAV jumps {(ratio - 1.0) * 100:+.2f}% across the join "
+                f"({last_old_nav:.4f} on {last_old_date} -> {first_new_nav:.4f} on "
+                f"{first_new_date}). A rename carries NAV through unchanged, so this "
+                f"is either a ratio merger or the wrong retired code — refusing to "
+                f"splice rather than invent a step-change in the return history")
+    return ""
 
 
-def classify_plan(n):
-    """Direct when the name says so; otherwise Regular (mirrors the client's
-    else-branch, which treats a name mentioning neither as Regular)."""
-    if "direct" in n:
-        return "Direct"
-    return "Regular"
+def splice_series(old_points, new_points, splice, **kw):
+    """Return (points, problem). On any problem the NEW series is returned intact,
+    so a refused splice degrades to today's behaviour instead of losing data."""
+    problem = splice_problem(old_points, new_points, splice, **kw)
+    if problem:
+        return list(new_points), problem
+    splice_d = _as_date(splice)
+    joined = [p for p in old_points if _as_date(p[0]) < splice_d]
+    joined += [p for p in new_points if _as_date(p[0]) >= splice_d]
+    joined.sort(key=lambda p: _as_date(p[0]))
+    return joined, ""
 
 
-def get_json(url, timeout, attempts=3):
-    """GET with retry/backoff. Returns (payload, elapsed_s, nbytes, status)."""
-    last = None
-    for i in range(attempts):
-        started = time.monotonic()
-        try:
-            req = Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-            with urlopen(req, timeout=timeout) as res:
-                raw = res.read()
-                elapsed = time.monotonic() - started
-                # mfapi has been observed serving JSON under a text/html content
-                # type, so never gate parsing on the content-type header.
-                return json.loads(raw.decode("utf-8", "replace")), elapsed, len(raw), res.status
-        except HTTPError as e:
-            last = e
-            # 429/5xx are worth backing off on; 404 is final.
-            if e.code == 404:
-                return None, time.monotonic() - started, 0, 404
-            if e.code == 429:
-                time.sleep(2.0 * (i + 1))
-                continue
-        except (URLError, TimeoutError, json.JSONDecodeError, ValueError) as e:
-            last = e
-        time.sleep(0.6 * (i + 1))
-    return None, 0.0, 0, getattr(last, "code", 0)
-
-
-def unwrap_list(raw):
-    """Tolerate a shape change exactly as the client does: today /mf returns a
-    bare array, but guard against a future paginated wrapper so the whole list
-    doesn't silently vanish."""
-    if isinstance(raw, list):
-        return raw, True
-    if isinstance(raw, dict):
-        for k in ("data", "schemes"):
-            if isinstance(raw.get(k), list):
-                paginated = (
-                    raw.get("nextPage") is not None
-                    or raw.get("next") is not None
-                    or raw.get("hasMore") is True
-                    or (raw.get("page") is not None
-                        and raw.get("totalPages") is not None
-                        and raw["page"] < raw["totalPages"])
-                )
-                return raw[k], not paginated
-    return None, False
-
-
-def parse_dmy(v):
-    """mfapi serves dates as DD-MM-YYYY (confirmed against index.html's parser)."""
-    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", str(v or ""))
-    if not m:
-        return None
-    d, mo, y = (int(x) for x in m.groups())
-    try:
-        return date(y, mo, d)
-    except ValueError:
-        return None
+def chained_from(code):
+    """The retired code whose history `code` continues, or None."""
+    entry = CHAIN.get(str(code))
+    return entry["from"] if entry else None
