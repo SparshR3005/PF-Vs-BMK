@@ -95,7 +95,14 @@ def norm_name(s):
 
 
 def norm_category(c):
-    return re.sub(r"\s+", " ", str(c or "").lower()).strip()
+    # MFAPI serves both "Equity Scheme - X" and "Equity Schemes - X" for one SEBI
+    # category and flips between them without notice. Fold the plural away here so
+    # every category is covered at once; enumerating plural KEYS (as v8 did for
+    # thematic) only ever fixes the categories that have already broken. Must stay
+    # identical to normCategory() in index.html -- a fund the client accepts but
+    # this module rejects silently vanishes from the rankings.
+    n = re.sub(r"\s+", " ", str(c or "").lower()).strip()
+    return re.sub(r"^equity schemes -", "equity scheme -", n)
 
 
 def category_key(category):
