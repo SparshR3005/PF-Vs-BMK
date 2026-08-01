@@ -10,3 +10,7 @@ __pycache__/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Installed by CI (and locally) only so tests/test_report.js can read the workbook
+# back with the same Excel library index.html loads from the CDN. Never committed.
+node_modules/

@@ -88,6 +88,22 @@ jobs:
       # probe_ranks.py re-implements index.html's universe filters in Python.
       # This asserts the two copies still agree; edit one list without the other
       # and this goes red rather than silently shrinking the ranking universe.
+      # The report suite drives the REAL exportReport() in a VM and reads the
+      # workbook back with the same xlsx-js-style build index.html loads from the
+      # CDN, so it needs that package present. tests/test_report.js SKIPs cleanly
+      # when it is absent — but a test that silently skips in CI proves nothing, so
+      # it is installed here and genuinely runs. --no-save keeps the repo free of a
+      # package.json it does not otherwise need.
+      - name: Install the Excel library the report test reads with
+        run: npm install --no-save --no-audit --no-fund xlsx-js-style@1.2.0
+
+      # Excel report: sheet set and naming per sub-tab, pooled rows matching the
+      # Portfolio pane, per-sheet KPI blocks reconciling against independently
+      # computed totals, and the Insights sheets carrying the same facts the pane
+      # renders. Runs against the committed data/tri and data/ranks files.
+      - name: Excel report tests
+        run: node tests/test_report.js
+
       - name: Probe filter drift guard
         run: python tests/test_probe_ranks.py
 

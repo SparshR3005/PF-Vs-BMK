@@ -38,6 +38,7 @@ function grabFn(name){
 const escapeHtml = s => String(s).replace(/[&<>"]/g,
   c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 const MIN_TOP_UNIVERSE = 10, TOP_N = 5;
+const MIN_RANK_UNIVERSE = parseInt((HTML.match(/const MIN_RANK_UNIVERSE = (\d+);/) || [0, 8])[1], 10);
 // Read from index.html rather than restated, so the suite exercises the SHIPPED
 // thresholds. rankCandidates() now classifies exclusions by cause and needs both.
 const DEAD_FUND_DAYS = parseInt((HTML.match(/const DEAD_FUND_DAYS = (\d+);/) || [0, 60])[1], 10);
@@ -52,7 +53,8 @@ const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","D
   "US","UK","ESG","REIT","INVIT","PSU","FMCG","IT","NIFTY","BSE","NSE","CRISIL"]);
 
 const NEEDED = ["titleCaseWord","titleCaseName","normaliseFundName","gridToNavArr",
-                "rankCandidates","signedPP","periodTableHtml","topListHtml"];
+                "rankCandidates","signedPP","periodRows","periodTableHtml","topListHtml",
+                "excludedParts","excludedNote","rankSummary"];
 let loaded = true;
 try { eval(NEEDED.map(grabFn).join("\n")); }
 catch(e){ loaded = false; console.log("  FAIL  index.html is missing Insights machinery: " + e.message); fail++; }
@@ -582,10 +584,59 @@ if(loaded){
      /const MIN_RANK_DAYS = 365;/.test(HTML));
   ok("...and it suppresses the rank rather than annualising a short window",
      /spanDays < MIN_RANK_DAYS/.test(HTML));
-  ok("the Excel export labels the scope it covers",
-     /const scopeNote = scopeApplies\(\)/.test(HTML));
-  ok("...while still exporting every leg, so a round-trip stays lossless",
-     /const schemes = valuedSchemes\(\);/.test(HTML));
+  // ================================================ v14: the report, shipped-file
+  /* v13 §6 labelled a single leg-level sheet because that was the only sheet there
+     was. The report now builds a Portfolio AND an Insights sheet per sub-tab, so
+     the two guards below replace the two that pinned the old shape. */
+  ok("the report builds one sheet pair per sub-tab, named for the scope",
+     /function reportScopes\(\)/.test(HTML) &&
+     /pf:"Portfolio — All"/.test(HTML) && /pf:"Portfolio"/.test(HTML));
+  ok("...and drops the '— All' suffix when there is no Live SIP view to contrast",
+     /if\(!scopeApplies\(\)\) return \[\{scope:"all", label:"", pf:"Portfolio", ins:"Insights"\}\]/.test(HTML));
+  ok("the report mirrors the screen: pooled groups, not raw legs",
+     /const groups = groupHoldings\(legs\)/.test(HTML) &&
+     /buildInsights\(port, groups\)/.test(HTML));
+  ok("each Portfolio sheet computes its own metrics for its own scope",
+     /port: groups\.length \? portfolioMetrics\(groups\) : null/.test(HTML));
+  ok("the Insights sheets read the same facts the pane does",
+     /async function insightFacts\(item\)/.test(HTML) &&
+     /d\.facts\.push\(await insightFacts\(item\)\)/.test(HTML));
+  /* The drift guard. Two call sites is how the sheet and the screen come to print
+     different ranks for one holding while both look authoritative — the same
+     failure mf_universe.py exists to prevent on the Python side. */
+  ok("rankCandidates has exactly ONE call site, inside insightFacts",
+     ((HTML.match(/rankCandidates\(/g) || []).length -
+      (HTML.match(/function rankCandidates\(/g) || []).length) === 1 &&
+     /out\.rank = rankCandidates\(navs, item\.schedule, item\.valueDate, item\.code\);/.test(HTML));
+  ok("the rank sentence has one definition, parameterised by medium",
+     /function rankSentence\(sum, planLabel, em\)/.test(HTML) &&
+     (HTML.match(/rankSentence\(/g) || []).length === 3);
+  ok("the exclusion counts have one definition, rendered two ways",
+     /function excludedParts\(res\)/.test(HTML) &&
+     /function excludedText\(res\)/.test(HTML) && /function excludedNote\(res\)/.test(HTML));
+  ok("the leg note has one definition, read by the table and the sheet",
+     /function legNoteText\(g\)/.test(HTML) &&
+     (HTML.match(/legNoteText\(g\)/g) || []).length === 3);
+  ok("the track-record table is data first, HTML second",
+     /function periodRows\(periodsDoc, plan, code\)/.test(HTML) &&
+     /const t = periodRows\(periodsDoc, plan, code\)/.test(HTML));
+  ok("a percentage that is already in percent gets its own number format",
+     /const FMT_PCTNUM = '0\.00"%"';/.test(HTML));
+
+  // ---- the button
+  ok("the export button reads Export Report",
+     /id="exportBtn">⤓ Export Report<\/button>/.test(HTML));
+  ok("...at the smaller size, using a modifier that is NOT the destructive .small",
+     /class="btn ghost compact" id="exportBtn"/.test(HTML) &&
+     /\.btn\.compact\{padding:6px 13px;font-size:12px/.test(HTML));
+  ok("...sitting on the tab row, outside the tablist so arrow keys still work",
+     /<div class="tabrow" id="tabRow"/.test(HTML) &&
+     /<div class="tabrow-end">[\s\S]{0,240}id="exportBtn"/.test(HTML) &&
+     !/role="tablist"[\s\S]{0,400}id="exportBtn"[\s\S]{0,80}<\/div>\s*<\/div>\s*<div id="paneInsights"/.test(HTML));
+  ok("the export is async and says so while it works",
+     /await exportReport\(/.test(HTML) && /btn\.textContent="Building report…"/.test(HTML));
+  ok("the workbook is named as a report",
+     /"SIP_Report_"\+store\.active/.test(HTML));
   ok("the import template column reads 'Monthly SIP'",
      /"End \(optional\)","Monthly SIP","Code \(optional\)"/.test(HTML));
   ok("...and the importer still accepts a sheet headed only 'Monthly'",

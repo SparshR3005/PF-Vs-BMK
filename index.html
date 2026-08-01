@@ -124,6 +124,11 @@
   .btn.small{padding:6px 13px;font-size:12px;font-weight:500;background:transparent;
     border-color:var(--lag-strong);color:var(--lag);box-shadow:none;}
   .btn.small:hover{background:rgba(207,91,76,.12);border-color:var(--lag);color:var(--lag);filter:none;}
+  /* SIZE ONLY. `.small` is the destructive style — red border and text, used by
+     Clear all / Delete / Erase browser data / the row × buttons — so reusing it
+     for Export Report would paint a harmless action as a dangerous one. `.compact`
+     sets nothing but metrics, leaving `.ghost` to supply the brass outline. */
+  .btn.compact{padding:6px 13px;font-size:12px;font-weight:500;}
   .btn:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
 
   .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px;}
@@ -279,6 +284,15 @@
     border-color:var(--brass);}
   .tabbtn:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
   @media(max-width:520px){ .tabbar{display:flex;width:100%;} .tabbtn{flex:1;padding:9px 10px;} }
+  /* The export control sits on the tab row, hard right — but OUTSIDE the tablist.
+     A non-tab child inside role="tablist" is announced as a tab ("3 of 3") and is
+     caught by the tabbar's ArrowLeft/ArrowRight handler, so the row is a plain
+     flex container that HOLDS the tablist rather than being one. */
+  .tabrow{display:flex;align-items:center;gap:12px;margin:0 0 18px;flex-wrap:wrap;}
+  .tabrow .tabbar{margin:0;}
+  .tabrow .tabrow-end{margin-left:auto;display:flex;align-items:center;gap:10px;}
+  .tabrow .astat{font-size:12px;color:var(--muted);margin:0;min-height:0;}
+  @media(max-width:520px){ .tabrow .tabrow-end{margin-left:0;width:100%;} }
   .ins-head{display:flex;justify-content:space-between;align-items:baseline;
     flex-wrap:wrap;gap:8px;margin-bottom:10px;}
   .ins-window{font-size:.82rem;color:var(--muted);font-family:var(--mono);}
@@ -426,12 +440,10 @@
       <div class="asep" aria-hidden="true"></div>
       <div class="agroup">
         <button class="btn ghost" id="importBtn">⤒ Import from Excel</button>
-        <button class="btn ghost" id="exportBtn" style="display:none;">⤓ Export to Excel</button>
         <button class="btn blue" id="templateBtn">⤓ Import template</button>
         <input type="file" id="importFile" class="hidden-file" accept=".xlsx,.csv">
       </div>
       <span class="status astat" id="pmStatus" aria-live="polite"></span>
-      <span class="status astat" id="exportStatus" aria-live="polite" style="flex:0 1 auto;"></span>
     </div>
     <div class="privacy-note">
       <span><b>Privacy:</b> Portfolios live only in your browser — never uploaded.</span>
@@ -477,11 +489,17 @@
     <div class="status" id="status"></div>
   </div>
 
-  <div class="tabbar" id="tabbar" role="tablist" aria-label="Views" style="display:none;">
-    <button class="tabbtn active" id="tabPortfolio" role="tab" aria-selected="true"
-            aria-controls="panePortfolio">Portfolio</button>
-    <button class="tabbtn" id="tabInsights" role="tab" aria-selected="false"
-            aria-controls="paneInsights">Insights</button>
+  <div class="tabrow" id="tabRow" style="display:none;">
+    <div class="tabbar" id="tabbar" role="tablist" aria-label="Views">
+      <button class="tabbtn active" id="tabPortfolio" role="tab" aria-selected="true"
+              aria-controls="panePortfolio">Portfolio</button>
+      <button class="tabbtn" id="tabInsights" role="tab" aria-selected="false"
+              aria-controls="paneInsights">Insights</button>
+    </div>
+    <div class="tabrow-end">
+      <span class="status astat" id="exportStatus" aria-live="polite"></span>
+      <button class="btn ghost compact" id="exportBtn">⤓ Export Report</button>
+    </div>
   </div>
 
   <div id="paneInsights" role="tabpanel" aria-labelledby="tabInsights" style="display:none;">
@@ -2059,6 +2077,18 @@ function groupHoldings(list){
   }).filter(g=>g.fund);
 }
 
+/* The one-line description of what a pooled row actually contains. Read by the
+   table renderer AND by the Excel report: the sheet claims to mirror the screen,
+   so the sentence that explains a pooled row has to be the same sentence. */
+function legNoteText(g){
+  if(g.legCount>1){
+    return g.legCount+" SIP legs pooled · "+g.amountSpread.map(a=>inr(a)).join(" · ")+
+           "/mo · from "+g.startStr;
+  }
+  return inr(g.legs[0].amount)+"/mo from "+g.startStr+
+         (g.legs[0].endStr?" to "+g.legs[0].endStr:"");
+}
+
 /* Sub-tabs only earn their place once the two views can differ. With no end date
    anywhere, "Live SIP" is identical to "All" and the control is pure noise. */
 function scopeApplies(){ return schemes.some(s=>s && s.endStr); }
@@ -2147,8 +2177,7 @@ function render(){
   if(!schemes.length){
     wrap.innerHTML='<div class="empty">No schemes yet — search a fund above and add your SIP.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
-    $("exportBtn").style.display="none";
-    $("tabbar").style.display="none";$("paneInsights").style.display="none";
+    $("tabRow").style.display="none";$("paneInsights").style.display="none";
     $("panePortfolio").style.display="";
     $("scopeBarPf").style.display="none"; $("scopeBarIns").style.display="none";
     $("updateNavBtn").style.display="none";
@@ -2156,7 +2185,6 @@ function render(){
     return;
   }
   $("toolbar").style.display="flex";
-  $("exportBtn").style.display="";
   // Refresh is only meaningful once there's something to re-value. Shown here (and
   // hidden above) so it appears exactly when the active portfolio has holdings.
   $("updateNavBtn").style.display="";
@@ -2170,7 +2198,7 @@ function render(){
   if(!groups.length && pfScope==="live" && !schemes.some(s=>s.error)){
     $("summaryCard").style.display="none"; $("foot").style.display="none";
     wrap.innerHTML='<div class="empty">No live SIPs — every holding has an end date. Switch to <b>All</b> to see the full portfolio.</div>';
-    $("tabbar").style.display="flex";
+    $("tabRow").style.display="flex";
     return;
   }
   const alphaBand=perfBand(port?port.alpha:null);
@@ -2264,14 +2292,7 @@ function render(){
     else if(g.benchLabel){bmkLine='<div class="bmk-line">vs '+escapeHtml(g.benchLabel)+' <span class="approx">(no overlapping data)</span></div>';}
     // Say plainly that one row is several SIPs. Without this the collapsed view
     // hides the very thing that makes the pooled XIRR different from a simple one.
-    let legNote="";
-    if(g.legCount>1){
-      const amts=g.amountSpread.map(a=>inr(a)).join(" · ");
-      legNote='<div class="leg-note">'+g.legCount+" SIP legs pooled · "+escapeHtml(amts)+"/mo · from "+escapeHtml(g.startStr)+"</div>";
-    }else{
-      legNote='<div class="leg-note">'+inr(g.legs[0].amount)+"/mo from "+escapeHtml(g.startStr)+
-        (g.legs[0].endStr?" to "+escapeHtml(g.legs[0].endStr):"")+"</div>";
-    }
+    const legNote='<div class="leg-note">'+escapeHtml(legNoteText(g))+"</div>";
     let notes="";
     if(g.navStaleDays>NAV_STALE_DAYS) notes+='<div class="bmk-line" style="color:var(--danger);">⚠ Fund NAV last updated '+g.navStaleDays+' days ago ('+fmtDate(g.fundValueDate)+') — value may be stale/suspended</div>';
     if(g.fundSkipped>0) notes+='<div class="bmk-line approx">'+g.fundSkipped+' SIP month(s) skipped — no NAV within 7 days (holiday, data gap, or suspension)</div>';
@@ -2329,7 +2350,7 @@ function render(){
       if(commit({...s, error:(e&&e.message)||"Could not value this holding"})) render();
     }
   });
-  $("tabbar").style.display="flex";
+  $("tabRow").style.display="flex";
   if($("paneInsights").style.display!=="none") renderInsights();
   $("foot").style.display="block";
   $("foot").innerHTML="Benchmark = a category-matched Nifty <b>Total Return Index (gross TRI)</b>, which includes reinvested dividends. "+
@@ -3058,17 +3079,27 @@ $("tabbar").addEventListener("keydown", e=>{
   $(toIns?"tabInsights":"tabPortfolio").focus();
 });
 
-$("exportBtn").addEventListener("click", ()=>{
+let exportBusy = false;
+$("exportBtn").addEventListener("click", async ()=>{
+  if(exportBusy) return;
   if(!schemes.length) return;
   if(!valuedSchemes().length){ toast("Nothing to export yet — no holdings could be valued.", {type:"warn"}); return; }
+  const btn=$("exportBtn"), label=btn.textContent;
+  /* The report now reads the Insights tab too, which means fetching per-category
+     rank files and re-running the peer maths for every holding. Measured against
+     the committed grids, five holdings across five categories over a 115-instalment
+     window cost ~0.8s of compute on top of ~1.1MB of JSON. That is long enough
+     that a silent button reads as a broken one, so it states what it is doing. */
+  exportBusy=true; btn.disabled=true; btn.textContent="Building report…";
   try{
     if(typeof XLSX==="undefined" || !XLSX.writeFile) throw new Error("Excel library not loaded (check your connection).");
-    exportExcel();
-    $("exportStatus").textContent = "";
-    toast("Excel report downloaded.", {type:"success"});
+    await exportReport(msg=>{ $("exportStatus").textContent=msg; });
+    toast("Report downloaded.", {type:"success"});
   }catch(e){
-    $("exportStatus").textContent = "";
     toast("Export failed: " + e.message, {type:"error", timeout:6000});
+  }finally{
+    exportBusy=false; btn.disabled=false; btn.textContent=label;
+    $("exportStatus").textContent = "";
   }
 });
 
@@ -3151,240 +3182,561 @@ function triWindowFlag(s){
   return "";
 }
 
-function exportExcel(){
-  /* Deliberately EVERY leg, whatever sub-tab is showing: the export is what makes a
-     round-trip lossless, and following pfScope here would silently drop the ended
-     legs from the user's own backup. But the headline XIRR is then computed over a
-     different population than the screen it was exported from (measured: 13.73% on
-     Live SIP against 14.75% for all legs), so the sheet must SAY so -- an unlabelled
-     number the reader cannot reproduce is the actual defect. */
-  const schemes = valuedSchemes();   // export excludes retained error rows (#2)
-  const port=portfolioMetrics(),genDate=fmtDate(new Date()),wb=XLSX.utils.book_new();
-  const anyEnd = schemes.some(s=>s.endStr);
-  const showComparableFundXirr = schemes.some(sipBeganBeforeTri);
-  const anyFlag = schemes.some(s=>triWindowFlag(s)!=="");   // show the flag column only if needed
-  const monthlyTotal = schemes.reduce((a,s)=>a+(Number(s.amount)||0),0);
-  const M = (r0,c0,r1,c1)=>({s:{r:r0,c:c0},e:{r:r1,c:c1}});
+/* ============================================================
+   EXCEL REPORT
 
-  /* ============================================================
-     SUMMARY  — modern KPI cards + readable insights
-     Layout uses columns A..F for a wider, airier canvas.
-     ============================================================ */
-  const s1={}; const merges1=[]; const rows1=[];
-  const setC=(addr,cell)=>{ s1[addr]=cell; };
-  const put=(r,c,cell)=>{ s1[XLSX.utils.encode_cell({r,c})]=cell; };
+   The workbook mirrors the two on-screen tabs rather than being a
+   separate artefact assembled from the same raw data by a second
+   route. Portfolio sheets carry exactly what groupHoldings() and
+   portfolioMetrics() put on screen — pooled, one row per scheme, not
+   one per SIP leg. Insights sheets carry exactly what an expanded
+   Insights row shows, through the same insightFacts() the pane uses.
 
-  // Title band (row 0-1), merged across A:F
-  put(0,0, styleCell("SIP Performance Report",{bold:true, sz:18, color:RPT.ink}));
-  for(let c=1;c<6;c++) put(0,c, styleCell("",{}));
-  merges1.push(M(0,0,0,5));
-  // Name the population the figures below cover. Without this the reader sees a
-  // headline XIRR that does not match the Live SIP screen they exported from, with
-  // nothing on the page explaining the difference.
-  const scopeNote = scopeApplies()
-    ? "  ·  All "+schemes.length+" SIP legs"+(pfScope==="live" ? " (screen was showing Live SIP only)" : "")
-    : "";
-  put(1,0, styleCell("Fund SIPs vs Nifty Total Return Index  ·  Portfolio: "+store.active+"  ·  "+genDate+scopeNote,
-                     {color:RPT.sub, sz:10}));
-  for(let c=1;c<6;c++) put(1,c, styleCell("",{}));
-  merges1.push(M(1,0,1,5));
-  rows1[0]={hpt:22}; rows1[1]={hpt:13};
+   When any holding has an end date the two sub-tabs describe DIFFERENT
+   populations (measured: 13.73% on Live SIP against 14.75% across all
+   legs), so each gets its own Portfolio and Insights sheet and its OWN
+   KPI block. A reader on the Live SIP sheet must be able to reconcile
+   the headline figures to the table directly beneath them; a single
+   shared KPI block on the cover could only be right for one of them.
+   With no end date anywhere the two are identical, so the sheets are
+   named plainly — "Portfolio", not "Portfolio — All" against nothing.
+   ============================================================ */
 
-  // KPI cards: 2 rows x 3 cards. Each card = label (small) + value (big) stacked in 2 cells,
-  // spanning 2 columns. Cards start at row 3.
-  const cards=[
+// A number that is ALREADY expressed in percent (6.30 meaning 6.30%). FMT_PCT
+// multiplies by 100 and would print 630.00% for the same input.
+const FMT_PCTNUM = '0.00"%"';
+
+/* ---- sheet primitives ---- */
+function shNew(nCols){ return {cells:{}, merges:[], rows:{}, nCols:nCols, r:0}; }
+function shPut(sh,r,c,cell){ sh.cells[XLSX.utils.encode_cell({r:r,c:c})]=cell; }
+function shMerge(sh,r,c0,c1){ if(c1>c0) sh.merges.push({s:{r:r,c:c0},e:{r:r,c:c1}}); }
+/* One full-width merged row. The pad cells matter: a merge in xlsx-js-style takes
+   its fill from the anchor cell, but Excel still paints the covered cells' own
+   borders, so an unstyled neighbour draws a hairline through a coloured band. */
+function shBand(sh, text, o){
+  const opts = o||{}, r = sh.r++;
+  shPut(sh,r,0, styleCell(text, opts));
+  const pad = {fill:opts.fill, top:opts.top, bottom:opts.bottom};
+  for(let c=1;c<sh.nCols;c++) shPut(sh,r,c, styleCell("", pad));
+  shMerge(sh,r,0,sh.nCols-1);
+  if(opts.hpt) sh.rows[r]={hpt:opts.hpt};
+  return r;
+}
+function shWrap(sh, text, o, perLine){
+  const per = perLine||108;
+  const lines = Math.max(1, Math.ceil((String(text||"").length+2)/per));
+  return shBand(sh, text, Object.assign({wrap:true, valign:"top", sz:10,
+    hpt: Math.max(15, lines*12+4)}, o||{}));
+}
+function shRow(sh, cells){
+  const r = sh.r++;
+  for(let c=0;c<cells.length && c<sh.nCols;c++){
+    const cell = cells[c] || {};
+    shPut(sh,r,c, styleCell(cell.v==null?"":cell.v, cell));
+  }
+  if(cells.hpt) sh.rows[r]={hpt:cells.hpt};
+  return r;
+}
+function shGap(sh, hpt){ const r=sh.r++; sh.rows[r]={hpt:hpt||6}; return r; }
+function shDone(sh, widths, page){
+  const ws = sh.cells;
+  ws["!ref"] = "A1:"+XLSX.utils.encode_cell({r:Math.max(0,sh.r-1), c:sh.nCols-1});
+  ws["!cols"] = widths.map(function(w){ return {wch:w}; });
+  ws["!merges"] = sh.merges;
+  const rr = []; for(const k in sh.rows) rr[Number(k)] = sh.rows[k];
+  ws["!rows"] = rr;
+  ws["!pageSetup"] = page || {orientation:"portrait", fitToWidth:1, fitToHeight:0, scale:0};
+  ws["!margins"] = {left:0.35,right:0.35,top:0.45,bottom:0.4,header:0.2,footer:0.2};
+  return ws;
+}
+function shTitle(sh, title, subtitle){
+  shBand(sh, title, {bold:true, sz:18, color:RPT.ink, hpt:24});
+  shBand(sh, subtitle, {color:RPT.sub, sz:10, hpt:14});
+  shGap(sh, 6);
+}
+function shHeader(sh, text){
+  return shBand(sh, text, {fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10, hpt:16});
+}
+/* KPI cards, 3 across, label row above value row, each card spanning two columns.
+   Same geometry the v9 Summary sheet used — it survives whatever column widths
+   the table below it needs, which a one-column-per-card strip does not. */
+function shCards(sh, cards){
+  const top = sh.r;
+  cards.forEach(function(card,i){
+    const cr = top + Math.floor(i/3)*3, cc = (i%3)*2;
+    const valColor = card.tone==="good"?RPT.good : card.tone==="bad"?RPT.bad : RPT.ink;
+    shPut(sh,cr,cc,   styleCell(card.label,{fill:RPT.panel, color:RPT.sub, sz:9, bold:true,
+                                            align:"left", valign:"center", top:RPT.accent}));
+    shPut(sh,cr,cc+1, styleCell("",{fill:RPT.panel, top:RPT.accent}));
+    shMerge(sh,cr,cc,cc+1);
+    const vcell = card.val==null
+      ? styleCell("N/A",{fill:RPT.panel, align:"left", sz:16, bold:true, color:RPT.sub, bottom:RPT.line})
+      : styleCell(card.val,{fill:RPT.panel, align:"left", sz:16, bold:true, numFmt:card.fmt,
+                            color:valColor, bottom:RPT.line});
+    shPut(sh,cr+1,cc,   vcell);
+    shPut(sh,cr+1,cc+1, styleCell("",{fill:RPT.panel, bottom:RPT.line}));
+    shMerge(sh,cr+1,cc,cc+1);
+    sh.rows[cr]={hpt:13}; sh.rows[cr+1]={hpt:20}; sh.rows[cr+2]={hpt:3};
+  });
+  sh.r = top + Math.ceil(cards.length/3)*3;
+}
+
+/* ---- what the workbook covers ---- */
+/* Sheet NAMES are conditional, not just their presence: "Portfolio — All" with no
+   "Portfolio — Live SIP" beside it invites the reader to hunt for a sheet that was
+   never going to exist. */
+function reportScopes(){
+  if(!scopeApplies()) return [{scope:"all", label:"", pf:"Portfolio", ins:"Insights"}];
+  return [{scope:"all",  label:"All",      pf:"Portfolio — All",      ins:"Insights — All"},
+          {scope:"live", label:"Live SIP", pf:"Portfolio — Live SIP", ins:"Insights — Live SIP"}];
+}
+function reportScopeData(sc){
+  const legs   = scopeLegs(valuedSchemes(), sc.scope);
+  const groups = groupHoldings(legs);
+  return Object.assign({}, sc, {
+    legs:legs, groups:groups,
+    port: groups.length ? portfolioMetrics(groups) : null,
+    monthly: legs.reduce(function(a,s){ return a+(Number(s.amount)||0); },0)
+  });
+}
+function scopeBlurb(d){
+  if(!d.label) return d.groups.length+" scheme"+(d.groups.length===1?"":"s")+
+    " across "+d.legs.length+" SIP leg"+(d.legs.length===1?"":"s");
+  return d.label==="Live SIP"
+    ? d.groups.length+" scheme"+(d.groups.length===1?"":"s")+" still being funded ("+
+      d.legs.length+" ongoing leg"+(d.legs.length===1?"":"s")+") — ended legs excluded"
+    : d.groups.length+" scheme"+(d.groups.length===1?"":"s")+" across all "+d.legs.length+
+      " SIP leg"+(d.legs.length===1?"":"s")+", ended and ongoing";
+}
+
+/* Prime the ranks cache in parallel before any ranking runs. Sequential awaits
+   inside the per-holding loop turned one round trip into N, which on a cold cache
+   was the slowest part of the whole export. */
+async function prefetchRanks(items){
+  await loadRanksManifest();
+  const want = {};
+  items.forEach(function(it){
+    if(!it.cat) return;
+    want["periods_"+it.cat+".json"] = 1;
+    want["navs_"+it.cat+"_"+it.plan+".json"] = 1;
+  });
+  const names = Object.keys(want), LIMIT = 4;
+  for(let i=0;i<names.length;i+=LIMIT){
+    await Promise.all(names.slice(i,i+LIMIT).map(function(n){ return loadRanksJson(n); }));
+  }
+}
+
+/* ---- cover ---- */
+function reportCoverSheet(data, genDate){
+  const sh = shNew(6);
+  shTitle(sh, "SIP Performance Report",
+    "Fund SIPs vs Nifty Total Return Index  ·  Portfolio: "+store.active+"  ·  "+genDate);
+
+  shHeader(sh, "WHAT'S IN THIS REPORT");
+  const contents = [];
+  data.forEach(function(d){ contents.push([d.pf, "Pooled holdings, KPI cards and verdict for "+scopeBlurb(d)+"."]); });
+  data.forEach(function(d){ contents.push([d.ins, "Category track record and peer ranking for each scheme in "+
+    (d.label?("the "+d.label+" view"):"the portfolio")+"."]); });
+  contents.push(["Method & Legend", "Colour bands, how each figure is computed, and what the benchmark is."]);
+  contents.forEach(function(row,i){
+    const fill = i%2 ? RPT.band : RPT.bandAlt;
+    const r = shRow(sh, [{v:row[0], fill:fill, bold:true, sz:10, bottom:RPT.line},
+                         {v:row[1], fill:fill, sz:10, color:RPT.sub, wrap:true, valign:"center", bottom:RPT.line}]);
+    for(let c=2;c<6;c++) shPut(sh,r,c, styleCell("",{fill:fill, bottom:RPT.line}));
+    shMerge(sh,r,1,5);
+    sh.rows[r]={hpt:18};
+  });
+  shGap(sh, 8);
+
+  shHeader(sh, data.length>1 ? "THE TWO VIEWS, SIDE BY SIDE" : "AT A GLANCE");
+  const hdr = [{v:"", fill:RPT.header}];
+  data.forEach(function(d){ hdr.push({v:d.label||"Portfolio", fill:RPT.header, color:RPT.headerTxt,
+                                      bold:true, align:"right", sz:10}); });
+  for(let c=hdr.length;c<6;c++) hdr.push({v:"", fill:RPT.header});
+  shRow(sh, hdr);
+  const metrics = [
+    ["Schemes",          function(d){ return d.groups.length; }, null],
+    ["SIP legs",         function(d){ return d.legs.length; }, null],
+    ["Monthly commitment", function(d){ return d.monthly; }, FMT_INR],
+    ["Total invested",   function(d){ return d.port?Math.round(d.port.invested):null; }, FMT_INR],
+    ["Current value",    function(d){ return d.port?Math.round(d.port.current):null; }, FMT_INR],
+    ["Gain / loss",      function(d){ return d.port?Math.round(d.port.gain):null; }, FMT_INR],
+    ["Portfolio XIRR",   function(d){ return d.port?d.port.xirr:null; }, FMT_PCT],
+    ["Benchmark TRI XIRR", function(d){ return (d.port&&d.port.anyBench)?d.port.benchXirr:null; }, FMT_PCT],
+    ["XIRR spread (p.a.)", function(d){ return (d.port&&d.port.alpha!=null)?d.port.alpha*100:null; }, FMT_PP]
+  ];
+  metrics.forEach(function(m,i){
+    const fill = i%2 ? RPT.band : RPT.bandAlt;
+    const cells = [{v:m[0], fill:fill, sz:10, bottom:RPT.line}];
+    data.forEach(function(d){
+      const val = m[1](d);
+      cells.push(val==null ? {v:"N/A", fill:fill, align:"right", color:RPT.sub, sz:10, bottom:RPT.line}
+                           : {v:val, fill:fill, align:"right", numFmt:m[2]||undefined, sz:10, bottom:RPT.line});
+    });
+    for(let c=cells.length;c<6;c++) cells.push({v:"", fill:fill, bottom:RPT.line});
+    shRow(sh, cells);
+  });
+  shGap(sh, 8);
+
+  shHeader(sh, "AS OF");
+  const newest = data[0].port && data[0].port.valueDate ? fmtDate(data[0].port.valueDate) : "—";
+  const cats = {};
+  data.forEach(function(d){ (d.facts||[]).forEach(function(f){
+    if(f && f.status==="ok" && f.catInfo && f.catInfo.as_of) cats[f.catInfo.as_of]=1; }); });
+  const asOfCats = Object.keys(cats).sort();
+  shWrap(sh, "Fund NAV — each holding is valued at its own latest published NAV; the newest in this portfolio is "+newest+".");
+  shWrap(sh, "Benchmark TRI — committed to the repository by the nightly fetch; the app warns on screen when a benchmark this portfolio uses has gone stale.");
+  shWrap(sh, "Category ranking data — published nightly. "+(asOfCats.length
+    ? ("As of "+asOfCats.join(", ")+".")
+    : "No category data was reachable when this report was built, so the Insights sheets state that rather than guessing."));
+  shGap(sh, 6);
+  shWrap(sh, "One row per SCHEME, not per SIP leg. A fund funded through several SIPs — an amount change, or two concurrent SIPs — is one position, and its return is a single money-weighted XIRR over the union of every leg's cash flows, which is not the average of the legs' XIRRs. The SIP column names the legs behind each row.",
+    {color:RPT.sub, italic:true});
+
+  return shDone(sh, [26,17,17,17,17,17]);
+}
+
+/* ---- portfolio ---- */
+function reportPortfolioSheet(d, genDate){
+  const groups = d.groups, port = d.port;
+  const anyShorter = groups.some(sipBeganBeforeTri);
+  const anyFlag    = groups.some(function(g){ return triWindowFlag(g)!==""; });
+
+  const cols = [
+    {h:"Scheme", w:34, a:"left"},
+    {h:"Plan", w:9, a:"center"},
+    {h:"SIP", w:30, a:"left"},
+    {h:"Benchmark (TRI proxy)", w:22, a:"left"},
+    {h:"Invested", w:13, a:"right", fmt:FMT_INR},
+    {h:"Current", w:13, a:"right", fmt:FMT_INR},
+    {h:"Gain", w:13, a:"right", fmt:FMT_INR},
+    {h:"Abs return", w:11, a:"right", fmt:FMT_PCT},
+    {h:"Fund XIRR (full)", w:13, a:"right", fmt:FMT_PCT}
+  ];
+  // Same rule the screen applies: the comparable figure only earns a column when a
+  // SIP genuinely predates its TRI, otherwise it duplicates the full-period XIRR.
+  if(anyShorter) cols.push({h:"Fund XIRR (comparable)", w:15, a:"right", fmt:FMT_PCT});
+  cols.push({h:"Benchmark XIRR", w:13, a:"right", fmt:FMT_PCT},
+            {h:"XIRR spread", w:11, a:"right", fmt:FMT_PP},
+            {h:"Verdict", w:16, a:"left"});
+  if(anyFlag) cols.push({h:"Data window", w:26, a:"left"});
+
+  const sh = shNew(cols.length);
+  shTitle(sh, d.pf, "Portfolio: "+store.active+"  ·  "+genDate+"  ·  "+scopeBlurb(d));
+
+  if(!port){
+    shWrap(sh, "No holdings in this view. Every holding in this portfolio has an end date, so there is no live SIP to report.",
+      {color:RPT.sub});
+    return shDone(sh, cols.map(function(c){ return c.w; }),
+      {orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0});
+  }
+
+  const pBand = perfBand(port.alpha);
+  shCards(sh, [
     {label:"TOTAL INVESTED", val:Math.round(port.invested), fmt:FMT_INR, tone:"neutral"},
     {label:"CURRENT VALUE",  val:Math.round(port.current),  fmt:FMT_INR, tone:"neutral"},
     {label:"GAIN / LOSS",    val:Math.round(port.gain),     fmt:FMT_INR, tone:port.gain>=0?"good":"bad"},
-    {label:"PORTFOLIO XIRR (FULL)", val:port.xirr,                 fmt:FMT_PCT, tone:"neutral"},
+    {label:"PORTFOLIO XIRR (FULL)", val:port.xirr, fmt:FMT_PCT, tone:"neutral"},
     {label:"BENCHMARK TRI XIRR (COMPARABLE)", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
     {label:"XIRR SPREAD VS BENCHMARK PROXY (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
-       tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
-  ];
-  const cardTop=3;
-  cards.forEach((card,i)=>{
-    const cr = cardTop + Math.floor(i/3)*3;     // card block row (label row)
-    const cc = (i%3)*2;                          // card block col (spans cc..cc+1)
-    const labelFill = RPT.panel;
-    const valColor  = card.tone==="good"?RPT.good : card.tone==="bad"?RPT.bad : RPT.ink;
-    // label row (with accent top border to read as a card)
-    put(cr,cc,   styleCell(card.label,{fill:labelFill, color:RPT.sub, sz:9, bold:true, align:"left", valign:"center", top:RPT.accent}));
-    put(cr,cc+1, styleCell("",{fill:labelFill, top:RPT.accent}));
-    merges1.push(M(cr,cc,cr,cc+1));
-    // value row
-    const vcell = card.val==null ? styleCell("N/A",{fill:labelFill, align:"left", sz:16, bold:true, color:RPT.sub, bottom:RPT.line})
-                                 : styleCell(card.val,{fill:labelFill, align:"left", sz:16, bold:true, numFmt:card.fmt, color:valColor, bottom:RPT.line});
-    put(cr+1,cc,   vcell);
-    put(cr+1,cc+1, styleCell("",{fill:labelFill, bottom:RPT.line}));
-    merges1.push(M(cr+1,cc,cr+1,cc+1));
-    // spacer row under each card block
-    rows1[cr]={hpt:13}; rows1[cr+1]={hpt:20}; rows1[cr+2]={hpt:3};
+     tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
+  ]);
+
+  shBand(sh, port.alpha==null ? "No benchmark comparison available"
+        : (port.alpha>=0 ? "Portfolio is BEATING its blended TRI benchmark"
+                         : "Portfolio is LAGGING its blended TRI benchmark"),
+    {fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:11, hpt:18});
+  shGap(sh, 4);
+
+  shHeader(sh, "KEY INSIGHTS");
+  // Groups, not legs: fed the raw leg list, "Best performer vs its TRI" could name
+  // the same fund twice because each of its legs carried its own alpha.
+  buildInsights(port, groups).forEach(function(line,i){
+    shWrap(sh, "•  "+line, {fill: i%2===0?RPT.band:RPT.bandAlt, color:RPT.ink});
   });
+  shGap(sh, 8);
 
-  // Verdict chip under the cards
-  const chipRow = cardTop + Math.ceil(cards.length/3)*3;
-  const pBand=perfBand(port.alpha);
-  const verdictTxt = port.alpha==null ? "No benchmark comparison available"
-      : (port.alpha>=0? "Portfolio is BEATING its blended TRI benchmark" : "Portfolio is LAGGING its blended TRI benchmark");
-  put(chipRow,0, styleCell(verdictTxt,{fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:11}));
-  for(let c=1;c<6;c++) put(chipRow,c, styleCell("",{fill:FILL[pBand.key]}));
-  merges1.push(M(chipRow,0,chipRow,5));
-  rows1[chipRow]={hpt:18};
-  rows1[chipRow+1]={hpt:4};
-
-  // Insights header
-  const insHdr = chipRow+2;
-  put(insHdr,0, styleCell("KEY INSIGHTS",{fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10, align:"left"}));
-  for(let c=1;c<6;c++) put(insHdr,c, styleCell("",{fill:RPT.header}));
-  merges1.push(M(insHdr,0,insHdr,5));
-  rows1[insHdr]={hpt:16};
-
-  // Insight lines — WRAPPED across A:F with computed row heights so nothing clips.
-  const insights=buildInsights(port, schemes);   // #2: `schemes` here is the local valuedSchemes() list (line ~2078)
-  let ir=insHdr+1;
-  insights.forEach((line,i)=>{
-    const cell = styleCell("•  "+line,{ wrap:true, valign:"top",
-        color:RPT.ink, sz:10, fill: i%2===0? RPT.band : RPT.bandAlt });
-    put(ir,0, cell);
-    for(let c=1;c<6;c++) put(ir,c, styleCell("",{fill:i%2===0?RPT.band:RPT.bandAlt}));
-    merges1.push(M(ir,0,ir,5));
-    // Compact but still readable: estimate wrapped height across A:F.
-    const perLine=104, lines=Math.max(1,Math.ceil((line.length+3)/perLine));
-    rows1[ir]={hpt: Math.max(15, lines*11 + 3)};
-    ir++;
+  const hdr = cols.map(function(c,i){
+    return {v:c.h, fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10.5, wrap:true,
+            valign:"center", align:(i===0?"left":"center")};
   });
+  hdr.hpt = 30;
+  shRow(sh, hdr);
 
-  const lastR = ir;
-  s1["!ref"]="A1:F"+(lastR+1);
-  s1["!cols"]=[{wch:17},{wch:17},{wch:17},{wch:17},{wch:17},{wch:17}];
-  s1["!merges"]=merges1;
-  s1["!rows"]=rows1;
-  s1["!pageSetup"]={ orientation:"portrait", fitToWidth:1, fitToHeight:0, scale:0 };
-  s1["!margins"]={ left:0.4, right:0.4, top:0.5, bottom:0.4, header:0.2, footer:0.2 };
-  XLSX.utils.book_append_sheet(wb,s1,"Summary");
-
-  /* ============================================================
-     HOLDINGS  — clean modern table with zebra striping
-     ============================================================ */
-  const headers=["Scheme","Plan","Benchmark (TRI proxy)","SIP start"];
-  if(anyEnd) headers.push("SIP end");
-  headers.push("Monthly SIP","Invested","Current","Gain","Abs return","Fund XIRR (full)");
-  if(showComparableFundXirr) headers.push("Fund XIRR (comparable)");
-  headers.push("Benchmark XIRR","XIRR spread","Verdict");
-  if(anyFlag) headers.push("Data window");
-
-  const idx={}; headers.forEach((h,i)=>idx[h]=i);
-  const inrCols=new Set([idx["Monthly SIP"],idx["Invested"],idx["Current"],idx["Gain"]]);
-  const pctCols=new Set([idx["Abs return"],idx["Fund XIRR (full)"],idx["Benchmark XIRR"]]);
-  if(showComparableFundXirr) pctCols.add(idx["Fund XIRR (comparable)"]);
-  const ppCols =new Set([idx["XIRR spread"]]);
-  const rightCols=new Set([...inrCols,...pctCols,...ppCols]);
-  const centerCols=new Set([idx["Plan"],idx["SIP start"], anyEnd?idx["SIP end"]:-1]);
-
-  const data=[];
-  schemes.forEach(s=>{
-    const v=schemeView(s),band=perfBand(v.alpha);
-    const cells=[shortSchemeName(s.name),s.plan||"",s.benchLabel||"—",s.startStr];
-    if(anyEnd) cells.push(s.endStr||"");
-    cells.push(s.amount,Math.round(s.fund.invested),Math.round(s.fund.currentValue),Math.round(v.gain),
-               v.absR,v.fxFull);
-    if(showComparableFundXirr) cells.push(v.fxCmp);
-    cells.push(v.bxCmp,v.alpha!=null?v.alpha*100:null,band.word);
-    if(anyFlag) cells.push(triWindowFlag(s));
-    data.push({band,isPort:false,cells});
-  });
-  const pcells=["PORTFOLIO (all holdings)","","",""];
-  if(anyEnd) pcells.push("");
-  pcells.push(monthlyTotal,Math.round(port.invested),Math.round(port.current),Math.round(port.gain),
-              port.absReturn,port.xirr);
-  if(showComparableFundXirr) pcells.push(port.cmpFundXirr);
-  pcells.push(port.benchXirr,port.alpha!=null?port.alpha*100:null,pBand.word);
-  if(anyFlag) pcells.push("");
-  data.push({band:pBand,isPort:true,cells:pcells});
-
-  const ws={}; const rowsH={};
-  // header
-  headers.forEach((h,c)=>ws[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{
-    fill:RPT.header, color:RPT.headerTxt, bold:true, align:(c===0?"left":"center"), sz:10.5, wrap:true, valign:"center"}));
-  rowsH[0]={hpt:30};
-  // body
-  data.forEach((row,ri)=>{
-    const zebra = ri%2===0 ? RPT.band : RPT.bandAlt;
-    row.cells.forEach((val,c)=>{
-      const opts={ border:false, bottom:RPT.line,
-        align: rightCols.has(c)?"right" : centerCols.has(c)?"center" : "left",
-        bold: row.isPort, valign:"center" };
-      if(inrCols.has(c))opts.numFmt=FMT_INR;
-      else if(pctCols.has(c))opts.numFmt=FMT_PCT;
-      else if(ppCols.has(c))opts.numFmt=FMT_PP;
-      // colour alpha + verdict by band
-      if(c===idx["XIRR spread"]||c===idx["Verdict"]){ opts.fill=FILL[row.band.key]; opts.light=row.band.key!=="beat"; }
-      else if(row.isPort){ opts.fill=RPT.portRow; opts.light=true; }
-      else { opts.fill=zebra; }
-      if(anyFlag && c===idx["Data window"]){ opts.wrap=true; opts.color=RPT.sub; opts.sz=9.5; opts.align="left"; }
-      ws[XLSX.utils.encode_cell({r:ri+1,c})]=styleCell(val,opts);
+  const idx = {}; cols.forEach(function(c,i){ idx[c.h]=i; });
+  const emit = function(vals, band, isPort, zebra){
+    const cells = cols.map(function(c,i){
+      const o = {v:vals[i], align:c.a, valign:"center", bold:isPort, bottom:RPT.line, numFmt:c.fmt};
+      if(i===idx["XIRR spread"] || i===idx["Verdict"]){ o.fill=FILL[band.key]; o.light=band.key!=="beat"; }
+      else if(isPort){ o.fill=RPT.portRow; o.light=true; }
+      else { o.fill=zebra; }
+      if(c.h==="Data window" || c.h==="SIP"){ o.wrap=true; o.sz=9.5; o.color=isPort?undefined:RPT.sub; }
+      return o;
     });
-    rowsH[ri+1]={hpt: row.isPort?24 : (anyFlag?30:20)};
-  });
-  ws["!ref"]="A1:"+XLSX.utils.encode_cell({r:data.length,c:headers.length-1});
-  const colw=[{wch:35},{wch:8},{wch:20},{wch:10.5}];
-  if(anyEnd) colw.push({wch:10.5});
-  colw.push({wch:11.5},{wch:12.5},{wch:12.5},{wch:11.5},{wch:9.5},{wch:12.5});
-  if(showComparableFundXirr) colw.push({wch:15});
-  colw.push({wch:13},{wch:9.5},{wch:14});
-  if(anyFlag) colw.push({wch:26});
-  ws["!cols"]=colw; ws["!freeze"]={xSplit:1,ySplit:1}; ws["!rows"]=rowsH;
-  ws["!pageSetup"]={ orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0 };
-  ws["!margins"]={ left:0.3, right:0.3, top:0.4, bottom:0.4, header:0.2, footer:0.2 };
-  XLSX.utils.book_append_sheet(wb,ws,"Holdings");
+    cells.hpt = isPort ? 24 : 30;
+    shRow(sh, cells);
+  };
 
-  /* ============================================================
-     LEGEND  — polished
-     ============================================================ */
-  const s3={}; const rows3={};
-  const legendHdr=["Colour band","Meaning","XIRR spread threshold (Fund − TRI)"];
-  legendHdr.forEach((h,c)=>s3[XLSX.utils.encode_cell({r:0,c})]=styleCell(h,{fill:RPT.header,color:RPT.headerTxt,bold:true,align:"left",sz:10.5}));
-  const bands=[
-    ["Strongly beating","Fund is well ahead of its index","≥ +3 pp per year", FILL.strong_beat, true],
-    ["Beating","Fund is modestly ahead of its index","0 to +3 pp per year", FILL.beat, false],
-    ["Lagging","Fund is modestly behind its index","0 to −3 pp per year", FILL.lag, false],
-    ["Strongly lagging","Fund is well behind its index","≤ −3 pp per year", FILL.strong_lag, true],
-  ];
-  bands.forEach((b,i)=>{
-    const r=i+1;
-    s3[XLSX.utils.encode_cell({r,c:0})]=styleCell(b[0],{fill:b[3],light:b[4],bold:true,align:"left",border:true});
-    s3[XLSX.utils.encode_cell({r,c:1})]=styleCell(b[1],{border:true,align:"left"});
-    s3[XLSX.utils.encode_cell({r,c:2})]=styleCell(b[2],{border:true,align:"left"});
+  groups.forEach(function(g,ri){
+    const v = schemeView(g), band = perfBand(v.alpha);
+    const vals = [shortSchemeName(g.name), g.plan||"", legNoteText(g), g.benchLabel||"—",
+                  Math.round(g.fund.invested), Math.round(g.fund.currentValue), Math.round(v.gain),
+                  v.absR, v.fxFull];
+    if(anyShorter) vals.push(v.fxCmp);
+    vals.push(v.bxCmp, v.alpha!=null?v.alpha*100:null, band.word);
+    if(anyFlag) vals.push(triWindowFlag(g));
+    emit(vals, band, false, ri%2===0 ? RPT.band : RPT.bandAlt);
   });
-  const notes=[
-    "How it works",
-    "SIP purchases use the first published NAV on or after each scheduled date (up to 7 calendar days).",
-    "Each holding is valued at its own latest NAV; the portfolio XIRR combines every holding's cash-flows.",
-    "Benchmark is the matching Nifty gross Total Return Index (TRI) — it includes reinvested dividends. It is a category / broad-market PROXY chosen by this tool, not necessarily the fund's own disclosed benchmark.",
-    "The XIRR spread is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column.",
-    "Generated "+genDate
-  ];
-  let nr=6;
-  notes.forEach((line,i)=>{
-    const isHdr=i===0;
-    const cell=styleCell(isHdr?line:("•  "+line),{
-      wrap:!isHdr, valign:"top", bold:isHdr, sz:isHdr?11:10,
-      color:isHdr?RPT.headerTxt:RPT.ink, fill:isHdr?RPT.header:(i%2? RPT.band:RPT.bandAlt) });
-    s3[XLSX.utils.encode_cell({r:nr,c:0})]=cell;
-    s3[XLSX.utils.encode_cell({r:nr,c:1})]=styleCell("",{fill:isHdr?RPT.header:(i%2?RPT.band:RPT.bandAlt)});
-    s3[XLSX.utils.encode_cell({r:nr,c:2})]=styleCell("",{fill:isHdr?RPT.header:(i%2?RPT.band:RPT.bandAlt)});
-    if(!s3["!merges"]) s3["!merges"]=[];
-    s3["!merges"].push(M(nr,0,nr,2));
-    const per=95, ln=isHdr?1:Math.max(1,Math.ceil((line.length+3)/per));
-    rows3[nr]={hpt:isHdr?22:Math.max(18,ln*15+6)};
-    nr++;
-  });
-  s3["!ref"]="A1:C"+nr;
-  s3["!cols"]=[{wch:20},{wch:20},{wch:52}];
-  s3["!rows"]=rows3;
-  XLSX.utils.book_append_sheet(wb,s3,"Legend");
 
-  XLSX.writeFile(wb,"SIP_vs_Benchmark_"+store.active.replace(/[^a-z0-9]+/gi,"_")+"_"+new Date().toISOString().slice(0,10)+".xlsx");
+  const pv = ["PORTFOLIO (valued holdings)", "",
+              inr(d.monthly)+"/mo across "+d.legs.length+" leg"+(d.legs.length===1?"":"s"), "",
+              Math.round(port.invested), Math.round(port.current), Math.round(port.gain),
+              port.absReturn, port.xirr];
+  if(anyShorter) pv.push(port.cmpFundXirr);
+  pv.push(port.benchXirr, port.alpha!=null?port.alpha*100:null, pBand.word);
+  if(anyFlag) pv.push("");
+  emit(pv, pBand, true, null);
+
+  shGap(sh, 8);
+  shWrap(sh, "Benchmark = a category-matched Nifty Total Return Index (gross TRI), which includes reinvested dividends. "+
+    "XIRR spread is the fund's money-weighted XIRR minus the benchmark's over the same instalments: a return spread, NOT risk-adjusted alpha (Jensen's α). "+
+    "Every holding is valued at its own latest NAV, so the PORTFOLIO row blends slightly different valuation dates"+
+    (port.valueDate ? " (newest "+fmtDate(port.valueDate)+")" : "")+". "+
+    "Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · grey exactly 0 pp · red 0 to −3 pp · dark red ≤ −3 pp.",
+    {color:RPT.sub, sz:9.5});
+
+  return shDone(sh, cols.map(function(c){ return c.w; }),
+    {orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0});
+}
+
+/* ---- insights ---- */
+function reportInsightsSheet(d, genDate){
+  const sh = shNew(6);
+  const items = d.items, facts = d.facts;
+  shTitle(sh, d.ins, "Category standing  ·  Portfolio: "+store.active+"  ·  "+genDate+"  ·  "+scopeBlurb(d));
+
+  if(!items.length){
+    shWrap(sh, "No holdings in this view.", {color:RPT.sub});
+    return shDone(sh, [6,30,14,14,15,17]);
+  }
+  const lagging = items.filter(function(i){ return i.alphaPP!=null && i.alphaPP <= -LAG_THRESHOLD_PP; });
+  shWrap(sh, lagging.length+" of "+items.length+" holding"+(items.length===1?"":"s")+
+    " lag their benchmark by more than "+LAG_THRESHOLD_PP+" pp. Ordered worst spread first, as on screen.",
+    {color:RPT.sub});
+  shGap(sh, 6);
+
+  items.forEach(function(item, i){
+    const f = facts[i] || {};
+    shBand(sh, (i+1)+".  "+normaliseFundName(item.name),
+      {fill:RPT.header, color:RPT.headerTxt, bold:true, sz:11.5, hpt:19});
+    shWrap(sh, item.catLabel+"  ·  "+item.plan+" plan"+(item.planInferred?" (inferred)":"")+
+      "  ·  Your XIRR "+(item.xirr!=null?(item.xirr*100).toFixed(2)+"%":"—")+
+      "  ·  vs benchmark "+(item.alphaPP!=null?signedPP(item.alphaPP):"—"),
+      {fill:RPT.panel, color:RPT.ink, sz:10});
+
+    if(f.status==="uncategorised"){
+      shWrap(sh, "This fund has no recognised SEBI equity category, so it cannot be ranked.", {color:RPT.sub});
+      shGap(sh, 10); return;
+    }
+    if(f.status==="unpublished"){
+      shWrap(sh, "No ranking data is published for "+item.cat+". Sector and thematic funds are deliberately "+
+        "excluded: the category field does not say WHICH sector, so ranking would compare an IT fund against a pharma fund.",
+        {color:RPT.sub});
+      shGap(sh, 10); return;
+    }
+
+    /* Track record */
+    shBand(sh, "Track record — lumpsum, point-to-point, as of "+((f.catInfo&&f.catInfo.as_of)||""),
+      {fill:RPT.band, color:RPT.sub, bold:true, sz:9.5, hpt:15});
+    if(f.track.status==="nocat"){
+      shWrap(sh, "No track record published for this category yet.", {color:RPT.sub});
+    }else if(f.track.status==="nofund"){
+      shWrap(sh, "This fund is not yet in the published category table — usually because it is under six months old.",
+        {color:RPT.sub});
+    }else{
+      const th = ["Period","Return","Category Avg","Annualized","Rank"];
+      const hr = shRow(sh, [
+        {v:th[0], fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5},
+        {v:"",    fill:RPT.header},
+        {v:th[1], fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"right"},
+        {v:th[2], fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"right"},
+        {v:th[3], fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"right"},
+        {v:th[4], fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"right"}]);
+      shMerge(sh, hr, 0, 1);
+      f.track.rows.forEach(function(row,ri){
+        const fill = ri%2 ? RPT.band : RPT.bandAlt;
+        // Only Return is coloured, and only against Category Avg: `ann` is a CAGR
+        // and `avg` is cumulative, so colouring the annualised cell against it
+        // paints category-beating funds red. Same rule as the on-screen table.
+        const tone = row.has && row.beatsAvg!=null ? (row.beatsAvg?RPT.good:RPT.bad) : undefined;
+        const r = shRow(sh, [
+          {v:row.label, fill:fill, sz:10, bottom:RPT.line},
+          {v:"", fill:fill, bottom:RPT.line},
+          row.has ? {v:row.abs, fill:fill, align:"right", numFmt:FMT_PCTNUM, color:tone, bold:true, sz:10, bottom:RPT.line}
+                  : {v:"—", fill:fill, align:"right", color:RPT.sub, sz:10, bottom:RPT.line},
+          {v:(row.has&&row.avg!=null)?row.avg:"—", fill:fill, align:"right",
+           numFmt:(row.has&&row.avg!=null)?FMT_PCTNUM:undefined, sz:10, bottom:RPT.line},
+          {v:(row.has&&row.ann!=null)?row.ann:"—", fill:fill, align:"right",
+           numFmt:(row.has&&row.ann!=null)?FMT_PCTNUM:undefined, sz:10, bottom:RPT.line},
+          {v: row.has ? (row.rank?row.rank+" of "+row.universe:"—") : "not enough history",
+           fill:fill, align:"right", sz:10, color:row.has?undefined:RPT.sub, bottom:RPT.line}]);
+        shMerge(sh, r, 0, 1);
+      });
+    }
+
+    /* Peer ranking over the user's own window */
+    if(f.tooShort){
+      shBand(sh, "Peer ranking", {fill:RPT.band, color:RPT.sub, bold:true, sz:9.5, hpt:15});
+      shWrap(sh, "This SIP has run "+Math.max(0,Math.round(f.spanDays))+" days. Ranking needs at least "+
+        MIN_RANK_DAYS+" days: an annualised return over a shorter window magnifies a few weeks of movement "+
+        "into a yearly rate, so both the rank and the peer figures would look far more precise than they are. "+
+        "The track record above is point-to-point and unaffected.", {color:RPT.sub});
+    }else if(f.rank){
+      shBand(sh, "Your window — same SIP dates & amount, "+item.plan+" plan — "+windowText(f.window),
+        {fill:RPT.band, color:RPT.sub, bold:true, sz:9.5, wrap:true, valign:"center", hpt:26});
+      shWrap(sh, rankSentence(f.summary, item.plan), {sz:10});
+      const ex = excludedText(f.rank);
+      if(ex) shWrap(sh, ex, {color:RPT.sub, sz:9.5});
+
+      shBand(sh, "Top peers in category", {fill:RPT.band, color:RPT.sub, bold:true, sz:9.5, hpt:15});
+      if(!f.rank.universe){
+        shWrap(sh, "No comparable peers with a full history over this window.", {color:RPT.sub});
+      }else if(!f.rank.top.length){
+        shWrap(sh, "No peer ran the full window.", {color:RPT.sub});
+      }else{
+        const ph = shRow(sh, [
+          {v:"#", fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"center"},
+          {v:"Fund", fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5},
+          {v:"", fill:RPT.header},
+          {v:"XIRR", fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"right"},
+          {v:"vs your fund", fill:RPT.header, color:RPT.headerTxt, bold:true, sz:9.5, align:"right"},
+          {v:"", fill:RPT.header}]);
+        shMerge(sh, ph, 1, 2); shMerge(sh, ph, 4, 5);
+        f.rank.top.forEach(function(p,pi){
+          const fill = p.own ? RPT.panel : (pi%2 ? RPT.band : RPT.bandAlt);
+          const gapPP = (f.own!=null && !p.own) ? (p.xirr-f.own)*100 : null;
+          const r = shRow(sh, [
+            {v:pi+1, fill:fill, align:"center", sz:10, bold:p.own, bottom:RPT.line},
+            {v:normaliseFundName(p.name), fill:fill, sz:10, bold:p.own, bottom:RPT.line},
+            {v:"", fill:fill, bottom:RPT.line},
+            {v:p.xirr, fill:fill, align:"right", numFmt:FMT_PCT, sz:10, bold:p.own, bottom:RPT.line},
+            p.own ? {v:"your fund", fill:fill, align:"right", sz:10, bold:true, color:RPT.accent, bottom:RPT.line}
+                  : {v:gapPP, fill:fill, align:"right", numFmt:gapPP==null?undefined:FMT_PP, sz:10,
+                     color: gapPP==null?undefined:(gapPP>=0?RPT.good:RPT.bad), bottom:RPT.line},
+            {v:"", fill:fill, bottom:RPT.line}]);
+          shMerge(sh, r, 1, 2); shMerge(sh, r, 4, 5);
+        });
+        if(f.rank.universe < MIN_TOP_UNIVERSE){
+          shWrap(sh, "Drawn from only "+f.rank.universe+" fund"+(f.rank.universe===1?"":"s")+
+            " that ran your full window — too small a pool to read as a category ranking.",
+            {color:RPT.sub, sz:9.5});
+        }
+      }
+    }
+    if(f.catInfo && f.catInfo.status==="stale"){
+      shWrap(sh, "Note: this category's data failed its last publish check and may be out of date.",
+        {color:RPT.bad, sz:9.5});
+    }
+    shGap(sh, 12);
+  });
+
+  shWrap(sh, "Track-record figures are lumpsum point-to-point returns for the fund itself, published nightly; "+
+    "your XIRR is money-weighted over your own instalments, so the two will not agree. Peers are ranked over "+
+    "YOUR SIP dates and amounts, within your plan (Direct vs Direct). Merged or closed funds are absent from the "+
+    "published cohorts, so surviving cohorts flatter.", {color:RPT.sub, sz:9.5});
+
+  return shDone(sh, [6,30,14,14,15,17]);
+}
+
+/* ---- method & legend ---- */
+function reportLegendSheet(data, genDate){
+  const sh = shNew(3);
+  shTitle(sh, "Method & Legend", "How every figure in this report is computed  ·  "+genDate);
+
+  const hdr = ["Colour band","Meaning","XIRR spread threshold (Fund − TRI)"];
+  shRow(sh, hdr.map(function(h){ return {v:h, fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10.5}; }));
+  [["Strongly beating","Fund is well ahead of its index","≥ +3 pp per year", FILL.strong_beat, true],
+   ["Beating","Fund is modestly ahead of its index","0 to +3 pp per year", FILL.beat, false],
+   ["Matched","Fund exactly matched its index","0 pp", FILL.na, true],
+   ["Lagging","Fund is modestly behind its index","0 to −3 pp per year", FILL.lag, false],
+   ["Strongly lagging","Fund is well behind its index","≤ −3 pp per year", FILL.strong_lag, true]
+  ].forEach(function(b){
+    shRow(sh, [{v:b[0], fill:b[3], light:b[4], bold:true, border:true},
+               {v:b[1], border:true}, {v:b[2], border:true}]);
+  });
+  shGap(sh, 8);
+
+  const notes = [
+    ["How the portfolio figures work", null],
+    [null, "SIP purchases use the first published NAV on or after each scheduled date (up to 7 calendar days). A month with no NAV in that window is skipped and reported, not silently priced."],
+    [null, "One row per SCHEME. Several SIP legs into one fund pool into a single position whose return is one money-weighted XIRR over the union of their cash flows — not the average of the legs' XIRRs."],
+    [null, "Each holding is valued at its own latest NAV, so the PORTFOLIO row blends slightly different valuation dates. That is deliberate: forcing a common date silently drops the freshest instalments and breaks the property that the total equals the sum of the rows."],
+    [null, "Benchmark is the matching Nifty gross Total Return Index (TRI), which includes reinvested dividends. It is a category / broad-market PROXY chosen by this tool, not necessarily the fund's own disclosed benchmark."],
+    [null, "The XIRR spread is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column."],
+    ["How the category ranking works", null],
+    [null, "Track record is lumpsum point-to-point return for the fund itself, precomputed nightly from full daily NAV. It answers a different question from your XIRR and the two will not agree."],
+    [null, "Return is coloured against Category Avg and the annualised column never is: both Return and Category Avg are cumulative, while Annualized is a CAGR, so comparing them would paint category-beating funds red."],
+    [null, "Peer ranking runs every fund in the category through YOUR SIP dates and amounts, within your plan. Only funds that ran the entire window are eligible, so the pool can be far smaller than the category."],
+    [null, "Below "+MIN_RANK_UNIVERSE+" eligible peers a rank is stated without being called a category standing, and below "+MIN_TOP_UNIVERSE+" the peer list says so. Windows shorter than "+MIN_RANK_DAYS+" days are not ranked at all: annualising a few months magnifies weeks of movement into a yearly rate."],
+    [null, "Funds that stopped reporting mid-window are excluded and counted separately from late starters. Dropping them flatters the surviving cohort — that is survivorship bias, and the exclusion note names it where it applies."],
+    ["Scope", null]
+  ];
+  data.forEach(function(d){ notes.push([null, d.pf+" and "+d.ins+" cover "+scopeBlurb(d)+"."]); });
+  if(data.length>1){
+    notes.push([null, "The two views are different populations, so their headline XIRRs legitimately differ. Each Portfolio sheet carries its own KPI block so the cards always reconcile to the table beneath them."]);
+  }
+  notes.push([null, "Generated "+genDate]);
+
+  notes.forEach(function(n,i){
+    const isHdr = n[0]!=null;
+    const text = isHdr ? n[0] : ("•  "+n[1]);
+    const fill = isHdr ? RPT.header : (i%2 ? RPT.band : RPT.bandAlt);
+    const r = shRow(sh, [{v:text, wrap:!isHdr, valign:"top", bold:isHdr, sz:isHdr?11:10,
+                          color:isHdr?RPT.headerTxt:RPT.ink, fill:fill},
+                         {v:"", fill:fill}, {v:"", fill:fill}]);
+    shMerge(sh, r, 0, 2);
+    const ln = isHdr ? 1 : Math.max(1, Math.ceil((text.length+3)/95));
+    sh.rows[r] = {hpt: isHdr?22:Math.max(18, ln*15+6)};
+  });
+
+  return shDone(sh, [20,20,60]);
+}
+
+/* ---- orchestration ---- */
+async function exportReport(status){
+  const say = status || function(){};
+  const genDate = fmtDate(new Date());
+  say("Reading holdings…");
+  const data = reportScopes().map(reportScopeData);
+
+  // Insights items for EVERY scope, then one parallel prefetch across all of them:
+  // the two views usually share categories, and loadRanksJson caches by filename.
+  let total = 0;
+  data.forEach(function(d){ d.items = insightsItems(d.scope); total += d.items.length; });
+  say("Loading category data…");
+  await prefetchRanks(data.reduce(function(a,d){ return a.concat(d.items); }, []));
+
+  let done = 0;
+  for(const d of data){
+    d.facts = [];
+    for(const item of d.items){
+      say("Ranking "+(++done)+" of "+total+"…");
+      // Yield so the status text actually paints between holdings; the ranking
+      // itself is synchronous once the cache is warm and would otherwise block
+      // the whole loop behind one frame.
+      await new Promise(function(r){ setTimeout(r,0); });
+      d.facts.push(await insightFacts(item));
+    }
+  }
+
+  say("Writing workbook…");
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, reportCoverSheet(data, genDate), "Report Summary");
+  data.forEach(function(d){ XLSX.utils.book_append_sheet(wb, reportPortfolioSheet(d, genDate), d.pf); });
+  data.forEach(function(d){ XLSX.utils.book_append_sheet(wb, reportInsightsSheet(d, genDate), d.ins); });
+  XLSX.utils.book_append_sheet(wb, reportLegendSheet(data, genDate), "Method & Legend");
+  XLSX.writeFile(wb, "SIP_Report_"+store.active.replace(/[^a-z0-9]+/gi,"_")+"_"+
+                     new Date().toISOString().slice(0,10)+".xlsx");
 }
 
 /* ---- portfolio insight lines (plain, data-driven) ---- */
@@ -3669,21 +4021,23 @@ function signedPP(x){
   return (x>=0?"+":"−")+Math.abs(x).toFixed(2)+" pp";
 }
 
-function periodTableHtml(periodsDoc, plan, code){
+/* The track-record table as DATA. Extracted from periodTableHtml() so the Excel
+   report writes the same seven rows the pane draws instead of re-deriving them
+   from the same document by a second, drifting route.
+     status "nocat"  — no table published for this plan
+     status "nofund" — plan published, this fund absent from it
+   `beatsAvg` is null when there is no category average to compare against; the
+   renderer turns it into the pos/neg class and the sheet into a fill. */
+function periodRows(periodsDoc, plan, code){
   const p = periodsDoc && periodsDoc.plans && periodsDoc.plans[plan];
-  if(!p) return '<div class="ins-note">No track record published for this category yet.</div>';
+  if(!p) return {status:"nocat", rows:[]};
   const f = p.funds && p.funds[String(code)];
-  if(!f) return '<div class="ins-note">This fund is not yet in the published category table — '+
-                'usually because it is under six months old.</div>';
-  let rows = "";
+  if(!f) return {status:"nofund", rows:[]};
+  const rows = [];
   for(const pair of HORIZON_LABELS){
     const k = pair[0], label = pair[1];
     const abs = f.abs ? f.abs[k] : undefined;
-    if(abs===undefined){
-      rows += '<tr class="young"><td>'+label+'</td><td class="col-abs">—</td><td>—</td>'+
-              '<td class="col-ann">—</td><td>not enough history</td></tr>';
-      continue;
-    }
+    if(abs===undefined){ rows.push({label:label, has:false}); continue; }
     /* fetch_ranks.py builds `avg` from the same CUMULATIVE returns as `abs`
        (MIN_ANNUALISE_DAYS gates `ann` separately), so the only like-for-like
        comparison on this row is Return vs Category avg. Colouring the annualised
@@ -3691,14 +4045,36 @@ function periodTableHtml(periodsDoc, plan, code){
        that reads as a 60 pp shortfall on a fund that is actually ahead. The two
        absolute columns therefore sit adjacent, and only Return is coloured. */
     const avgVal = (p.avg && p.avg[k]!==undefined) ? p.avg[k] : null;
-    const absCls = avgVal!=null ? (abs>=avgVal ? "pos" : "neg") : "";
-    // `ann` is absent for sub-year horizons by design; nothing to annualise.
-    const ann = (f.ann && f.ann[k]!==undefined) ? f.ann[k].toFixed(2)+"%" : "—";
-    const avg = avgVal!=null ? avgVal.toFixed(2)+"%" : "—";
-    const rk  = (f.rank && f.rank[k]!==undefined) ? f.rank[k] : null;
-    const uni = (p.universe && p.universe[k]) || 0;
-    rows += "<tr><td>"+label+'</td><td class="col-abs '+absCls+'">'+abs.toFixed(2)+"%</td>"+
-            "<td>"+avg+'</td><td class="col-ann">'+ann+"</td><td>"+(rk?rk+" of "+uni:"—")+"</td></tr>";
+    rows.push({
+      label:label, has:true, abs:abs, avg:avgVal,
+      beatsAvg: avgVal!=null ? (abs>=avgVal) : null,
+      // `ann` is absent for sub-year horizons by design; nothing to annualise.
+      ann: (f.ann && f.ann[k]!==undefined) ? f.ann[k] : null,
+      rank: (f.rank && f.rank[k]!==undefined) ? f.rank[k] : null,
+      universe: (p.universe && p.universe[k]) || 0
+    });
+  }
+  return {status:"ok", rows:rows};
+}
+
+function periodTableHtml(periodsDoc, plan, code){
+  const t = periodRows(periodsDoc, plan, code);
+  if(t.status==="nocat") return '<div class="ins-note">No track record published for this category yet.</div>';
+  if(t.status==="nofund") return '<div class="ins-note">This fund is not yet in the published category table — '+
+                'usually because it is under six months old.</div>';
+  let rows = "";
+  for(const row of t.rows){
+    if(!row.has){
+      rows += '<tr class="young"><td>'+row.label+'</td><td class="col-abs">—</td><td>—</td>'+
+              '<td class="col-ann">—</td><td>not enough history</td></tr>';
+      continue;
+    }
+    const absCls = row.beatsAvg==null ? "" : (row.beatsAvg ? "pos" : "neg");
+    const ann = row.ann!=null ? row.ann.toFixed(2)+"%" : "—";
+    const avg = row.avg!=null ? row.avg.toFixed(2)+"%" : "—";
+    rows += "<tr><td>"+row.label+'</td><td class="col-abs '+absCls+'">'+row.abs.toFixed(2)+"%</td>"+
+            "<td>"+avg+'</td><td class="col-ann">'+ann+"</td><td>"+
+            (row.rank?row.rank+" of "+row.universe:"—")+"</td></tr>";
   }
   return '<table class="ptable"><thead><tr><th>Period</th><th class="col-abs">Return</th>'+
          "<th>Category Avg</th><th class=\"col-ann\">Annualized</th><th>Rank</th></tr></thead>"+
@@ -3733,23 +4109,91 @@ function topListHtml(res, ownXirr){
    unfair one -- dropping them is survivorship bias). The old sentence called both
    "like-for-like", which was false for 40% of ELSS exclusions and, worse, contradicted
    the pane's own footer warning that surviving cohorts flatter. */
-function excludedNote(res){
+/* The exclusion facts, medium-independent. The pane wraps them in a span and the
+   Excel report writes them into a cell; both must count the same funds and reach
+   the same survivorship caveat, so the counting happens once, here. */
+function excludedParts(res){
   const x = res && res.excluded;
-  if(!x) return "";
+  if(!x) return null;
   const parts = [];
   if(x.late)  parts.push(x.late+" started after your SIP began");
   if(x.stale) parts.push(x.stale+" stopped reporting mid-window");
   if(x.other) parts.push(x.other+" had gaps in their NAV history");
-  if(!parts.length) return "";
-  const total = x.late + x.stale + x.other;
-  let note = ' <span class="approx">'+total+" fund"+(total===1?"":"s")+" excluded: "+
-             parts.join(", ")+".";
-  // Only the late-starter half is like-for-like. Say which is which rather than
-  // claiming the whole exclusion is clean.
-  note += x.stale
-    ? " Dropping funds that stopped reporting flatters the surviving cohort, so read the ranking with that in mind."
-    : " Comparing only funds that ran your whole window keeps it like-for-like.";
-  return note+"</span>";
+  if(!parts.length) return null;
+  return {
+    total: x.late + x.stale + x.other,
+    parts: parts,
+    // Only the late-starter half is like-for-like. Say which is which rather than
+    // claiming the whole exclusion is clean.
+    caveat: x.stale
+      ? "Dropping funds that stopped reporting flatters the surviving cohort, so read the ranking with that in mind."
+      : "Comparing only funds that ran your whole window keeps it like-for-like."
+  };
+}
+function excludedText(res){
+  const e = excludedParts(res);
+  if(!e) return "";
+  return e.total+" fund"+(e.total===1?"":"s")+" excluded: "+e.parts.join(", ")+". "+e.caveat;
+}
+function excludedNote(res){
+  const e = excludedParts(res);
+  if(!e) return "";
+  return ' <span class="approx">'+e.total+" fund"+(e.total===1?"":"s")+" excluded: "+
+         e.parts.join(", ")+". "+e.caveat+"</span>";
+}
+
+/* Where the holding stands in its cohort, as facts rather than a sentence.
+     kind "ranked"     — ownRank/universe are real; `thin` marks a pool too small
+                         to read as a category standing (MIN_RANK_UNIVERSE)
+     kind "unrankable" — present in the cohort, but its history misses the window
+     kind "absent"     — not in this plan's published cohort at all
+   `planInferred` only matters for "absent": it is the difference between "no such
+   fund here" and "you may be looking at the wrong plan's cohort". */
+/* The window the peer ranking actually covers, as one sentence. The pane escapes
+   it and the sheet writes it raw; neither restates it. */
+function windowText(w){
+  return w.n+" instalment"+(w.n===1?"":"s")+" "+fmtDate(w.first)+" to "+fmtDate(w.last)+
+    (w.amounts?" ("+w.amounts.map(function(a){return inr(a);}).join(" · ")+"/mo)":"")+
+    ", valued "+fmtDate(w.valueDate);
+}
+
+/* One sentence, two media. `em` wraps the figures the pane bolds; the sheet
+   passes nothing and gets the same words in plain text. Duplicating this string
+   is how the screen and the export come to state different ranks in the same
+   breath, which is the whole reason insightFacts() exists. */
+function rankSentence(sum, planLabel, em){
+  const b = em || function(s){ return s; };
+  let s;
+  if(sum.kind==="ranked"){
+    s = sum.thin
+      ? "Only "+b(String(sum.universe))+" fund"+(sum.universe===1?"":"s")+
+        " in this category ran your full window, so a category rank isn't "+
+        "meaningful here. Among those, your fund places "+sum.ownRank+"."
+      : "Your fund ranks "+b(sum.ownRank+" of "+sum.universe)+" over this window.";
+  }else if(sum.kind==="unrankable"){
+    s = "Your fund could not be ranked over this window (its history does not cover it).";
+  }else{
+    s = "Your fund isn't in the published "+b(planLabel)+" cohort for this category"+
+        (sum.planInferred
+          ? ", and its plan was inferred rather than stated — if this is a Direct-plan holding, "+
+            "set the plan on the holding so it is ranked against Direct peers."
+          : ", so it has no position in this list.");
+  }
+  if(sum.median!=null){
+    s += " Category median "+(sum.median*100).toFixed(2)+"%"+
+         (sum.own!=null ? ", your fund "+(sum.own*100).toFixed(2)+"%." : ".");
+  }
+  return s;
+}
+
+function rankSummary(res, item, inCohort){
+  const own = (res && res.ownXirr!=null) ? res.ownXirr : (item ? item.xirr : null);
+  const base = {universe:res?res.universe:0, cohort:(res&&res.cohort)||0,
+                median:res?res.median:null, own:own,
+                thin: !!(res && res.universe>0 && res.universe<MIN_RANK_UNIVERSE)};
+  if(res && res.ownRank) return Object.assign(base, {kind:"ranked", ownRank:res.ownRank});
+  return Object.assign(base, {kind: inCohort ? "unrankable" : "absent",
+                              planInferred: !!(item && item.planInferred)});
 }
 
 function insightsRowHtml(item, idx){
@@ -3790,11 +4234,13 @@ function groupSchedule(g){
     .filter(e=>e.amount>0);
 }
 
-function insightsItems(){
+function insightsItems(scope){
   // Insights mirrors the Portfolio pane: one row per scheme, honouring the same
   // sub-tab. Ranking each leg separately listed the same fund three times and
   // ranked each slice against peers who had run the whole window.
-  const groups = groupHoldings(scopeLegs(schemes.filter(s=>!s.error && s.fund), pfScope));
+  // `scope` is explicit for the Excel report, which builds BOTH sub-tabs in one
+  // pass and so cannot rely on whichever one the screen happens to be showing.
+  const groups = groupHoldings(scopeLegs(schemes.filter(s=>!s.error && s.fund), scope||pfScope));
   const out = [];
   for(const g of groups){
     const v = schemeView(g);
@@ -3863,91 +4309,96 @@ async function renderInsights(){
   });
 }
 
+/* Everything one Insights row knows, gathered once and consumed twice: the
+   expandable pane renders it as HTML, the Excel report writes it as cells.
+
+   There is exactly ONE rankCandidates call site in this file and it is here.
+   That is the point of the function — a second call site would let the sheet and
+   the screen disagree about a rank while both looked authoritative, which is the
+   failure mode WONT_FIX.md and mf_universe.py already guard against on the Python
+   side. tests/test_insights.js asserts the single call site. */
+async function insightFacts(item){
+  if(!item.cat) return {status:"uncategorised"};
+  const man = await loadRanksManifest();
+  const catInfo = man && man.categories && man.categories[item.cat];
+  if(!catInfo) return {status:"unpublished"};
+  const periods = await loadRanksJson("periods_"+item.cat+".json");
+  const navs    = await loadRanksJson("navs_"+item.cat+"_"+item.plan+".json");
+  const out = {status:"ok", catInfo:catInfo, periods:periods, navs:navs,
+               track:periodRows(periods, item.plan, item.code),
+               spanDays:null, tooShort:false, rank:null, summary:null,
+               inCohort:false, own:null, window:null};
+  if(!(navs && item.schedule && item.schedule.length && item.valueDate)) return out;
+  /* Too short to rank. XIRR annualises, so a two-month SIP reports a two-month move
+     as an annual rate: the peer list reads 231%, 150%, 96% and the rank looks just
+     as confident as a ten-year one. The track-record table is unaffected -- it is
+     point-to-point and already withholds `ann` under a year. */
+  out.spanDays = daysBetween(item.schedule[0].date, item.valueDate);
+  if(out.spanDays < MIN_RANK_DAYS){ out.tooShort = true; return out; }
+  out.rank = rankCandidates(navs, item.schedule, item.valueDate, item.code);
+  out.own  = out.rank.ownXirr!=null ? out.rank.ownXirr : item.xirr;
+  /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
+     failures with different remedies, and the single message "its history does
+     not cover it" was wrong for the first one. A Direct holding whose plan we had
+     to guess loads the Regular cohort, finds no matching code, and was told its
+     history was too short — sending the user to look at a date range when the
+     real problem is the plan. */
+  out.inCohort = !!(navs.funds && Object.prototype.hasOwnProperty.call(navs.funds, String(item.code)));
+  out.summary  = rankSummary(out.rank, item, out.inCohort);
+  // State the window explicitly when the SIP has an end date: the peer list is
+  // then NOT "to today", and a reader comparing it against the portfolio tab
+  // needs to know which window produced these numbers.
+  out.window = {
+    n:item.schedule.length,
+    first:item.schedule[0].date,
+    last:item.schedule[item.schedule.length-1].date,
+    valueDate:item.valueDate,
+    amounts:(item.amountSpread && item.amountSpread.length>1) ? item.amountSpread.slice() : null
+  };
+  return out;
+}
+
 async function fillInsightDetail(pane, item, gen){
   pane.innerHTML = '<div class="ins-note">Loading category data…</div>';
-  if(!item.cat){
+  const f = await insightFacts(item);
+  if(gen !== insightsGen) return;
+  if(f.status === "uncategorised"){
     pane.innerHTML = '<div class="ins-note">This fund has no recognised SEBI equity category, so it cannot be ranked.</div>';
     return;
   }
-  const man = await loadRanksManifest();
-  if(gen !== insightsGen) return;
-  const catInfo = man && man.categories && man.categories[item.cat];
-  if(!catInfo){
+  if(f.status === "unpublished"){
     pane.innerHTML = '<div class="ins-note">No ranking data is published for '+escapeHtml(item.cat)+
       ". Sector and thematic funds are deliberately excluded: the category field does not say <i>which</i> "+
       "sector, so ranking would compare an IT fund against a pharma fund.</div>";
     return;
   }
-  const periods = await loadRanksJson("periods_"+item.cat+".json");
-  const navs = await loadRanksJson("navs_"+item.cat+"_"+item.plan+".json");
-  if(gen !== insightsGen) return;
-
+  const catInfo = f.catInfo;
   let html = '<div class="ins-sub">Track record — lumpsum, point-to-point, as of '+
-             escapeHtml(catInfo.as_of||"")+"</div>"+periodTableHtml(periods, item.plan, item.code);
+             escapeHtml(catInfo.as_of||"")+"</div>"+periodTableHtml(f.periods, item.plan, item.code);
 
-  if(navs && item.schedule && item.schedule.length && item.valueDate){
-    /* Too short to rank. XIRR annualises, so a two-month SIP reports a two-month move
-       as an annual rate: the peer list reads 231%, 150%, 96% and the rank looks just
-       as confident as a ten-year one. The track-record table below is unaffected --
-       it is point-to-point and already withholds `ann` under a year. */
-    const spanDays = daysBetween(item.schedule[0].date, item.valueDate);
-    if(spanDays < MIN_RANK_DAYS){
-      html += '<div class="ins-sub">Peer ranking</div>'+
-        '<div class="ins-note">This SIP has run '+Math.max(0,Math.round(spanDays))+' days. '+
-        'Ranking needs at least '+MIN_RANK_DAYS+' days: an annualised return over a shorter '+
-        'window magnifies a few weeks of movement into a yearly rate, so both the rank and '+
-        'the peer figures would look far more precise than they are. The track record below '+
-        'is point-to-point and unaffected.</div>';
-    }else{
-    const res = rankCandidates(navs, item.schedule, item.valueDate, item.code);
-    const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
-    /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
-       failures with different remedies, and the single message "its history does
-       not cover it" was wrong for the first one. A Direct holding whose plan we had
-       to guess loads the Regular cohort, finds no matching code, and was told its
-       history was too short — sending the user to look at a date range when the
-       real problem is the plan. */
-    const inCohort = !!(navs.funds && Object.prototype.hasOwnProperty.call(navs.funds, String(item.code)));
-    // State the window explicitly when the SIP has an end date: the peer list is
-    // then NOT "to today", and a reader comparing it against the portfolio tab
-    // needs to know which window produced these numbers.
-    const first = item.schedule[0].date, last = item.schedule[item.schedule.length-1].date;
-    const varying = item.amountSpread && item.amountSpread.length>1;
-    const windowNote = " — "+item.schedule.length+" instalment"+(item.schedule.length===1?"":"s")+" "+
-      escapeHtml(fmtDate(first))+" to "+escapeHtml(fmtDate(last))+
-      (varying?" ("+escapeHtml(item.amountSpread.map(a=>inr(a)).join(" · "))+"/mo)":"")+
-      ", valued "+escapeHtml(fmtDate(item.valueDate));
+  if(f.tooShort){
+    html += '<div class="ins-sub">Peer ranking</div>'+
+      '<div class="ins-note">This SIP has run '+Math.max(0,Math.round(f.spanDays))+' days. '+
+      'Ranking needs at least '+MIN_RANK_DAYS+' days: an annualised return over a shorter '+
+      'window magnifies a few weeks of movement into a yearly rate, so both the rank and '+
+      'the peer figures would look far more precise than they are. The track record below '+
+      'is point-to-point and unaffected.</div>';
+  }else if(f.rank){
+    const res = f.rank, sum = f.summary, own = f.own, w = f.window;
     html += '<div class="ins-sub">Your window — same SIP dates &amp; amount, '+escapeHtml(item.plan)+
-            " plan"+windowNote+"</div>";
+            " plan — "+escapeHtml(windowText(w))+"</div>";
     /* Only funds that ran the ENTIRE window are eligible, so `universe` can be a
        small fraction of the category over a long SIP. Below MIN_RANK_UNIVERSE a
        rank is noise dressed as a verdict ("2 of 3"), so state the position without
        implying it is a category standing — the same honesty rule fetch_ranks.py
        applies to quartiles via MIN_QUARTILE_UNIVERSE. */
-    const thin = res.universe > 0 && res.universe < MIN_RANK_UNIVERSE;
-    const dropped = (res.cohort||0) - res.universe;
     html += '<div class="ins-note">'+
-      (res.ownRank
-        ? (thin
-            ? "Only <b>"+res.universe+"</b> fund"+(res.universe===1?"":"s")+
-              " in this category ran your full window, so a category rank isn't "+
-              "meaningful here. Among those, your fund places "+res.ownRank+"."
-            : "Your fund ranks <b>"+res.ownRank+" of "+res.universe+"</b> over this window.")
-        : (inCohort
-            ? "Your fund could not be ranked over this window (its history does not cover it)."
-            : "Your fund isn't in the published <b>"+escapeHtml(item.plan)+"</b> cohort for this category"+
-              (item.planInferred
-                ? ", and its plan was inferred rather than stated — if this is a Direct-plan holding, "+
-                  "set the plan on the holding so it is ranked against Direct peers."
-                : ", so it has no position in this list.")))+
-      (res.median!=null ? " Category median "+(res.median*100).toFixed(2)+"%"+
-        (own!=null ? ", your fund "+(own*100).toFixed(2)+"%." : ".") : "")+
+      rankSentence(sum, escapeHtml(item.plan), function(s){ return "<b>"+s+"</b>"; })+
       excludedNote(res)+
       "</div>";
     /* Q2: shown for every holding, not only laggards — a fund can beat its index
        and still sit mid-table among funds that ran the same window. */
     html += '<div class="ins-sub">Top peers in category</div>'+topListHtml(res, own);
-    }
   }
   if(catInfo.status === "stale"){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s data failed its last publish check '+
