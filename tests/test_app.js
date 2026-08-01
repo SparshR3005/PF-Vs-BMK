@@ -160,8 +160,17 @@ function extractFn(name) {
      /if\(!listComplete\)\{ serverSearch\(q\); return; \}/.test(HTML),
      "fallback missing");
 
-  ok("#10 export label no longer says PORTFOLIO ALPHA", !/PORTFOLIO ALPHA/.test(HTML));
-  ok("#10 export label says XIRR SPREAD", /XIRR SPREAD VS BENCHMARK PROXY/.test(HTML));
+  /* v15: the label reverted to "Alpha" on request. v4's concern was never the WORD
+     — it was a headline figure implying Jensen's α with nothing nearby to say
+     otherwise. The guard now pins the property v4 actually wanted: wherever Alpha
+     is stated, the disclaimer is stated too. tests/test_report.js enforces this
+     per-sheet on the real workbook; here we check the strings exist at all. */
+  ok("#10 the Alpha card is qualified as per-annum, not a bare 'PORTFOLIO ALPHA'",
+     !/PORTFOLIO ALPHA/.test(HTML) && /label:"ALPHA \(p\.a\.\)"/.test(HTML));
+  ok("#10 every surface that states Alpha also states it is NOT Jensen's alpha",
+     (HTML.match(/Jensen's α/g) || []).length >= 4);
+  ok("#10 ...including the on-screen footnote, unchanged since v4",
+     /<b>Alpha<\/b> here is the fund's money-weighted XIRR minus the benchmark's/.test(HTML));
   ok("#10 'SEBI-standard benchmark' claim removed", !/SEBI-standard/.test(HTML));
   ok("#2 buildInsights takes holdings explicitly",
      /function buildInsights\(port, holdings\)/.test(HTML));

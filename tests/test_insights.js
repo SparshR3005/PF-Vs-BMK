@@ -626,9 +626,50 @@ if(loaded){
   // ---- the button
   ok("the export button reads Export Report",
      /id="exportBtn">⤓ Export Report<\/button>/.test(HTML));
-  ok("...at the smaller size, using a modifier that is NOT the destructive .small",
+  ok("...sized as a peer of the tabs, using a modifier that is NOT the destructive .small",
      /class="btn ghost compact" id="exportBtn"/.test(HTML) &&
-     /\.btn\.compact\{padding:6px 13px;font-size:12px/.test(HTML));
+     /\.btn\.compact\{padding:9px 22px;font-size:\.94rem;font-weight:500;\}/.test(HTML));
+  /* The point of .compact is to match the tab buttons it sits beside. Pinning the
+     literal metrics alone would stay green if .tabbtn were restyled and the button
+     left behind, so compare the two rules to each other. */
+  ok("...and .compact's font metrics actually equal .tabbtn's",
+     (function(){
+       const t = HTML.match(/\.tabbtn\{[^}]*\}/);
+       const c = HTML.match(/\.btn\.compact\{([^}]*)\}/);
+       if(!t || !c) return false;
+       const size = /font-size:\.94rem/.test(t[0]) && /font-size:\.94rem/.test(c[1]);
+       const weight = /font-weight:500/.test(t[0]) && /font-weight:500/.test(c[1]);
+       const padY = /padding:9px /.test(t[0]) && /padding:9px /.test(c[1]);
+       return size && weight && padY;
+     })());
+
+  // ---- v15 labels: bare headings, disclosure moved to the footnote
+  ok("the sheet headings carry no parenthetical qualifiers",
+     !/\{h:"Benchmark \(TRI proxy\)"/.test(HTML) && !/\{h:"Fund XIRR \(full\)"/.test(HTML) &&
+     /\{h:"Benchmark", w:22/.test(HTML) && /\{h:"Fund XIRR", w:13/.test(HTML));
+  ok("...and the spread column reads Alpha, as the on-screen table already did",
+     /\{h:"Alpha", w:11/.test(HTML) && !/\{h:"XIRR spread"/.test(HTML) &&
+     /<th class="alpha-col">Alpha<\/th>/.test(HTML));
+  ok("dropping '(TRI proxy)' did not drop the proxy disclosure",
+     /It is a PROXY chosen by this tool from the fund's SEBI category/.test(HTML));
+  ok("dropping '(full)' did not drop the full-vs-comparable distinction",
+     /Fund XIRR covers the holding's full SIP history/.test(HTML));
+
+  // ---- v15 dates
+  ok("there is one ISO-to-display date helper",
+     /function fmtISO\(s\)/.test(HTML) &&
+     /return m \? m\[3\]\+"-"\+m\[2\]\+"-"\+m\[1\] : String\(s\|\|""\);/.test(HTML));
+  ok("the leg note renders its dates through it",
+     /"\/mo · from "\+fmtISO\(g\.startStr\)/.test(HTML) &&
+     /inr\(g\.legs\[0\]\.amount\)\+"\/mo from "\+fmtISO\(g\.startStr\)/.test(HTML));
+  ok("no raw ISO string is still printed to the reader",
+     !/\$\{escapeHtml\(s\.startStr\)\}/.test(HTML) &&
+     !/escapeHtml\(catInfo\.as_of\|\|""\)/.test(HTML));
+  ok("fmtDate is left alone — '01 Aug 2026' was explicitly kept",
+     /function fmtDate\(d\)\{ return d\.toLocaleDateString\("en-IN",\{day:"2-digit",month:"short",year:"numeric"\}\); \}/.test(HTML));
+  ok("stored dates stay ISO, so signature() keys and the importer are untouched",
+     /startStr: \$\("startDate"\)\.value,/.test(HTML) &&
+     /rows\.push\(\[s\.name,s\.plan\|\|detectPlanFromName\(s\.name\)\|\|"",s\.startStr,s\.endStr\|\|"",s\.amount,s\.code\]\)/.test(HTML));
   ok("...sitting on the tab row, outside the tablist so arrow keys still work",
      /<div class="tabrow" id="tabRow"/.test(HTML) &&
      /<div class="tabrow-end">[\s\S]{0,240}id="exportBtn"/.test(HTML) &&

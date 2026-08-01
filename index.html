@@ -126,9 +126,10 @@
   .btn.small:hover{background:rgba(207,91,76,.12);border-color:var(--lag);color:var(--lag);filter:none;}
   /* SIZE ONLY. `.small` is the destructive style — red border and text, used by
      Clear all / Delete / Erase browser data / the row × buttons — so reusing it
-     for Export Report would paint a harmless action as a dangerous one. `.compact`
-     sets nothing but metrics, leaving `.ghost` to supply the brass outline. */
-  .btn.compact{padding:6px 13px;font-size:12px;font-weight:500;}
+     for Export Report would paint a harmless action as a dangerous one.
+     `.compact` mirrors .tabbtn's metrics so the control reads as a peer of the
+     tabs it sits beside, and leaves `.ghost` to supply the brass outline. */
+  .btn.compact{padding:9px 22px;font-size:.94rem;font-weight:500;}
   .btn:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
 
   .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px;}
@@ -1597,6 +1598,16 @@ function addMonths(d,n){
 }
 function daysBetween(a,b){return (b.getTime()-a.getTime())/86400000;}
 function isoDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
+/* Display-only reformat of a stored ISO date. `startStr`/`endStr`, the ranks
+   `as_of`, and every key built by signature() stay ISO on disk — this touches
+   what the reader sees, nothing that is stored, compared or round-tripped.
+   Dashes, not slashes: normaliseDateCell() reads a dashed DD-MM-YYYY as
+   day-first, but rejects the slashed form as ambiguous whenever both parts are
+   <= 12, so a slash here would break re-import for a third of the calendar. */
+function fmtISO(s){
+  const m = String(s||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? m[3]+"-"+m[2]+"-"+m[1] : String(s||"");
+}
 function parseInput(v){
   const m=String(v||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if(!m) return null;
@@ -2083,10 +2094,10 @@ function groupHoldings(list){
 function legNoteText(g){
   if(g.legCount>1){
     return g.legCount+" SIP legs pooled · "+g.amountSpread.map(a=>inr(a)).join(" · ")+
-           "/mo · from "+g.startStr;
+           "/mo · from "+fmtISO(g.startStr);
   }
-  return inr(g.legs[0].amount)+"/mo from "+g.startStr+
-         (g.legs[0].endStr?" to "+g.legs[0].endStr:"");
+  return inr(g.legs[0].amount)+"/mo from "+fmtISO(g.startStr)+
+         (g.legs[0].endStr?" to "+fmtISO(g.legs[0].endStr):"");
 }
 
 /* Sub-tabs only earn their place once the two views can differ. With no end date
@@ -2279,7 +2290,7 @@ function render(){
       // failure never silently drops it from the portfolio (see hydrateActive).
       rows+=`<tr>
         <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name||s.inputName)||('Code '+s.code))}</div>
-            <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(s.startStr)}${s.endStr?' to '+escapeHtml(s.endStr):''}</div>
+            <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(fmtISO(s.startStr))}${s.endStr?' to '+escapeHtml(fmtISO(s.endStr)):''}</div>
             <div class="bmk-line" style="color:var(--danger);">⚠ Couldn't value: ${escapeHtml(s.error)}</div></td>
         <td class="num" colspan="6" style="color:var(--sub);">retained — value not available right now</td>
         <td class="num"><button class="btn small" data-retry="${i}">Retry</button> <button class="btn small icon" data-i="${i}" title="Remove" aria-label="Remove">×</button></td></tr>`;
@@ -2863,7 +2874,7 @@ function renderImportPreview(){
       : escapeHtml(r.resolvedName||'—');
     tr.innerHTML=`<td><input type="checkbox" data-preview-i="${i}" ${r.checked?'checked':''} ${r.importable?'':'disabled'}></td>
       <td class="num">${i+1}</td><td>${escapeHtml(r.inputName)}</td><td>${escapeHtml(r.inputPlan||'—')}</td>
-      <td>${resolvedCell}</td><td class="mono">${escapeHtml(r.startStr||'—')}</td><td class="num">${r.amount?inr(r.amount):'—'}</td>
+      <td>${resolvedCell}</td><td class="mono">${escapeHtml(r.startStr?fmtISO(r.startStr):'—')}</td><td class="num">${r.amount?inr(r.amount):'—'}</td>
       <td class="${r.statusClass}">${escapeHtml(r.message)}</td>`;body.appendChild(tr);
   });
   body.querySelectorAll("select[data-pick-i]").forEach(sel=>sel.onchange=async ()=>{
@@ -3363,7 +3374,7 @@ function reportCoverSheet(data, genDate){
     ["Gain / loss",      function(d){ return d.port?Math.round(d.port.gain):null; }, FMT_INR],
     ["Portfolio XIRR",   function(d){ return d.port?d.port.xirr:null; }, FMT_PCT],
     ["Benchmark TRI XIRR", function(d){ return (d.port&&d.port.anyBench)?d.port.benchXirr:null; }, FMT_PCT],
-    ["XIRR spread (p.a.)", function(d){ return (d.port&&d.port.alpha!=null)?d.port.alpha*100:null; }, FMT_PP]
+    ["Alpha (p.a.)", function(d){ return (d.port&&d.port.alpha!=null)?d.port.alpha*100:null; }, FMT_PP]
   ];
   metrics.forEach(function(m,i){
     const fill = i%2 ? RPT.band : RPT.bandAlt;
@@ -3387,10 +3398,14 @@ function reportCoverSheet(data, genDate){
   shWrap(sh, "Fund NAV — each holding is valued at its own latest published NAV; the newest in this portfolio is "+newest+".");
   shWrap(sh, "Benchmark TRI — committed to the repository by the nightly fetch; the app warns on screen when a benchmark this portfolio uses has gone stale.");
   shWrap(sh, "Category ranking data — published nightly. "+(asOfCats.length
-    ? ("As of "+asOfCats.join(", ")+".")
+    ? ("As of "+asOfCats.map(fmtISO).join(", ")+".")
     : "No category data was reachable when this report was built, so the Insights sheets state that rather than guessing."));
   shGap(sh, 6);
   shWrap(sh, "One row per SCHEME, not per SIP leg. A fund funded through several SIPs — an amount change, or two concurrent SIPs — is one position, and its return is a single money-weighted XIRR over the union of every leg's cash flows, which is not the average of the legs' XIRRs. The SIP column names the legs behind each row.",
+    {color:RPT.sub, italic:true});
+  // The cover carries an Alpha row, so it carries the Alpha disclosure too. A
+  // reader who opens only this sheet must not leave thinking it is risk-adjusted.
+  shWrap(sh, "Alpha here is the fund's money-weighted XIRR minus its benchmark's over the same instalments: a return spread, NOT risk-adjusted alpha (Jensen's α). The benchmark is a category-matched Nifty TRI chosen by this tool, not necessarily the fund's own disclosed benchmark. Method & Legend has the full definitions.",
     {color:RPT.sub, italic:true});
 
   return shDone(sh, [26,17,17,17,17,17]);
@@ -3406,18 +3421,18 @@ function reportPortfolioSheet(d, genDate){
     {h:"Scheme", w:34, a:"left"},
     {h:"Plan", w:9, a:"center"},
     {h:"SIP", w:30, a:"left"},
-    {h:"Benchmark (TRI proxy)", w:22, a:"left"},
+    {h:"Benchmark", w:22, a:"left"},
     {h:"Invested", w:13, a:"right", fmt:FMT_INR},
     {h:"Current", w:13, a:"right", fmt:FMT_INR},
     {h:"Gain", w:13, a:"right", fmt:FMT_INR},
     {h:"Abs return", w:11, a:"right", fmt:FMT_PCT},
-    {h:"Fund XIRR (full)", w:13, a:"right", fmt:FMT_PCT}
+    {h:"Fund XIRR", w:13, a:"right", fmt:FMT_PCT}
   ];
   // Same rule the screen applies: the comparable figure only earns a column when a
   // SIP genuinely predates its TRI, otherwise it duplicates the full-period XIRR.
   if(anyShorter) cols.push({h:"Fund XIRR (comparable)", w:15, a:"right", fmt:FMT_PCT});
   cols.push({h:"Benchmark XIRR", w:13, a:"right", fmt:FMT_PCT},
-            {h:"XIRR spread", w:11, a:"right", fmt:FMT_PP},
+            {h:"Alpha", w:11, a:"right", fmt:FMT_PP},
             {h:"Verdict", w:16, a:"left"});
   if(anyFlag) cols.push({h:"Data window", w:26, a:"left"});
 
@@ -3436,9 +3451,9 @@ function reportPortfolioSheet(d, genDate){
     {label:"TOTAL INVESTED", val:Math.round(port.invested), fmt:FMT_INR, tone:"neutral"},
     {label:"CURRENT VALUE",  val:Math.round(port.current),  fmt:FMT_INR, tone:"neutral"},
     {label:"GAIN / LOSS",    val:Math.round(port.gain),     fmt:FMT_INR, tone:port.gain>=0?"good":"bad"},
-    {label:"PORTFOLIO XIRR (FULL)", val:port.xirr, fmt:FMT_PCT, tone:"neutral"},
+    {label:"PORTFOLIO XIRR", val:port.xirr, fmt:FMT_PCT, tone:"neutral"},
     {label:"BENCHMARK TRI XIRR (COMPARABLE)", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
-    {label:"XIRR SPREAD VS BENCHMARK PROXY (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
+    {label:"ALPHA (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
      tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
   ]);
 
@@ -3467,7 +3482,7 @@ function reportPortfolioSheet(d, genDate){
   const emit = function(vals, band, isPort, zebra){
     const cells = cols.map(function(c,i){
       const o = {v:vals[i], align:c.a, valign:"center", bold:isPort, bottom:RPT.line, numFmt:c.fmt};
-      if(i===idx["XIRR spread"] || i===idx["Verdict"]){ o.fill=FILL[band.key]; o.light=band.key!=="beat"; }
+      if(i===idx["Alpha"] || i===idx["Verdict"]){ o.fill=FILL[band.key]; o.light=band.key!=="beat"; }
       else if(isPort){ o.fill=RPT.portRow; o.light=true; }
       else { o.fill=zebra; }
       if(c.h==="Data window" || c.h==="SIP"){ o.wrap=true; o.sz=9.5; o.color=isPort?undefined:RPT.sub; }
@@ -3498,8 +3513,16 @@ function reportPortfolioSheet(d, genDate){
   emit(pv, pBand, true, null);
 
   shGap(sh, 8);
+  /* The headings are now bare — "Benchmark", "Fund XIRR", "Alpha" — so every
+     qualifier they used to carry has to be discharged here instead. Dropping
+     "(TRI proxy)" from a heading does not make the benchmark stop being a proxy,
+     and "Alpha" on its own reads as Jensen's α to anyone who knows the term. */
   shWrap(sh, "Benchmark = a category-matched Nifty Total Return Index (gross TRI), which includes reinvested dividends. "+
-    "XIRR spread is the fund's money-weighted XIRR minus the benchmark's over the same instalments: a return spread, NOT risk-adjusted alpha (Jensen's α). "+
+    "It is a PROXY chosen by this tool from the fund's SEBI category, not necessarily the fund's own disclosed benchmark. "+
+    "Alpha here is the fund's money-weighted XIRR minus that benchmark's over the same instalments: a return spread, "+
+    "NOT risk-adjusted alpha (Jensen's α) — it makes no adjustment for volatility, beta or any other risk measure. "+
+    "Fund XIRR covers the holding's full SIP history"+
+    (anyShorter ? "; Fund XIRR (comparable) restricts it to the months the benchmark also covers, which is the only pair Alpha is computed from. " : ". ")+
     "Every holding is valued at its own latest NAV, so the PORTFOLIO row blends slightly different valuation dates"+
     (port.valueDate ? " (newest "+fmtDate(port.valueDate)+")" : "")+". "+
     "Colour bands: dark green ≥ +3 pp · green 0 to +3 pp · grey exactly 0 pp · red 0 to −3 pp · dark red ≤ −3 pp.",
@@ -3546,7 +3569,7 @@ function reportInsightsSheet(d, genDate){
     }
 
     /* Track record */
-    shBand(sh, "Track record — lumpsum, point-to-point, as of "+((f.catInfo&&f.catInfo.as_of)||""),
+    shBand(sh, "Track record — lumpsum, point-to-point, as of "+fmtISO((f.catInfo&&f.catInfo.as_of)||""),
       {fill:RPT.band, color:RPT.sub, bold:true, sz:9.5, hpt:15});
     if(f.track.status==="nocat"){
       shWrap(sh, "No track record published for this category yet.", {color:RPT.sub});
@@ -3653,7 +3676,7 @@ function reportLegendSheet(data, genDate){
   const sh = shNew(3);
   shTitle(sh, "Method & Legend", "How every figure in this report is computed  ·  "+genDate);
 
-  const hdr = ["Colour band","Meaning","XIRR spread threshold (Fund − TRI)"];
+  const hdr = ["Colour band","Meaning","Alpha threshold (Fund − TRI)"];
   shRow(sh, hdr.map(function(h){ return {v:h, fill:RPT.header, color:RPT.headerTxt, bold:true, sz:10.5}; }));
   [["Strongly beating","Fund is well ahead of its index","≥ +3 pp per year", FILL.strong_beat, true],
    ["Beating","Fund is modestly ahead of its index","0 to +3 pp per year", FILL.beat, false],
@@ -3672,7 +3695,8 @@ function reportLegendSheet(data, genDate){
     [null, "One row per SCHEME. Several SIP legs into one fund pool into a single position whose return is one money-weighted XIRR over the union of their cash flows — not the average of the legs' XIRRs."],
     [null, "Each holding is valued at its own latest NAV, so the PORTFOLIO row blends slightly different valuation dates. That is deliberate: forcing a common date silently drops the freshest instalments and breaks the property that the total equals the sum of the rows."],
     [null, "Benchmark is the matching Nifty gross Total Return Index (TRI), which includes reinvested dividends. It is a category / broad-market PROXY chosen by this tool, not necessarily the fund's own disclosed benchmark."],
-    [null, "The XIRR spread is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column."],
+    [null, "Alpha is the fund's money-weighted XIRR minus that benchmark's, over the same instalments, in percentage points per year. It is a RETURN SPREAD and not risk-adjusted alpha (Jensen's α): no adjustment is made for volatility, beta, drawdown or any other measure of risk. A fund can show positive Alpha here purely by taking more risk than its index."],
+    [null, "Alpha is measured only over months where both the fund and its TRI have data. Any holding whose SIP began before its TRI history is flagged in the 'Data window' column."],
     ["How the category ranking works", null],
     [null, "Track record is lumpsum point-to-point return for the fund itself, precomputed nightly from full daily NAV. It answers a different question from your XIRR and the two will not agree."],
     [null, "Return is coloured against Category Avg and the annualised column never is: both Return and Category Avg are cumulative, while Annualized is a CAGR, so comparing them would paint category-beating funds red."],
@@ -3767,7 +3791,7 @@ function buildInsights(port, holdings){
   if(port.alpha!=null){
     const pp=(port.alpha*100);
     lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI proxy by "
-      +Math.abs(pp).toFixed(2)+" pp per year XIRR spread (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
+      +Math.abs(pp).toFixed(2)+" pp per year of Alpha (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
   // 2) Best and worst holdings by alpha.
   const withAlpha=rows.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
@@ -4374,7 +4398,7 @@ async function fillInsightDetail(pane, item, gen){
   }
   const catInfo = f.catInfo;
   let html = '<div class="ins-sub">Track record — lumpsum, point-to-point, as of '+
-             escapeHtml(catInfo.as_of||"")+"</div>"+periodTableHtml(f.periods, item.plan, item.code);
+             escapeHtml(fmtISO(catInfo.as_of||""))+"</div>"+periodTableHtml(f.periods, item.plan, item.code);
 
   if(f.tooShort){
     html += '<div class="ins-sub">Peer ranking</div>'+

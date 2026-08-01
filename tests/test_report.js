@@ -99,7 +99,8 @@ const EPILOGUE = `
   get schemes(){return schemes;}, set schemes(v){schemes=v;},
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
-  parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics
+  parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
+  fmtISO, normaliseDateCell
 };`;
 
 vm.createContext(sandbox);
@@ -190,7 +191,7 @@ S.schemes = [
      live.includes("Nifty Midcap 150 TRI"));
 
   // ---- each Portfolio sheet carries its OWN KPI block (answer (a) to Q: where do cards live)
-  ok("the All sheet has its own KPI cards", /TOTAL INVESTED/.test(all) && /PORTFOLIO XIRR \(FULL\)/.test(all));
+  ok("the All sheet has its own KPI cards", /TOTAL INVESTED/.test(all) && /PORTFOLIO XIRR/.test(all));
   ok("the Live SIP sheet has its own KPI cards", /TOTAL INVESTED/.test(live));
 
   // The whole point of per-sheet cards: the card must equal the table beneath it.
@@ -258,6 +259,58 @@ S.schemes = [
   } else {
     ok("the rank sentence in the sheet is the one insightFacts produced", true);
   }
+
+  // ---- v15: bare headings, and the disclosure that has to carry them
+  /* Assert on the HEADER ROW, not the whole sheet: the footnote and the Key
+     Insights prose legitimately use the words "proxy" and "full", and a blanket
+     text search would force those disclosures out to make itself pass. */
+  const headerOf = name => {
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:true, defval:""});
+    return aoa.find(r => r.includes("Scheme")) || [];
+  };
+  const hdrAll = headerOf("Portfolio — All");
+  eq("headings dropped their parenthetical qualifiers",
+     hdrAll.join("|"),
+     "Scheme|Plan|SIP|Benchmark|Invested|Current|Gain|Abs return|Fund XIRR|Benchmark XIRR|Alpha|Verdict");
+  ok("the spread column is headed Alpha, not XIRR spread",
+     hdrAll.includes("Alpha") && !hdrAll.some(h => /XIRR spread/i.test(h)));
+  ok("the KPI card reads ALPHA (p.a.)", /ALPHA \(p\.a\.\)/.test(all));
+
+  /* The invariant behind the rename: a sheet may state Alpha only if the SAME
+     sheet says it is not Jensen's α. Checking the strings exist SOMEWHERE in the
+     file would stay green if the cover kept its Alpha row and lost its footnote. */
+  const alphaSheets = wb.SheetNames.filter(n => /\balpha\b/i.test(txt(n)));
+  ok("more than one sheet states Alpha, so this is worth enforcing",
+     alphaSheets.length >= 2, alphaSheets.join(", "));
+  alphaSheets.forEach(n => {
+    ok("  '" + n + "' states Alpha AND disclaims Jensen's alpha on the same sheet",
+       /Jensen/.test(txt(n)));
+  });
+  ok("the proxy disclosure survived the loss of '(TRI proxy)'",
+     /PROXY chosen by this tool/.test(all));
+  ok("the full-vs-comparable distinction survived the loss of '(full)'",
+     /full SIP history/.test(all));
+
+  // ---- v15: dates
+  ok("the SIP column shows dd-mm-yyyy, not ISO",
+     /\b\d{2}-\d{2}-\d{4}\b/.test(all) && !/\b\d{4}-\d{2}-\d{2}\b/.test(all));
+  ok("...and the day component really is first",
+     all.includes(S.schemes[0].startStr.split("-").reverse().join("-")));
+  ok("the Insights track-record as-of is reformatted too",
+     !/as of \d{4}-\d{2}-\d{2}/.test(insAll));
+  ok("fmtDate-style dates are untouched — '01 Aug 2026' was kept",
+     /\d{2} [A-Z][a-z]{2} \d{4}/.test(all));
+
+  /* The dashed form is not a style preference: normaliseDateCell() reads a dashed
+     DD-MM-YYYY as day-first, but rejects the slashed form as ambiguous whenever
+     both parts are <= 12. Behavioural, not a string match. */
+  ["2020-01-14","2022-04-17","2019-11-03","2021-06-08","2024-02-29"].forEach(iso => {
+    const shown = S.fmtISO(iso);
+    eq("  " + iso + " displays as " + shown + " and re-imports unchanged",
+       S.normaliseDateCell(shown).value, iso);
+  });
+  ok("...whereas the slashed form would be rejected as ambiguous",
+     S.normaliseDateCell("08/06/2021").error !== "");
 
   // ---- no leg-level sheet (answer to Q4)
   // "Method & Legend" contains the letters "leg"; match the actual shape instead.
