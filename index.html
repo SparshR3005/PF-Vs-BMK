@@ -517,7 +517,7 @@
     <div class="hintline" id="importPreviewSummary"></div>
     <div class="scroll-x" style="margin-top:12px;">
       <table class="preview-table">
-        <thead><tr><th>Import</th><th>#</th><th>Input scheme</th><th>Input plan</th><th>Resolved scheme</th><th>Start</th><th>Monthly</th><th>Status</th></tr></thead>
+        <thead><tr><th>Import</th><th>#</th><th>Input scheme</th><th>Input plan</th><th>Resolved scheme</th><th>Start</th><th>Monthly SIP</th><th>Status</th></tr></thead>
         <tbody id="importPreviewBody"></tbody>
       </table>
     </div>
@@ -2604,7 +2604,7 @@ $("templateBtn").addEventListener("click",()=>{
     // so names drift while codes don't. When Code is present, import resolves
     // exactly and skips name matching entirely. The example row carries a real
     // code so the column doesn't read as "leave this blank".
-    const rows=[["Scheme","Plan","Start","End (optional)","Monthly","Code (optional)"]];
+    const rows=[["Scheme","Plan","Start","End (optional)","Monthly SIP","Code (optional)"]];
     if(schemes.length) schemes.forEach(s=>rows.push([s.name,s.plan||detectPlanFromName(s.name)||"",s.startStr,s.endStr||"",s.amount,s.code]));
     else rows.push(["Parag Parikh Flexi Cap Fund - Direct Plan - Growth","Direct","2022-01-01","",5000,"122639"]);
     const ws=XLSX.utils.aoa_to_sheet(rows);ws["!cols"]=[{wch:52},{wch:9},{wch:12},{wch:12},{wch:10},{wch:10}];
@@ -2617,7 +2617,7 @@ $("templateBtn").addEventListener("click",()=>{
       ["Plan","Direct or Regular. Required (may be omitted if the scheme name already says which)."],
       ["Start","SIP start date, YYYY-MM-DD. Required."],
       ["End","SIP end date, YYYY-MM-DD. Optional — leave blank for an ongoing SIP."],
-      ["Monthly","Monthly SIP amount, digits only. Required."],
+      ["Monthly SIP","The rupee amount of each instalment, digits only. Required."],
       ["Code","AMFI scheme code. OPTIONAL but recommended."],[],
       ["Why the Code column is worth filling"],
       ["SEBI's 2025 recategorisation renamed schemes across the industry (e.g. ICICI Prudential Bluechip Fund became ICICI Prudential Large Cap Fund)."],
@@ -2975,7 +2975,7 @@ $("importFile").addEventListener("change",function(){
         else if(h.includes("code")){col.code??=i;}      // late catch-all, after exact names
         else if(h.includes("scheme")||h.includes("fund")){col.scheme??=i;}
       });
-      if(col.scheme==null||col.start==null||col.amount==null){$("pmStatus").textContent="Header must include Scheme, Start and Monthly columns.";return;}
+      if(col.scheme==null||col.start==null||col.amount==null){$("pmStatus").textContent="Header must include Scheme, Start and Monthly SIP columns.";return;}
       $("pmStatus").textContent="Validating Excel rows…";importPreviewRows=[];
       for(let r=1;r<aoa.length;r++){
         if(!aoa[r].some(v=>String(v||"").trim()!==""))continue;
@@ -3152,6 +3152,12 @@ function triWindowFlag(s){
 }
 
 function exportExcel(){
+  /* Deliberately EVERY leg, whatever sub-tab is showing: the export is what makes a
+     round-trip lossless, and following pfScope here would silently drop the ended
+     legs from the user's own backup. But the headline XIRR is then computed over a
+     different population than the screen it was exported from (measured: 13.73% on
+     Live SIP against 14.75% for all legs), so the sheet must SAY so -- an unlabelled
+     number the reader cannot reproduce is the actual defect. */
   const schemes = valuedSchemes();   // export excludes retained error rows (#2)
   const port=portfolioMetrics(),genDate=fmtDate(new Date()),wb=XLSX.utils.book_new();
   const anyEnd = schemes.some(s=>s.endStr);
@@ -3172,7 +3178,13 @@ function exportExcel(){
   put(0,0, styleCell("SIP Performance Report",{bold:true, sz:18, color:RPT.ink}));
   for(let c=1;c<6;c++) put(0,c, styleCell("",{}));
   merges1.push(M(0,0,0,5));
-  put(1,0, styleCell("Fund SIPs vs Nifty Total Return Index  ·  Portfolio: "+store.active+"  ·  "+genDate,
+  // Name the population the figures below cover. Without this the reader sees a
+  // headline XIRR that does not match the Live SIP screen they exported from, with
+  // nothing on the page explaining the difference.
+  const scopeNote = scopeApplies()
+    ? "  ·  All "+schemes.length+" SIP legs"+(pfScope==="live" ? " (screen was showing Live SIP only)" : "")
+    : "";
+  put(1,0, styleCell("Fund SIPs vs Nifty Total Return Index  ·  Portfolio: "+store.active+"  ·  "+genDate+scopeNote,
                      {color:RPT.sub, sz:10}));
   for(let c=1;c<6;c++) put(1,c, styleCell("",{}));
   merges1.push(M(1,0,1,5));
@@ -3472,6 +3484,15 @@ const MIN_TOP_UNIVERSE = 10;
 // to run the user's whole window. Mirrors MIN_QUARTILE_UNIVERSE in fetch_ranks.py,
 // which suppresses quartiles on the same reasoning.
 const MIN_RANK_UNIVERSE = 8;
+/* fetch_ranks.py refuses to annualise below a year on principle -- "it implies a
+   precision the number does not have" -- and the track-record table above the peer
+   panel honours that. The peer panel did not: measured on navs_MID_CAP_Direct, a
+   1-instalment SIP produced a confident rank above peer XIRRs of 231%, 150% and 96%.
+   Same objection, same threshold, so the tab now applies one standard rather than two. */
+const MIN_RANK_DAYS = 365;
+/* A grid whose last NAV is older than this is a dead or suspended scheme, not a
+   late starter. 60 days clears any holiday cluster or reporting lag. */
+const DEAD_FUND_DAYS = 60;
 const TOP_N = 5;
 const LAG_THRESHOLD_PP = 3;
 
@@ -3579,9 +3600,14 @@ function rankCandidates(navDoc, schedule, valueDate, ownCode){
     const entry = navDoc.funds[code];
     let r = null;
     try{ r = runSIP(gridToNavArr(entry), schedule, valueDate); }catch(e){ r = null; }
-    if(!r || !isFinite(r.xirr)) continue;
+    // Number.isFinite, not isFinite: isFinite(null) is TRUE, so a peer whose XIRR
+    // failed to solve would enter the pool and sort as if it returned 0%.
+    if(!r || !Number.isFinite(r.xirr)) continue;
+    const arr = gridToNavArr(entry);
     rows.push({code:code, name:entry.n, xirr:r.xirr, placed:r.placed,
-               skipped:r.skipped ? r.skipped.length : 0});
+               skipped:r.skipped ? r.skipped.length : 0,
+               first:arr[0] ? arr[0].date : null,
+               last:arr.length ? arr[arr.length-1].date : null});
   }
   if(!rows.length) return {top:[], universe:0, ownRank:null, ownXirr:null, median:null};
 
@@ -3614,7 +3640,23 @@ function rankCandidates(navDoc, schedule, valueDate, ownCode){
      values), so a 10-year window can leave only the oldest handful eligible.
      Reporting "2 of 3" without saying so reads as the whole category. Return the
      full cohort too, so the UI can disclose the shrinkage. */
-  return {top:top, universe:pool.length, cohort:rows.length,
+  /* Why each fund was dropped, by cause. The note used to report EVERY exclusion as
+     "started after your SIP began". Measured on the committed ELSS grids, 6 of 15
+     dropped funds had simply STOPPED REPORTING -- and excluding those is survivorship
+     bias, the opposite of the "like-for-like" the note claimed. The server already
+     splits stale from young (exclusion_reason()); the browser never did.
+     A fund whose series ends well before the valuation date is dead or suspended; one
+     whose series starts after the first instalment is a genuine late starter. */
+  const inPool = new Set(pool.map(function(r){ return String(r.code); }));
+  const firstDate = schedule.length ? schedule[0].date : null;
+  const excluded = {stale:0, late:0, other:0};
+  for(const r of rows){
+    if(inPool.has(String(r.code))) continue;
+    if(r.last && daysBetween(r.last, valueDate) > DEAD_FUND_DAYS) excluded.stale++;
+    else if(r.first && firstDate && r.first > firstDate) excluded.late++;
+    else excluded.other++;
+  }
+  return {top:top, universe:pool.length, cohort:rows.length, excluded:excluded,
           ownRank:ownRank, ownXirr:ownXirr, median:median};
 }
 
@@ -3683,6 +3725,31 @@ function topListHtml(res, ownXirr){
       " that ran your full window — too small a pool to read as a category ranking.</div>"
     : "";
   return '<ol class="top5">'+li+"</ol>"+thin;
+}
+
+/* The exclusion note, split by CAUSE. Two different things were being reported as
+   one: funds that started after the SIP (a fair exclusion -- they cannot be compared
+   over a window they did not run) and funds that STOPPED REPORTING mid-window (an
+   unfair one -- dropping them is survivorship bias). The old sentence called both
+   "like-for-like", which was false for 40% of ELSS exclusions and, worse, contradicted
+   the pane's own footer warning that surviving cohorts flatter. */
+function excludedNote(res){
+  const x = res && res.excluded;
+  if(!x) return "";
+  const parts = [];
+  if(x.late)  parts.push(x.late+" started after your SIP began");
+  if(x.stale) parts.push(x.stale+" stopped reporting mid-window");
+  if(x.other) parts.push(x.other+" had gaps in their NAV history");
+  if(!parts.length) return "";
+  const total = x.late + x.stale + x.other;
+  let note = ' <span class="approx">'+total+" fund"+(total===1?"":"s")+" excluded: "+
+             parts.join(", ")+".";
+  // Only the late-starter half is like-for-like. Say which is which rather than
+  // claiming the whole exclusion is clean.
+  note += x.stale
+    ? " Dropping funds that stopped reporting flatters the surviving cohort, so read the ranking with that in mind."
+    : " Comparing only funds that ran your whole window keeps it like-for-like.";
+  return note+"</span>";
 }
 
 function insightsRowHtml(item, idx){
@@ -3819,6 +3886,19 @@ async function fillInsightDetail(pane, item, gen){
              escapeHtml(catInfo.as_of||"")+"</div>"+periodTableHtml(periods, item.plan, item.code);
 
   if(navs && item.schedule && item.schedule.length && item.valueDate){
+    /* Too short to rank. XIRR annualises, so a two-month SIP reports a two-month move
+       as an annual rate: the peer list reads 231%, 150%, 96% and the rank looks just
+       as confident as a ten-year one. The track-record table below is unaffected --
+       it is point-to-point and already withholds `ann` under a year. */
+    const spanDays = daysBetween(item.schedule[0].date, item.valueDate);
+    if(spanDays < MIN_RANK_DAYS){
+      html += '<div class="ins-sub">Peer ranking</div>'+
+        '<div class="ins-note">This SIP has run '+Math.max(0,Math.round(spanDays))+' days. '+
+        'Ranking needs at least '+MIN_RANK_DAYS+' days: an annualised return over a shorter '+
+        'window magnifies a few weeks of movement into a yearly rate, so both the rank and '+
+        'the peer figures would look far more precise than they are. The track record below '+
+        'is point-to-point and unaffected.</div>';
+    }else{
     const res = rankCandidates(navs, item.schedule, item.valueDate, item.code);
     const own = res.ownXirr!=null ? res.ownXirr : item.xirr;
     /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
@@ -3862,13 +3942,12 @@ async function fillInsightDetail(pane, item, gen){
                 : ", so it has no position in this list.")))+
       (res.median!=null ? " Category median "+(res.median*100).toFixed(2)+"%"+
         (own!=null ? ", your fund "+(own*100).toFixed(2)+"%." : ".") : "")+
-      (dropped > 0 ? ' <span class="approx">'+dropped+" fund"+(dropped===1?"":"s")+
-        " in this category started after your SIP began and "+
-        (dropped===1?"was":"were")+" excluded, so the comparison is like-for-like.</span>" : "")+
+      excludedNote(res)+
       "</div>";
     /* Q2: shown for every holding, not only laggards — a fund can beat its index
        and still sit mid-table among funds that ran the same window. */
     html += '<div class="ins-sub">Top peers in category</div>'+topListHtml(res, own);
+    }
   }
   if(catInfo.status === "stale"){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s data failed its last publish check '+

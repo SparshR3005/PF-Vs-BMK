@@ -658,5 +658,68 @@ ok("the run still exits non-zero when a category failed",
    "if failed:\n        return 1" in _main)
 ok("the summary line reports category errors", "category error(s)" in _main)
 
+
+# ------------------------- v13 #1: same-day duplicates resolve to the LAST row
+# v8 claimed all three paths "key by calendar day and keep the last row" and cited a
+# test as proof. The test's fixture appended the duplicate as 999 against an original
+# of 100, so "last" and "highest" coincided and the assertion passed under EITHER
+# policy -- it could not fail against the broken code, which is the one thing every
+# test in this repo is required to do.
+#
+# build_weekly_grid() sorted (date, nav) tuples BEFORE de-duplicating, so within a
+# date the dict kept the maximum. The fixture below makes the two policies disagree:
+# the later row carries the SMALLER number.
+_dup_rows = []
+_d0 = date(2025, 1, 1)
+for _i in range(30):
+    _dup_rows.append({"date": (_d0 + timedelta(days=3 * _i)).strftime("%d-%m-%Y"),
+                      "nav": str(100.0 + _i)})
+_dup_rows.append({"date": "01-01-2025", "nav": "50.0"})     # duplicate, LOWER, last
+_dup_asof = _d0 + timedelta(days=87)
+
+_grid = R.build_weekly_grid(_dup_rows, _dup_asof)
+eq("the grid resolves a conflicting duplicate to the LAST row, not the highest",
+   _grid[2][0], 50.0)
+
+# The other two paths, for the comparison the claim is actually about.
+_parser_last = {}
+for _r in _dup_rows:
+    _parser_last[_r["date"]] = float(_r["nav"])
+eq("...which is what the parse loop and getDetail() keep", _parser_last["01-01-2025"], 50.0)
+ok("so the weekly grid and the period table agree on the same fund/day",
+   _grid[2][0] == _parser_last["01-01-2025"])
+
+# And the original direction still holds, so this is not a swap of one bug for another.
+_dup_hi = _dup_rows[:-1] + [{"date": "01-01-2025", "nav": "999"}]
+eq("a duplicate that IS the last row still wins when it is the larger number",
+   R.build_weekly_grid(_dup_hi, _dup_asof)[2][0], 999.0)
+
+
+# ------------------------------- v13 #5: a refused publish must not quote fresh meta
+def _tmp_periods(tmp, as_of, count):
+    p = Path(tmp) / "periods_X.json"
+    p.write_text(json.dumps({"key": "X", "as_of": as_of, "count": count}), encoding="utf-8")
+    return p
+
+
+with tempfile.TemporaryDirectory() as _td:
+    _p = _tmp_periods(_td, "2026-06-01", 40)
+    eq("committed_meta reads the file's OWN as_of", R.committed_meta(_p)[0], "2026-06-01")
+    eq("...and its own count", R.committed_meta(_p)[1], 40)
+    ok("a missing file yields no meta rather than a guess",
+       R.committed_meta(Path(_td) / "nope.json") == (None, None))
+    (Path(_td) / "bad.json").write_text("{not json", encoding="utf-8")
+    ok("an unreadable file yields no meta rather than raising",
+       R.committed_meta(Path(_td) / "bad.json") == (None, None))
+
+_src = Path(ROOT / "fetch_ranks.py").read_text(encoding="utf-8")
+ok("the manifest quotes committed meta when a publish is refused",
+   "committed_meta(p_path)" in _src)
+ok("the per-plan grid count falls back to what is on disk",
+   'doc["count"] if ok_pub else existing_count(n_path)' in _src)
+# A refusal LATCHES -- safe_to_publish compares against the committed count -- so
+# exiting 0 reproduces the nine-day NIFTY_HEALTHCARE freeze on the ranks side.
+ok("a refused publish exits non-zero", "if refused:\n        print(" in _src)
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)

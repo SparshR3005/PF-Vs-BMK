@@ -136,8 +136,23 @@ def test_the_chain_matches_the_published_grids():
         # Before the chain runs, the survivor's grid starts at (or after) the
         # merger. Once it runs, t0 moves back — both are consistent with the map;
         # a t0 well AFTER the splice with no chain applied is the broken state.
-        assert t0 <= link["splice"] or t0 == link["splice"], (
-            f"{new_code} starts {t0}, chain splice is {link['splice']}")
+        # OUTCOME, not permission. The old assertion was
+        #     t0 <= splice or t0 == splice
+        # whose second clause is subsumed by the first, and which PASSES on
+        # t0 == splice -- precisely the UN-spliced state. It proved the wiring
+        # existed and permitted the wiring to be inert, which is what happened: the
+        # chain shipped, the grids kept t0 == 2022-11-28, and 17 merger tests stayed
+        # green while Insights told the user its history did not cover a window the
+        # Portfolio tab was already showing.
+        #
+        # A splice that ran leaves t0 STRICTLY earlier than the splice date. If a
+        # chain can never splice -- no history under the retired code -- the entry
+        # does not belong in CHAIN at all; an inert entry is a lie in config, not a
+        # state to tolerate.
+        assert t0 < link["splice"], (
+            f"{new_code} grid starts {t0}, not earlier than its splice date "
+            f"{link['splice']} - the chain is configured but did not run. Check "
+            f"the ranks log for 'chained {new_code}<-{link['from']}' or 'CHAIN REFUSED'.")
 
 
 # -------------------------------------------------------------- JS drift guard

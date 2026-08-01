@@ -192,8 +192,17 @@ def build_weekly_grid(rows, as_of, years=GRID_YEARS, max_gap=GRID_MAX_GAP_DAYS):
         pts.append((d, nav))
     if not pts:
         return None
-    pts.sort()
-    # De-duplicate same-day rows, keeping the last seen for that date.
+    # De-duplicate BEFORE sorting. `pts` holds (date, nav) tuples, so pts.sort()
+    # orders them date-then-NAV-ascending; a dict fill after that keeps the LAST
+    # tuple for the day, which is the HIGHEST nav -- not the last row MFAPI sent.
+    # The period table (compute_period_table) and the client's getDetail() both keep
+    # the last row in the API's own order, so the two published files could describe
+    # one fund on one day at two different NAVs. The period-table path already
+    # documents this exact trap; this one never got the same treatment, and its test
+    # could not catch it because the fixture's duplicate was also the maximum.
+    #
+    # `pts` is built by appending in row order, so a plain forward fill keeps the
+    # last row as received, matching the other two paths exactly.
     dedup = {}
     for d, nav in pts:
         dedup[d] = nav
@@ -480,6 +489,22 @@ def write_json_atomic(path, payload):
             pass
         raise
     os.replace(tmp, path)
+
+
+def committed_meta(path):
+    """(as_of, count) from a file already on disk, or (None, None).
+
+    Needed on a REFUSED publish. The manifest used to take today's as_of and the
+    rejected candidate's counts even when nothing was written, so the client -- which
+    prints catInfo.as_of as the pane heading -- announced "as of <today>" above data
+    that could be weeks older. This file already states the principle: a manifest
+    that disagrees with its own payload is worse than no manifest, because the client
+    trusts it."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    return doc.get("as_of"), doc.get("count")
 
 
 def existing_count(path):
@@ -824,8 +849,15 @@ def main():
             # table (needs >=6 months of history); "grid" is the weekly NAV file (needs
             # ~2 months). They legitimately differ, and a single "funds" field made the
             # manifest look self-contradictory.
-            cat_status = {"status": "ok" if allowed else "stale", "as_of": as_of.isoformat(),
-                          "ranked": published, "plans": {}}
+            # Describe what is ON DISK, not what was computed. On a refusal the
+            # candidate never landed, so quoting its as_of/count would have the client
+            # print a date for data that was never written.
+            if allowed:
+                status_as_of, status_ranked = as_of.isoformat(), published
+            else:
+                status_as_of, status_ranked = committed_meta(p_path)
+            cat_status = {"status": "ok" if allowed else "stale", "as_of": status_as_of,
+                          "ranked": status_ranked, "plans": {}}
             # Why funds were left out, by cause. A bare count invites the wrong guess,
             # which is exactly what happened when 12 stale ELSS schemes were reported
             # as young ones.
@@ -848,7 +880,7 @@ def main():
                     written += 1
                 elif not ok_pub:
                     refused += 1
-                cat_status["plans"][plan] = {"grid": doc["count"],
+                cat_status["plans"][plan] = {"grid": doc["count"] if ok_pub else existing_count(n_path),
                                              "status": "ok" if ok_pub else "stale"}
             manifest["categories"][cat] = cat_status
 
@@ -869,7 +901,17 @@ def main():
     # Action must go red rather than reporting a partial run as success.
     if failed:
         return 1
-    return 1 if refused and not written else 0
+    # A refusal LATCHES: safe_to_publish() compares against the COMMITTED count, so
+    # the same category is refused every night until someone looks. Exiting 0 because
+    # other categories wrote is the nine-day NIFTY_HEALTHCARE shape exactly -- a job
+    # that publishes, stays green, and quietly serves frozen data. Everything that
+    # could be written already has been by this point, so failing here costs no data.
+    if refused:
+        print(f"{refused} categor(y/ies) refused their publish gate and are serving "
+              f"last-good data. This repeats nightly until reviewed; re-run with "
+              f"--force only after confirming the drop is real.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

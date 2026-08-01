@@ -373,7 +373,15 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
 // ==================================================== import template
 (function testTemplate() {
   ok("template keeps the Code column",
-     /\["Scheme","Plan","Start","End \(optional\)","Monthly","Code \(optional\)"\]/.test(HTML));
+     /\["Scheme","Plan","Start","End \(optional\)","Monthly SIP","Code \(optional\)"\]/.test(HTML));
+  // Renamed from "Monthly" so the template agrees with the form label and the Excel
+  // EXPORT, both of which already said "Monthly SIP". The importer matches on a
+  // substring, so every sheet anyone already has keeps working -- that back-compat is
+  // the reason the rename is safe, so it is asserted rather than assumed.
+  ok("the importer still resolves a sheet headed only 'Monthly'",
+     /h\.includes\("monthly"\)/.test(HTML));
+  ok("...or one headed 'Amount', or 'SIP'",
+     /h\.includes\("amount"\)/.test(HTML) && /h\.includes\("sip"\)/.test(HTML));
   ok("template example row carries a real code (not blank)",
      /"Parag Parikh Flexi Cap Fund - Direct Plan - Growth","Direct","2022-01-01","",5000,"122639"/.test(HTML));
   ok("template ships a guidance sheet", /"How to fill"/.test(HTML));

@@ -38,6 +38,10 @@ function grabFn(name){
 const escapeHtml = s => String(s).replace(/[&<>"]/g,
   c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 const MIN_TOP_UNIVERSE = 10, TOP_N = 5;
+// Read from index.html rather than restated, so the suite exercises the SHIPPED
+// thresholds. rankCandidates() now classifies exclusions by cause and needs both.
+const DEAD_FUND_DAYS = parseInt((HTML.match(/const DEAD_FUND_DAYS = (\d+);/) || [0, 60])[1], 10);
+const MIN_RANK_DAYS  = parseInt((HTML.match(/const MIN_RANK_DAYS = (\d+);/)  || [0, 365])[1], 10);
 const HORIZON_LABELS = [["6m","6 Month"],["1y","1 Year"],["2y","2 Years"],["3y","3 Years"],
                         ["5y","5 Years"],["7y","7 Years"],["10y","10 Years"]];
 const NAME_STOPWORDS = new Set(["direct","regular","plan","growth","option","opt",
@@ -561,6 +565,31 @@ if(loaded){
 
   ok("computeScheme fetches through the chain",
      /const detail=await getDetailChained\(spec\.code\)/.test(HTML));
+
+
+  // ================================================ v13: shipped-file guards
+  ok("peers are filtered with Number.isFinite, not the coercing global",
+     /if\(!r \|\| !Number\.isFinite\(r\.xirr\)\) continue;/.test(HTML));
+  ok("rankCandidates classifies every exclusion by cause",
+     /excluded:excluded/.test(HTML) && /excluded\.stale\+\+/.test(HTML));
+  ok("the exclusion note no longer claims every dropped fund started late",
+     !/in this category started after your SIP began and /.test(HTML));
+  ok("...and names survivorship bias when dead funds were dropped",
+     /flatters the surviving cohort/.test(HTML));
+  ok("a dead-fund threshold exists rather than being inlined",
+     /const DEAD_FUND_DAYS = 60;/.test(HTML));
+  ok("the peer ranking has a minimum window, mirroring MIN_ANNUALISE_DAYS",
+     /const MIN_RANK_DAYS = 365;/.test(HTML));
+  ok("...and it suppresses the rank rather than annualising a short window",
+     /spanDays < MIN_RANK_DAYS/.test(HTML));
+  ok("the Excel export labels the scope it covers",
+     /const scopeNote = scopeApplies\(\)/.test(HTML));
+  ok("...while still exporting every leg, so a round-trip stays lossless",
+     /const schemes = valuedSchemes\(\);/.test(HTML));
+  ok("the import template column reads 'Monthly SIP'",
+     /"End \(optional\)","Monthly SIP","Code \(optional\)"/.test(HTML));
+  ok("...and the importer still accepts a sheet headed only 'Monthly'",
+     /h\.includes\("monthly"\)/.test(HTML));
 
   // ---- shipped-file guards: the exact edits, so a bad paste goes red
   ok("rankCandidates takes a schedule, not (dates, amount)",
