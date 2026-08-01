@@ -1,136 +1,86 @@
-# Tests
+# v12 — MFAPI's plural category strings
 
-```bash
-python3 tests/test_fetch_tri.py     #  36 — TRI continuity gate, fetch resilience,
-                                    #       canonical-name drift, staleness audit
-python3 tests/test_fetch_ranks.py   # 141 — ranking maths, publish gates, dedupe
-python3 tests/test_probe_ranks.py   #  93 — universe filters, client/Python parity
-python3 tests/test_mergers.py       #  17 — scheme-continuation chains, splice gates,
-                                    #       and the index.html/mf_mergers.py drift guard
-node    tests/test_app.js           #  33 — export, import, retry, storage, search
-node    tests/test_matching.js      # 121 — matching, SEBI category guard, benchmark
-                                    #       mapping + reachability, rename aliases
-node    tests/test_insights.js      # 138 — ranking, NAV parsing, SIP window, plan,
-                                    #       scheme pooling, sub-tab scope, schedules
+Same rule as v5–v11: **every claim names the test that proves it.**
+
+Ships on top of v11.
+
+## Verification
+
+```
+python3 tests/test_probe_ranks.py    #  93 — + singular/plural category  (was 71)
+python3 tests/test_mergers.py        #  17 — unchanged
+python3 tests/test_fetch_tri.py      #  36 — unchanged
+python3 tests/test_fetch_ranks.py    # 141 — unchanged
+node    tests/test_app.js            #  33 — unchanged
+node    tests/test_matching.js       # 121 — unchanged
+node    tests/test_insights.js       # 138 — unchanged
 ```
 
-Two of these assert things about the COMMITTED DATA, not just the code:
+**579 tests.** Mutation-checked: **10 of the 22 new assertions fail** against the
+previous `mf_universe.py` + `index.html`.
 
-- `test_committed_index_names_match_the_configured_canonical_names` diffs every
-  `INDEX_MAP` entry in `fetch_tri.py` against the `index` field of the file it
-  produced under `data/tri/`. A wrong canonical name is answered by niftyindices
-  with an empty list rather than an error, so without this the only symptom is an
-  index that quietly stops updating while the job stays green — which is exactly
-  what happened to `NIFTY_HEALTHCARE` for nine days before v9.
-- `fetch_tri.py --audit` (run as a post-commit step in `tri-fetch.yml`, not a test)
-  fails the Action once any index has been frozen beyond ten days.
+---
 
-No test runner, no npm install. Plain Python 3.12 and Node 20. `pytest` works too
-if you prefer it (`python3 -m pytest tests/ -q`).
+## The failure
 
-**Playwright is optional for these tests.** `fetch_tri.py` imports it at module
-scope, but nothing here drives a real browser — the `#5` timeout tests use fakes.
-So `test_fetch_tri.py` installs a minimal stub (just `TimeoutError` and a
-`sync_playwright` that refuses to run) *only when playwright is genuinely absent*.
-Clone and run; no install needed.
+```
+Not imported — Invesco India Contra Fund - Regular Plan - Growth:
+  is a "Equity Schemes - Contra Fund" scheme; this tool only benchmarks
+  actively-managed equity funds against a Nifty equity TRI
+```
 
-When the real package IS present it's used unchanged, so the stub can never mask a
-broken install. CI installs the real one via `requirements.txt` for exactly that
-reason; the scheduled fetch job additionally runs `playwright install chromium`,
-because it actually launches a browser.
+Contra and Mid Cap are categories this tool **fully supports** and had been
+importing for months. Four holdings — three Invesco Contra legs and Invesco
+Midcap — were rejected by a guard meant for debt and hybrid funds.
 
-Verified both ways: the suite passes in a clean venv with playwright absent, and
-still produces its 5 expected failures against unfixed v4 in that same clean venv —
-the stub does not weaken the mutation guarantee.
+## The cause
 
-Both run on every push via `.github/workflows/tests.yml`, and
-`tests/test_fetch_tri.py` runs **before** the scheduled TRI fetch in
-`.github/workflows/tri-fetch.yml` — if the continuity gate is broken, the job
-commits nothing.
+MFAPI serves **both** `"Equity Scheme - X"` and `"Equity Schemes - X"` for the same
+SEBI category, and flips schemes between the two without notice.
 
-## Why this directory exists
+`CATEGORY_CANON` is keyed on the singular. Anything plural misses every key,
+`categoryKey()` returns `null`, `isUnsupportedCategory()` fires, and
+`computeScheme()` throws — so the fund cannot be added to a portfolio at all.
 
-`CHANGELOG_v4.md` claimed the continuity gate had been *"unit-tested against the
-audit's adversarial fixture"* and that changes were *"re-verified in a Node
-harness"*. The shipped ZIP contained **no test files**, and the gate accepted the
-adversarial case. Two other v4 claims ("Alpha → XIRR spread across the Excel
-export", "import hardening") were also false against the shipped code.
+**This is a known problem that was fixed too narrowly.** v8 hit it on thematic
+funds and added a single plural *key*:
 
-Untested claims drift from the code. For a tool that produces client-facing
-financial reports, the dangerous failure isn't a crash — it's a confidently wrong
-number. Every fix in v5 is pinned by a named test, and `CHANGELOG_v5.md` cites the
-test name next to each claim.
+```js
+// MFAPI also serves a PLURAL variant on ~20 live schemes ("Equity Schemes -
+// Thematic Fund"). Without this key categoryKey() returns null ...
+"equity schemes - thematic fund":        "SECTORAL",
+```
 
-## Rules
+That fixed those twenty schemes and left every other category exposed. The plural
+has since spread to Contra and Mid Cap. Enumerating plural keys only ever fixes
+the categories that have already broken — one bug report at a time.
 
-1. **A fix without a test is not a fix.** Don't add a line to the changelog you
-   can't point to a test for.
-2. **The test must fail against the broken code.** All of these were verified to
-   fail against unfixed v4 before being accepted. A test that can't fail proves
-   nothing.
-3. **Test the real code, not a copy.** `test_app.js` extracts the actual function
-   bodies out of `index.html` by name (`extractFn`) and evals them; the remaining
-   assertions are source invariants matched against the real file. A test against a
-   hand-copied duplicate would keep passing after the shipped code drifted — which
-   is the exact failure being guarded against.
+**Not caused by v9–v11:** the plural-key count is identical (1) in the v8
+`index.html` and in v11's.
 
-`test_fetch_tri.py` loads `fetch_tri.py` directly via `importlib`, so it tests the
-shipped module. The Playwright fakes only stand in for the browser.
+## The fix
 
-## Coverage map (report finding → test)
+Fold the plural away in the **normaliser**, so every category is covered at once —
+including ones MFAPI has not flipped yet:
 
-| # | Finding | Test |
-|---|---|---|
-| 1 | TRI end date moves backwards | `test_rejects_end_date_regression`, `test_rejects_single_day_regression` |
-| 2 | Export crashes on error rows | `#2 export SURVIVES a retained error row` (+3) |
-| 3 | Retry overwrites wrong holding | `#3 sibling C is NOT overwritten` (+3) |
-| 4 | `Scheme Code` mis-mapped | `#4 'Scheme Code' maps to the CODE column` (+5) |
-| 5 | Timeout kills whole fetch job | `test_fetch_index_survives_navigation_timeout` (+2) |
-| 6 | Non-finite SIP accepted | `#6 1e309 (Infinity) is rejected` (+6) |
-| 7 | Erase leaves backups | `#7 erase sweeps __backup_ keys` (+1) |
-| 8 | Stale search reopens dropdown | `#8 closeResults invalidates in-flight searches` (+1) |
-| 9 | Partial list marked complete | `#9 partial-list miss falls back to server search` (+1) |
-| 10 | Export terminology | `#10 export label no longer says PORTFOLIO ALPHA` (+2) |
+```js
+.replace(/^equity schemes -/, "equity scheme -")
+```
 
-Regression guards for gates that already worked in v4 (later start, material
-shrink, value drift, first run) are included so a future edit to
-`continuity_problem()` can't quietly remove them.
+and the identical rule in `mf_universe.py`'s `norm_category()`. Both must change
+together: a fund the client accepts but the nightly job rejects silently vanishes
+from the rankings with nothing erroring.
 
-## Known gaps
+The fold is **anchored** and category-specific. `Debt Schemes - Liquid Fund` and
+`Other Schemes - Index Funds` are still rejected, and
+`Fund of Equity Schemes - Contra Fund` is left alone — the guard's whole purpose is
+refusing things a Nifty equity TRI cannot fairly benchmark, and that is unchanged.
 
-These are **not** covered — listed so nobody mistakes a green run for full
-coverage:
+The v8 `"equity schemes - thematic fund"` key is now redundant but kept: it is
+harmless, and it documents where this was first found.
 
-- The XIRR solver itself (v4's review confirmed ~10% on a standard one-year case;
-  no solver change was made in v5).
-- Anything requiring a real DOM or a real browser: rendering, actual `localStorage`
-  behaviour, real `XLSX.read` parsing, live network calls.
-- `#7`'s backup sweep and `#8`/`#9` are asserted as **source invariants** (the code
-  contains the guard) rather than behaviourally — they need a DOM. If you add jsdom,
-  promote them.
-- The report's deferred recommendations (#3 full schema validation, #4 pending-promise
-  cache, #5 parser isolation).
-
-## test_matching.js — scheme matching and benchmarks
-
-Covers the wrong-fund import bug (a sheet reading "ICICI Prudential Large Cap
-Fund" resolved to *Large & Mid Cap Fund*), the SEBI category guard, benchmark
-mapping for all 39 indices, and SEBI-2.0 rename aliases.
-
-Two rules specific to this suite:
-
-1. **Every category string is real.** Each `"Equity Scheme - ..."` value asserted
-   here was read from a live MFAPI response, never assumed. MFAPI's category field
-   is dirty — live data contains `"1"`, `"1099 Days"`, `"Growth"`, `"Income"`,
-   `"IDF"`, `"Payout"` and `"Formerly Known as IIFL Mutual Fund"` on legacy records.
-   Those are asserted as *rejected*, because the old blocklist gate let all of them
-   through to a Nifty 500 comparison.
-2. **Every benchmark choice cites its source.** `Large Cap -> Nifty 100 TRI` and
-   `Large & Mid Cap -> Nifty LargeMidcap 250 TRI` are both confirmed from AMC
-   disclosures (comments in the test name the source). A mapping nobody verified is
-   a guess with a test wrapped around it.
-
-The suite fails cleanly (not with a stack trace) when run against an index.html
-that predates this work — the constants simply aren't there, and that's reported as
-a failure. Verified: against the pre-fix file the correct fund scores 72.1% (below
-the 0.78 auto-accept floor) while the wrong fund scores 89.4% and wins.
+*Proof: nine plural categories resolving correctly (`'Equity Schemes - Contra Fund'
+resolves to CONTRA` and siblings), two singular ones still resolving, six non-equity
+strings still rejected, `the fold is anchored at the start of the string`,
+`index.html folds the plural too — or the client and the nightly job disagree`, and
+`...and the fold is anchored there as well`.*
