@@ -2219,7 +2219,15 @@ function render(){
       <div class="sub2">${port.alpha!=null?'<span class="word '+signClass(alphaBand.key==="match"?null:port.alpha)+'">'+alphaBand.word+'</span> · ':''}${port.comparableCount} comparable holding(s)</div></div>`;
 
     $("stripGrid").innerHTML=`
-    <div class="stat"><div class="k">Holdings</div><div class="v">${schemes.length-errorCount}${errorCount?' <span class="approx">(+'+errorCount+' unvalued)</span>':''}</div></div>
+    <div class="stat"><div class="k">Schemes</div><div class="v">${groups.length}${errorCount?' <span class="approx">(+'+errorCount+' unvalued)</span>':''}</div>${
+      /* Count SCHEMES, not rows. `schemes.length` counted SIP legs, so a portfolio
+         of 13 funds entered as 23 legs (an amount change is a new row) read
+         "Holdings 23" directly above a table of 13 rows and beside "13 comparable
+         holding(s)" — three numbers for one portfolio, two of them agreeing. The
+         leg count is still worth showing, just not as the headline. */
+      groups.length!==scoped.length
+        ? '<div class="sub2">'+scoped.length+" SIP legs"+(pfScope==="live"?" (live only)":"")+"</div>"
+        : ""}</div>
     <div class="stat"><div class="k">Total invested</div><div class="v">${inr(port.invested)}</div></div>
     <div class="stat"><div class="k">Current value</div><div class="v">${inr(port.current)}</div></div>
     <div class="stat"><div class="k">Gain / loss</div><div class="v ${port.gain>=0?'pos':'neg'}">${(port.gain>=0?'+':'')+inr(port.gain)}</div></div>

@@ -551,6 +551,14 @@ if(loaded){
        MAX_SPLICE_GAP_DAYS >= 7 && MAX_SPLICE_GAP_DAYS <= 31);
   }
 
+
+  ok("the summary counts SCHEMES, not SIP legs",
+     /<div class="k">Schemes<\/div><div class="v">\$\{groups\.length\}/.test(HTML));
+  ok("...and index.html no longer headlines schemes.length there",
+     !/<div class="k">Holdings<\/div><div class="v">\$\{schemes\.length/.test(HTML));
+  ok("the leg count is still surfaced, just not as the headline",
+     /SIP legs/.test(HTML));
+
   ok("computeScheme fetches through the chain",
      /const detail=await getDetailChained\(spec\.code\)/.test(HTML));
 
@@ -577,4 +585,4 @@ if(loaded){
 }
 
 console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);
-process.exit(fail ? 1 : 0);   
+process.exit(fail ? 1 : 0);
