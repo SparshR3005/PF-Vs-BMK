@@ -230,6 +230,112 @@ second call site still turns it red.
 It was the only module not syntax-checked directly (it was exercised indirectly via
 `test_mergers.py`'s import).
 
+## 5 — Measured after deploy
+
+Sections 1–4 were written before the change shipped, so their cost figures were
+estimates. The nightly job has now published 20-year grids and the full suite has
+run green against them (714 tests, commit `02b2a2e`). What follows is measurement,
+and where it contradicts the estimate it replaces it.
+
+### The payload cost was over-estimated, for an instructive reason
+
+|  | estimated | **measured** |
+|---|---|---|
+| navs payload, total | 1.53× → ~4.8 MB | **1.25× → 4.25 MB** |
+| `navs_LARGE_CAP_Direct.json` | ~300 KB | **219 KB** |
+
+The estimate assumed every fund sitting at maximum grid length had twenty years of
+history behind it. **Direct plans did not exist before 1 January 2013** — SEBI
+introduced them then — so a Direct grid cannot reach past that date however large
+`GRID_YEARS` is:
+
+```
+Direct   581 -> 719  points,  t0 = 2013-01-01,  1.24x
+Regular  581 -> 1058 points,  t0 = 2006-07-31,  1.82x
+```
+
+Regular took the full twenty years and matched the original forecast almost exactly.
+Direct did not, because it structurally cannot.
+
+**This is a better outcome than the fix was aiming for, but only for one plan.** For
+every Direct cohort the grid now begins on the earliest date a Direct plan could
+exist, so the limit is unreachable rather than merely distant — no configuration
+value bounds it any more. Verified against the published `navs_LARGE_CAP_Direct.json`:
+
+| SIP start | instalments | universe | own rank |
+|---|---|---|---|
+| 2016-06-15 | 122 | 22 | 17 |
+| 2014-02-20 | 150 | **21** | **18** |
+| 2013-01-05 | 163 | **21** | **19** |
+| 2012-06-01 | 170 | 0 | none |
+
+The 2014 and 2013 rows both returned universe 0 under `GRID_YEARS = 11`. The 2012 row
+still returns 0 and that is correct — no Direct-plan SIP can begin before 2013.
+
+**For Regular the cliff is still real, just moved to 2006.** A Regular SIP begun
+2005-06-05 still collapses to universe 0 with all 36 funds reported as *"started
+after your SIP began"* — the same three false sentences section 1 describes, at a
+20-year remove instead of an 11-year one. That is what "Not done" below means in
+practice, recorded here so the next audit finds it measured rather than assumed.
+
+### `forced_gaps` went 0 → 3, and two of the three cannot strand anything
+
+The longer window reaches into sparser 2008–09 history, so the greedy selector was
+forced past its 7-day bound three times:
+
+| Fund | Gap | Window |
+|---|---|---|
+| `100651` UTI Large Cap Regular | **10d** | 2008-01-04 → 2008-01-14 |
+| `108799` Bandhan Large Cap Regular | 8d | 2008-08-27 → 2008-09-04 |
+| `108799` Bandhan Large Cap Regular | 8d | 2009-03-04 → 2009-03-12 |
+
+**An 8-day gap is harmless by arithmetic, not by luck.** For a gap of `G` days
+between NAVs at `A` and `B`, `navOnOrAfter(d, 7)` strands scheduled dates `A+1`
+through `B-8` — exactly `G-8` dates. At `G = 8` that is zero: the single date inside
+the hole lands on the 7-day boundary and still places.
+
+So `forced_gaps` is a **conservative** alarm that fires one day early. It counts any
+gap exceeding `GRID_MAX_GAP_DAYS` (7), but only a gap of **9 or more** can actually
+drop an instalment. Worth knowing when reading the number: a non-zero
+`forced_gaps` is not by itself evidence of lost instalments.
+
+Only the 10-day UTI hole strands anything, and it strands two calendar dates.
+Measured by driving the shipped `runSIP` across every day-of-month:
+
+```
+UTI 100651 skipped instalments by SIP day-of-month:
+  5 -> skipped ["2008-01-05"]
+  6 -> skipped ["2008-01-06"]
+  (every other day: none)
+```
+
+End to end, two SIPs three days apart:
+
+| SIP start | universe | own rank | excluded |
+|---|---|---|---|
+| 2007-05-05 | 9 | 8 | `{late:26, other:1}` |
+| 2007-05-08 | 10 | 9 | `{late:26, other:0}` |
+
+One fund, one rank place, only for a SIP dated the 5th or 6th that was already
+running in January 2008. **Not fixed, deliberately** — the source data has the hole
+and no grid can close it. What matters is that section 2's fix classifies it
+correctly: it lands in `other` → *"had gaps in their NAV history"*, which is
+literally true, rather than being mislabelled a late starter. `universe + excluded
+=== cohort` held at 36/36 on every window tested.
+
+### What the deploy confirmed
+
+- All 39 TRI series still fresh, `forced_gaps` aside no invariant moved.
+- `safe_to_publish()` reported an identical count to the committed one for every
+  category (`6 vs 6`, `93 vs 93`, `52 vs 52` …), so rewriting every file did not
+  come close to the publish gate.
+- The merger chain engaged on the run: `chained 151036<-119807 from 2013-01-02`,
+  `chained 151034<-112496 from 2010-02-16`.
+- The section 3 wiring did its job silently: the fetch exited 0, the commit ran, and
+  the re-raise step was correctly skipped.
+
+---
+
 ---
 
 ## Not done (deliberate)

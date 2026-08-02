@@ -151,11 +151,21 @@ GRID_STEP_DAYS = 7
 # Worse, the cliff MOVES: cutoff = as_of - GRID_YEARS*365.25, so it advances a day
 # every day. A holding that ranked correctly last month falls off this month.
 #
-# 20 years puts the cutoff around 2006, which is at or before the inception of
-# essentially every scheme in these cohorts, so the limit stops being reachable in
-# practice rather than merely being pushed back. Measured cost: the navs payload
-# grows about 1.53x in total (3.1 MB -> ~4.8 MB across all 22 files); only funds
-# that genuinely have 20 years of history grow at all.
+# 20 years puts the cutoff around 2006. MEASURED on the first run that published it
+# (the figures below replace the pre-deploy estimate of 1.53x / ~4.8 MB, which was
+# wrong because it assumed both plans could reach 20 years):
+#
+#   navs payload   3.1 MB -> 4.25 MB total, 1.25x   (estimate was 1.53x)
+#   Direct grids   581 -> 719 points, t0 = 2013-01-01, 1.24x
+#   Regular grids  581 -> 1058 points, t0 = 2006-07-31, 1.82x
+#
+# The two plans differ for a real reason. DIRECT PLANS DID NOT EXIST BEFORE
+# 1 JANUARY 2013 (SEBI), so a Direct grid cannot reach past that date however large
+# GRID_YEARS is. For every Direct cohort the floor is now plan inception rather than
+# this constant -- the limit is structurally unreachable, not merely pushed back.
+# Regular grids DID take the full 20 years, so for those the cliff still exists at
+# 2006 and still moves forward a day at a time. Verified: a Regular SIP begun
+# 2005-06-05 still collapses to universe 0. See CHANGELOG.md, v16 section 5.
 GRID_YEARS = 20
 MIN_GRID_POINTS = 8       # below this a fund cannot support any useful window
 
