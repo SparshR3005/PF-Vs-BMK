@@ -345,6 +345,57 @@ S.schemes = [
   eq("...and the sheets are named plainly, with no 'All' to contrast against",
      wb2.SheetNames.join(" | "), "Report Summary | Portfolio | Insights | Method & Legend");
 
+
+  // ---------------- v17 (F-05): the ranks negative cache must EXPIRE ---------------
+  // This suite is async and awaits, so these assertions actually run and can fail the
+  // build. Driving the shipped loader against a stubbed fetch, not a copy of it.
+  {
+    const RANKS_DIR = "data/ranks";
+    let ranksCache = Object.create(null);
+    let calls = 0, mode = "fail";
+    const fetch = function(){
+      calls++;
+      if(mode === "fail")  return Promise.resolve({ok:false, status:503});
+      if(mode === "abort"){ const e = new Error("aborted"); e.name = "AbortError"; return Promise.reject(e); }
+      return Promise.resolve({ok:true, status:200, json(){ return Promise.resolve({key:"OK"}); }});
+    };
+    // IIFE-wrapped: a sloppy-mode eval hoists `async function` into the enclosing
+    // scope, colliding with any local of the same name.
+    const M = eval("(function(){" + HTML.match(/const RANKS_MISS_TTL_MS[\s\S]*?\n\}/)[0] +
+      "\nreturn {fn:loadRanksJson, TTL:RANKS_MISS_TTL_MS, TTL404:RANKS_MISS_TTL_404_MS};})()");
+    const load = M.fn;
+
+    ok("a failed ranks fetch returns null", (await load("periods_X.json")) === null);
+    eq("...and the miss is cached, so no retry storm", calls, 1);
+    await load("periods_X.json");
+    eq("...the cached miss is honoured inside its TTL", calls, 1);
+
+    // Check the TTL is a REAL five-ish minutes before forcing it. Overwriting
+    // `expires` without this made the test pass against a hard-coded 1e12 ms hold,
+    // i.e. against a miss that never expires at all.
+    const held = ranksCache["periods_X.json"].expires - Date.now();
+    ok("the miss is held for about the transient TTL, not forever",
+       held > M.TTL * 0.9 && held <= M.TTL + 1000);
+    ranksCache["periods_X.json"].expires = Date.now() - 1;   // as five minutes would
+    mode = "ok";
+    const doc = await load("periods_X.json");
+    eq("once the miss expires the request is retried", calls, 2);
+    ok("...and the recovered document is returned, not a stale null", doc && doc.key === "OK");
+    await load("periods_X.json");
+    eq("a successful document is cached indefinitely", calls, 2);
+
+    ranksCache = Object.create(null); mode = "abort"; calls = 0;
+    let threw = false;
+    try { await load("periods_Y.json"); } catch(e){ threw = (e.name === "AbortError"); }
+    ok("an abort propagates rather than resolving to null", threw);
+    ok("...and is NOT recorded as a miss — a tab switch is not missing data",
+       ranksCache["periods_Y.json"] === undefined);
+    mode = "ok";
+    const doc2 = await load("periods_Y.json");
+    ok("...so the very next request actually goes out", doc2 && doc2.key === "OK");
+    ok("a 404 is held longer than a transient failure", M.TTL404 > M.TTL);
+  }
+
   console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.log("  FAIL  harness threw: " + e.stack); process.exit(1); });

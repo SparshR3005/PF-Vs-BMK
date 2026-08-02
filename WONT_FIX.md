@@ -30,6 +30,11 @@ relies on `'unsafe-inline'`.
 headers), revisit: send a real `Content-Security-Policy` header including
 `frame-ancestors 'none'`, then tighten `script-src`/`style-src`.
 
+> **Re-raised 2 Aug 2026** by an external audit (finding F-09) and re-closed. The
+> audit's remedy — "send CSP as an HTTP response header" — is verbatim the fix this
+> entry already rejects, because GitHub Pages cannot set response headers. No new
+> argument was offered against that, so nothing changed.
+
 ---
 
 ## #12 — Portfolio XIRR mixes terminal cash flows dated on different days
@@ -75,6 +80,10 @@ dividing milliseconds by 86,400,000, which is off by ±1 hour across a DST chang
 The clean fix (represent date-only values as UTC epoch-day ordinals) is a nice
 future hygiene item, but it touches every date path and earns nothing for the
 intended users, so it is not worth the regression risk right now.
+
+> **Re-raised 2 Aug 2026** by an external audit (finding F-14) and re-closed for the
+> third time (v9 was the second). The audit restates the mechanism correctly and
+> grades it "Low portability"; it does not engage with the India/no-DST argument.
 
 ---
 
@@ -123,3 +132,20 @@ must be generated and verified in the real environment (it can't be done blind).
 Until that's set up, import stays on the hardened existing parser. The mitigations
 above materially shrink the exposure in the meantime, and for a workflow where you
 import your *own* sheets the practical risk is low.
+
+---
+
+## Monolith split — re-raised and re-closed, 2 Aug 2026
+
+An external audit recommended splitting `index.html` into ES modules so tests could
+import functions instead of parsing them out of HTML. This was already answered in
+v8's "audit items deliberately not actioned": it fights the single-file,
+paste-the-whole-file workflow the project is built around, and the extraction harness
+has now caught real regressions across v7, v8, v11, v14, v16 and v17 — including two
+in this release, where it went red the moment `rankCandidates` gained a helper the
+test list did not know about. It is earning its keep, not merely tolerated.
+
+The audit's *other* testing points were accepted rather than dismissed: end-to-end
+tests around `main()` (added in v17, replacing three source-shape assertions) and
+running async assertions in a suite that actually awaits them (v17 — the first draft
+of the ranks-cache test never ran at all).

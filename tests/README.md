@@ -1,16 +1,17 @@
 # Tests
 
 ```bash
-python3 tests/test_fetch_tri.py     #  36 — TRI continuity gate, fetch resilience,
+python3 tests/test_fetch_tri.py     #  40 — TRI continuity gate, fetch resilience,
                                     #       canonical-name drift, staleness audit
-python3 tests/test_fetch_ranks.py   # 152 — ranking maths, publish gates, dedupe
+python3 tests/test_fetch_ranks.py   # 196 — ranking maths, publish gates, dedupe
 python3 tests/test_probe_ranks.py   #  93 — universe filters, client/Python parity
 python3 tests/test_mergers.py       #  17 — scheme-continuation chains, splice gates,
                                     #       and the index.html/mf_mergers.py drift guard
-node    tests/test_app.js           #  33 — export, import, retry, storage, search
+node    tests/test_app.js           #  34 — export, import, retry, storage, search
 node    tests/test_matching.js      # 123 — matching, SEBI category guard, benchmark
                                     #       mapping + reachability, rename aliases
-node    tests/test_insights.js      # 152 — ranking, NAV parsing, SIP window, plan,
+node    tests/test_insights.js      # 218 — ranking, NAV parsing, SIP window, plan,
+node    tests/test_report.js        #  60 — the REAL exportReport() driven end to end
                                     #       scheme pooling, sub-tab scope, schedules
 ```
 
@@ -101,7 +102,11 @@ shrink, value drift, first run) are included so a future edit to
 These are **not** covered — listed so nobody mistakes a green run for full
 coverage:
 
-- The XIRR solver itself (v4's review confirmed ~10% on a standard one-year case;
+- The XIRR solver itself. Still uncovered, and an external audit (F-08) has now
+  shown a reachable boundary: a >90% loss inside 90 days returns null rather than a
+  rate, because the fallback grid starts at r = -0.9999. Deferred deliberately — it
+  changes a displayed financial figure and rewrites the solver every XIRR depends on,
+  so it belongs in its own release. (v4's review confirmed ~10% on a standard case;
   no solver change was made in v5).
 - Anything requiring a real DOM or a real browser: rendering, actual `localStorage`
   behaviour, real `XLSX.read` parsing, live network calls.

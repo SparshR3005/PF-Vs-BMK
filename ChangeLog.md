@@ -4,8 +4,272 @@ Same rule as v5–v15: **every claim names the test that proves it**, and nothin
 listed as done unless the test fails against the previous code and passes against
 this one.
 
-From v16 this is a **single file**. The nine per-release files it replaces are
-appended verbatim below.
+From v16 this is a **single file**. The nine per-release files it replaced are
+appended verbatim below, newest release first.
+
+---
+
+# v17 — the manifest that deleted categories, and a cache that never forgave
+
+Response to an external audit (findings F-01 … F-14). Same rule as v5–v16: **every
+claim names the test that proves it**, and nothing is listed as done unless the test
+fails against v16 and passes against this one.
+
+Every finding below was re-verified against the v16 code before anything changed —
+the audit was run against the post-v16 tree, so none of it is stale.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       40   unchanged
+python3 tests/test_fetch_ranks.py    196   + manifest lifecycle, completeness   (was 165)
+python3 tests/test_probe_ranks.py     93   unchanged
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             34   unchanged
+node    tests/test_matching.js       123   unchanged
+node    tests/test_insights.js       218   + cache shape, pfMap, search, plan    (was 193)
+node    tests/test_report.js          60   + ranks negative cache, behavioural   (was 49)
+```
+
+**781 tests**, up from v16's 714. Eight mutations, all caught — two only after the
+tests that were supposed to catch them were strengthened (see §7).
+
+---
+
+## 1 — The manifest was rebuilt from the current run, so it deleted categories (F-02, High)
+
+**`fetch_ranks.py` — `main()`**
+
+`main()` built `manifest = {..., "categories": {}}` fresh, filled it only from the
+categories *this* discovery produced, and wrote it unconditionally. Everything it did
+not reach was deleted:
+
+- a category absent from discovery **vanished from `index.json`**, so the client
+  rendered *"No ranking data is published for &lt;CAT&gt;"* — a claim the category does
+  not exist — while its last-good files sat on disk, perfectly readable;
+- **`--canary MID_CAP` rewrote the global manifest to contain only MID_CAP**;
+- a category whose every history fetch failed was written `{"status": "missing"}`
+  and the run **exited 0**;
+- the per-category exception handler read `manifest["categories"].get(cat)` — the
+  *new* dict — so on a category that failed before writing anything it read `{}` and
+  "keeping last-good metadata" preserved nothing at all.
+
+**Fix:** the manifest is seeded from `load_committed_manifest()` and only categories
+this run conclusively processed are updated. Anything missing, failed or absent from
+discovery gets `stale_entry()`: its committed `as_of`, `ranked` and `plans` retained,
+`status: "stale"`, and a new `stale_reason` saying which of the four it was. All of
+them now count as failures, so the run exits non-zero. `--canary` and `--max-funds`
+never write the manifest at all.
+
+**This is the fourth bug from one asymmetry.** `fetch_tri.py` already had this guard,
+with a comment stating the hazard exactly — *"a partial run cannot describe the whole
+dataset without republishing every absent index as stale"* — and `fetch_ranks.py`
+never inherited it. Same shape as `allow_nan` (v8 §2), commit-ordering (v16 §3) and
+the future-date guard (v16 §4). The two fetchers should be diffed for safety
+properties deliberately, not one bug report at a time.
+
+**And it compounded with v16 §3.** Before v16 a run that errored a category exited 1
+and never committed, so a damaged manifest died with the runner. v16 deliberately made
+the commit run first — correct for the case it was built for, but it meant a truncated
+manifest now reached the repo. That is the ordering this section makes safe.
+
+*Proof — end to end against the real `main()` with the network stubbed, not source
+shape: `a category absent from discovery is NOT deleted from the manifest`, `...and
+keeps its committed as_of`, `...and its committed ranked count`, `...but is marked
+stale, not ok`, `a category whose every history failed keeps its committed metadata`,
+`...and is stale rather than 'missing'`, `...and the run exits NON-ZERO rather than
+reporting success`, `a --canary run does not rewrite the global manifest at all`,
+plus six unit assertions on `stale_entry` / `load_committed_manifest`.*
+*Mutation P1 — revert the seed AND the absent-category loop, and the guard goes red.*
+
+## 2 — A transient blip disabled rankings for the whole session (F-05, Medium)
+
+**`index.html` — `loadRanksJson()`**
+
+`ranksCache[name] = null` on any failure, and the first line returned it forever. One
+HTTP 503 or a dropped connection killed Insights and the report until a page reload —
+and the pane then rendered *"no ranking data is published"*, which is a statement
+about the **data**, not the network.
+
+`loadTriFile()`, ten screens above it in the same file, already had expiring negative
+caching with a longer hold for a real 404. Two loaders, one file, opposite answers to
+the same question.
+
+**Fix:** misses are stored as `{__miss:true, expires}` with `RANKS_MISS_TTL_MS` (5 min)
+or `RANKS_MISS_TTL_404_MS` (30 min), mirroring the TRI loader. **An abort is rethrown
+before anything is cached** — a fast tab-switch is the caller changing its mind, not
+the file being unavailable.
+
+*Proof — behavioural, driving the shipped loader against a stubbed fetch: `a failed
+ranks fetch returns null`, `...and the miss is cached, so no retry storm`, `the miss is
+held for about the transient TTL, not forever`, `once the miss expires the request is
+retried`, `...and the recovered document is returned, not a stale null`, `a successful
+document is cached indefinitely`, `an abort propagates rather than resolving to null`,
+`...and is NOT recorded as a miss`, `...so the very next request actually goes out`.*
+*Mutation P5 — hold the miss for 1e12 ms and the TTL assertion goes red.*
+
+## 3 — A stale peer grid was mixed with a fresh track record, silently (F-03, High)
+
+**`index.html` — `insightFacts()`, `fillInsightDetail()`, `reportInsightsSheet()`**
+
+Category status comes from the **period-file** gate alone. Each plan's grid is gated
+separately and its status nested under `catInfo.plans[plan]`. Nothing read it. So a
+run that published fresh period returns but had `navs_<CAT>_<PLAN>.json` refused
+rendered a **current** track record directly above a **last-good** peer ranking, in
+one pane and one report sheet, with no warning anywhere. Two runs' data presented as
+one day's.
+
+**Fix:** `insightFacts()` exposes `planInfo` and `planStale`. The pane and the sheet
+now distinguish three cases, and say which half is stale rather than leaving the
+reader to assume.
+
+**No new styling.** It reuses the existing `.ins-note` class (already used a dozen
+times) and the report's existing `shWrap(..., {color:RPT.bad})`. Only the condition and
+the wording changed; nothing in the `<style>` block was touched by this release at all.
+
+*Proof: `insightFacts reads the SELECTED plan's status`, `...and exposes it as
+planStale`, `the pane distinguishes a stale plan grid from a stale category`, `...and
+still covers the both-stale case`, `the report carries the same distinction`, `the new
+notice reuses the existing .ins-note class, adding no styling`.*
+*Mutation P8 — hardwire `planStale:false` and the wiring guard goes red.*
+
+## 4 — An incomplete universe was accepted and published (F-01, F-06, High/Medium)
+
+**`fetch_ranks.py` — `discover_universe()`, the per-category fetch budget**
+
+Three separate holes, all of the same kind: a **failure** and a **legitimate absence**
+were indistinguishable.
+
+- **Pagination** was detected and *logged*, then processing continued. A provider
+  change would have published rankings built from page 1, with count gates unable to
+  see it because every category would shrink together. Now fails closed.
+- **`/latest` lookup failures** returned `None`, exactly like a non-rankable scheme —
+  so a timed-out category lookup silently shrank the universe. `resolve()` now returns
+  `("ok"|"skip"|"fail")`, and a run below `MIN_RESOLVE_SUCCESS` (90%) is refused: below
+  that it is a sample, not a universe.
+- **History fetch failures** were dropped silently, and `safe_to_publish()` compares
+  only final counts — which cannot see a *selective* failure. If mfapi drops the same
+  handful of funds nightly the count is stable and the gate is happy while the ranks
+  are quietly biased. A category now needs `MIN_FETCH_SUCCESS` (90%) of its attempted
+  roster, with `FETCH_FAILURE_TOLERANCE` (2) absolute slack because in an 8-fund cohort
+  one timeout is 12.5% — the same two-sided shape `safe_to_publish()` already uses.
+
+`attempted` and `fetched` are published in the manifest, so a selective upstream
+failure is visible in the artefact rather than only in a run log.
+
+*Proof: `a paginated /mf response fails closed instead of publishing page 1`, `...and
+says why`, `a third of category lookups failing fails the whole discovery closed`,
+`...and reports the success rate`, `a materially incomplete history fetch refuses to
+publish`, `...the category stays stale with its committed count`, `...and the run exits
+non-zero`, plus three floor-existence assertions.*
+*Mutations P2 (pagination continues) and P3 fire.*
+
+**Not done:** comparing **code-set identity** rather than counts. That needs the
+attempted roster published per category and is a schema change; the count-plus-rate
+budget is the load-bearing half.
+
+## 5 — Smaller items
+
+**`--max-funds` was nondeterministic (F-12).** Discovery results were appended in
+`as_completed()` order — network timing — then sliced. Two runs over an unchanged
+universe produced different cohorts, so a canary failure could not be reproduced.
+`resolved` is now sorted by scheme code before returning. *Proof: `two discovery runs
+return the same order, so --max-funds is reproducible`, `...and that order is by scheme
+code`. Mutation P4 — red.*
+
+**`_rows_to_points` accepted `+inf` (F-11).** It checked `v > 0`, and
+`float("inf") > 0` is `True`. A non-finite upstream NAV could reach the merger splice,
+make its ratio `inf`, and produce a *"NAV jumps inf%"* refusal that reads like a bad
+chain rather than bad data. Now `math.isfinite(v) and v > 0`. (`NaN > 0` was already
+`False`, so NaN never got in.) *Proof: `a +inf NAV never reaches the splice logic`, `a
+NaN NAV is dropped too`, `ordinary rows are untouched`. Mutation P3 — red.*
+
+**Server search skipped a filter the local list applies (F-10).** `loadSchemeList()`
+drops records with a blank `isinGrowth` *when the field is present* — that is what
+marks a legacy/closed record. `serverSearch()` mapped the field through and never
+applied the rule, so the fallback path — used precisely when the full list is
+unavailable — could offer a dead scheme the normal picker hides. The gate is now
+applied, conditionally, exactly as locally. *Proof: four assertions including `the
+local list applies the same conditional rule`. Mutation P7 — red.*
+
+**The portfolio map is prototype-free (F-13).** v9 recorded the read side: an
+inherited name like `active:"constructor"` satisfied `if(!store.portfolios[active])`
+and `hydrateActive()` then threw. The audit found the **write** side, which is worse
+and which v9 did not cover: on a plain `{}`, `clean["__proto__"] = arr` does not create
+an own key at all — **it replaces the object's prototype**, silently, and the name
+disappears from `Object.keys()`. New `pfMap()` / `pfHas()` use `Object.create(null)`
+and `hasOwnProperty`, so both problems stop existing rather than being screened for.
+*Proof: nine assertions, including the two that demonstrate the plain-object hazard
+directly before showing `pfMap` not having it. Mutation P6 — four go red.*
+
+## 6 — `WONT_FIX.md` now records what was re-raised
+
+Three audit findings re-proposed decisions this repo had already made and documented,
+without engaging with the recorded reasoning:
+
+- **F-09 (CSP `frame-ancestors`)** — its remedy, *"send CSP as an HTTP response
+  header"*, is verbatim the fix `WONT_FIX.md` #14 rejects, because GitHub Pages cannot
+  set response headers.
+- **F-14 (DST-sensitive day maths)** — `WONT_FIX.md` #13, now re-closed a third time.
+- **Split the monolith** — v8's "deliberately not actioned".
+
+Each entry now carries a dated *re-raised and re-closed* note, so the next audit finds
+them pre-answered rather than spending a finding on them. This is the mirror of the
+mistake that cost a withdrawn finding in v9: there the file was read too shallowly,
+here apparently not at all.
+
+The audit's other testing criticisms were **accepted**, not dismissed — see §7.
+
+## 7 — Two of this release's own tests were wrong first, and that is worth recording
+
+**The ranks-cache test never ran.** Written as an `async` IIFE inside
+`test_insights.js`, which ends `console.log(summary); process.exit(...)`
+synchronously — so the process exited before a single assertion resolved. It reported
+nothing and could not fail the build. Exactly the *"a test that silently skips in CI
+proves nothing"* rule v14 wrote down. Moved to `test_report.js`, which is an async
+suite that awaits.
+
+**The cache test then passed against a broken cache.** It forced
+`ranksCache[name].expires = Date.now() - 1` to simulate expiry — which overwrote
+whatever TTL the code had set, so it passed against a hold of `1e12` ms, i.e. a miss
+that never expires. It now asserts the held duration is within the configured TTL
+*before* forcing it.
+
+**And the manifest mutation initially came back clean**, because the first attempt
+reverted only half of the fix; the absent-category loop still restored what the seed
+would have. Re-run against the real prior behaviour — no seed *and* no loop — it goes
+red. A mutation that reverts half a fix proves half a test.
+
+Three source-shape assertions in `test_fetch_ranks.py` were also replaced with
+end-to-end runs of `main()` against a temp directory, which is what the audit asked
+for and what would have caught F-02 in the first place.
+
+`tests/README.md` counts were stale (526 claimed, 730 actual) and are corrected; the
+XIRR entry now records the audit's F-08 boundary as a known, deliberately deferred gap.
+
+---
+
+## Not done (deliberate)
+
+- **F-04 — transactional category publishing.** Generation directories plus a bundle
+  hash and a single atomic manifest pointer. Correct, and a schema change that forces
+  a full republish and touches every test. Its own release.
+- **F-07 — move workbook import to current SheetJS CE in a Web Worker.** This is a
+  genuinely better answer than `WONT_FIX.md` reached, and it is accepted in principle.
+  It cannot be done blind: the current CE build lives on `cdn.sheetjs.com`, needing a
+  new CSP `script-src` origin **and** a fresh SRI hash that must be generated and
+  verified in the real environment. Shipping a guessed hash would be worse than
+  waiting.
+- **F-08 — the XIRR severe-loss boundary.** Reproduced: `-1000 → +100` returns `null`
+  at 30 and 90 days, and solves at 180 (−99.07%) and 365 (−90.02%), because the
+  fallback grid starts at `r = -0.9999`. Ordinary cases are unaffected (−10%, −50%,
+  −75%, +20% all solve to ~0.05%). Deferred because it **changes a displayed financial
+  figure** and rewrites the solver every XIRR in the app depends on — that belongs
+  alone, with its own mutation tests, not inside a ten-item release. Failing to `—` is
+  also the safe direction: no wrong number is printed.
+- **The v16 Regular-plan messaging.** A Regular SIP begun before mid-2006 still
+  collapses to universe 0 with all peers reported as late starters. Unchanged.
+- Everything in `WONT_FIX.md` stands, now with its re-raise history recorded.
 
 ---
 

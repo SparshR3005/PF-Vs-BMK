@@ -1404,9 +1404,16 @@ async function serverSearch(q){
   }catch(e){ /* fall through to empty */ }
   if(seq!==serverSearchSeq) return;                        // superseded by a newer keystroke
   const wantPlan = getPlan();
+  /* loadSchemeList() drops records with a blank isinGrowth WHEN THE FIELD IS PRESENT —
+     that is what marks a legacy/closed record. This path mapped the field through and
+     never applied the rule, so the fallback search (the path used precisely when the
+     full list is unavailable) could offer a dead scheme the normal picker hides.
+     Conditional on the field existing, exactly as loadSchemeList() is. */
+  const hasGrowthIsinField = arr.some(s=>s && Object.prototype.hasOwnProperty.call(s,"isinGrowth"));
   const norm = arr
     .map(s=>({schemeCode:s.schemeCode, schemeName:s.schemeName, lower:String(s.schemeName||"").toLowerCase(), isinGrowth:s.isinGrowth||""}))
     .filter(s=>s.schemeCode && s.schemeName)
+    .filter(s=>!hasGrowthIsinField || String(s.isinGrowth||"").trim())
     // Same split as loadSchemeList(): drop the dividend PAYOUT plan, keep the
     // "Dividend Yield" equity category. Both filters must stay in step.
     .filter(s=>s.lower.includes("growth") &&
@@ -2394,9 +2401,22 @@ $("clearBtn").addEventListener("click", async ()=>{
    ============================================================ */
 const LS_KEY = "mf_sip_portfolios_v3";
 const OLD_LS_KEY = "mf_sip_portfolios_v2";
-let store = { version:3, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
+let store = { version:3, active:"My Portfolio", portfolios:pfMap({ "My Portfolio":[] }) };
 
 function isPlainObj(o){ return o && typeof o==="object" && !Array.isArray(o); }
+/* A PROTOTYPE-FREE map for portfolio names. Names are user-supplied, and a plain {}
+   inherits from Object.prototype, so `store.portfolios["constructor"]` is truthy for a
+   portfolio that does not exist. Worse on the WRITE side: `clean["__proto__"] = arr`
+   on a plain object does not create an own key at all — it REPLACES the object's
+   prototype, silently, and the name disappears from Object.keys(). Object.create(null)
+   has no prototype to replace and no inherited names to collide with, so both problems
+   stop existing rather than being screened for. */
+function pfMap(seed){
+  const m = Object.create(null);
+  if(seed) for(const k of Object.keys(seed)) m[k] = seed[k];
+  return m;
+}
+function pfHas(map, name){ return !!map && Object.prototype.hasOwnProperty.call(map, name); }
 function backupCorruptStore(raw){
   // Never silently discard unreadable saved data — keep a timestamped backup so a
   // manual edit or a partial write can be recovered from the console.
@@ -2420,7 +2440,7 @@ function loadStore(){
     if(!parseOk || !isPlainObj(parsed) || !isPlainObj(parsed.portfolios)){
       backupCorruptStore(raw);                       // structurally broken -> back up, then default
     }else{
-      const clean={};
+      const clean=pfMap();
       for(const [k,v] of Object.entries(parsed.portfolios)) if(Array.isArray(v)) clean[k]=v;
       if(Object.keys(clean).length){
         store = { version:3, active:(typeof parsed.active==="string"?parsed.active:Object.keys(clean)[0]), portfolios:clean };
@@ -2428,9 +2448,11 @@ function loadStore(){
     }
   }
   if(!store.portfolios || Object.keys(store.portfolios).length===0){
-    store = { version:3, active:"My Portfolio", portfolios:{ "My Portfolio":[] } };
+    store = { version:3, active:"My Portfolio", portfolios:pfMap({ "My Portfolio":[] }) };
   }
-  if(!store.portfolios[store.active]){
+  // hasOwnProperty, not truthiness: an inherited name (active:"constructor") used to
+  // satisfy this guard, so hydrateActive() then called .map() on Object and threw.
+  if(!pfHas(store.portfolios, store.active)){
     store.active = Object.keys(store.portfolios)[0];
   }
 }
@@ -2546,7 +2568,7 @@ $("pfSelect").addEventListener("change", function(){
 $("pfNewBtn").addEventListener("click", async ()=>{
   const name = await promptDialog("Name for the new portfolio", "", {
     title:"New portfolio", okLabel:"Create",
-    validate:v=>!v ? "Please enter a name." : (store.portfolios[v] ? "A portfolio with that name already exists." : "")
+    validate:v=>!v ? "Please enter a name." : (pfHas(store.portfolios,v) ? "A portfolio with that name already exists." : "")
   });
   if(name==null) return;                       // cancelled
   store.portfolios[name] = [];
@@ -2560,7 +2582,7 @@ $("pfRenameBtn").addEventListener("click", async ()=>{
   const cur = store.active;
   const name = await promptDialog("Rename portfolio", cur, {
     title:"Rename portfolio", okLabel:"Rename",
-    validate:v=>!v ? "Please enter a name." : (v!==cur && store.portfolios[v] ? "A portfolio with that name already exists." : "")
+    validate:v=>!v ? "Please enter a name." : (v!==cur && pfHas(store.portfolios,v) ? "A portfolio with that name already exists." : "")
   });
   if(name==null || name===cur) return;
   store.portfolios[name] = store.portfolios[cur];
@@ -2605,7 +2627,7 @@ $("eraseLocalBtn").addEventListener("click", async ()=>{
       if(key && prefixes.some(p=>key===p||key.startsWith(p+"__backup_"))) localStorage.removeItem(key);
     }
   }catch(e){ console.error("Unable to erase stored data",e); }
-  store={version:3,active:"My Portfolio",portfolios:{"My Portfolio":[]}};
+  store={version:3,active:"My Portfolio",portfolios:pfMap({"My Portfolio":[]})};
   persistStore();refreshPfSelect();hydrateActive();
   toast("Browser data erased.", {type:"success"});
 });
@@ -3656,8 +3678,11 @@ function reportInsightsSheet(d, genDate){
         }
       }
     }
-    if(f.catInfo && f.catInfo.status==="stale"){
-      shWrap(sh, "Note: this category's data failed its last publish check and may be out of date.",
+    if((f.catInfo && f.catInfo.status==="stale") || f.planStale){
+      shWrap(sh, f.planStale && !(f.catInfo && f.catInfo.status==="stale")
+        ? ("Note: the "+item.plan+" peer grid failed its last publish check, so the track record above "+
+           "is current but the peer ranking below is from an earlier run.")
+        : "Note: this category's data failed its last publish check and may be out of date.",
         {color:RPT.bad, sz:9.5});
     }
     shGap(sh, 12);
@@ -3884,17 +3909,33 @@ let insightsGen = 0;
 /* Live data changes daily -- both the as-of date and the ranks -- so these must
    never be cached by the browser. A stale ranks file is worse than a missing one
    because it still looks authoritative. */
+/* Misses EXPIRE. This used to store `null` on any failure and the first line then
+   returned it for the rest of the session, so one HTTP 503 or a dropped connection
+   disabled the Insights pane and the report until the page was reloaded — with the
+   pane rendering "no ranking data is published", which is a claim about the data
+   rather than about the network. loadTriFile() ten screens up already had exactly
+   this right; the two loaders in one file disagreed about the same problem. */
+const RANKS_MISS_TTL_MS     = 5*60*1000;    // transient blip: retry after 5 min
+const RANKS_MISS_TTL_404_MS = 30*60*1000;   // real 404: only a nightly commit fixes it
 async function loadRanksJson(name, signal){
-  if(ranksCache[name] !== undefined) return ranksCache[name];
+  const hit = ranksCache[name];
+  if(hit && hit.doc) return hit.doc;                                  // good hit
+  if(hit && hit.__miss && Date.now() < hit.expires) return null;      // miss still fresh
   try{
     const res = await fetch(RANKS_DIR+"/"+name+"?v="+Date.now(), {cache:"no-store", signal});
-    if(!res.ok){ ranksCache[name] = null; return null; }
+    if(!res.ok){
+      ranksCache[name] = {__miss:true, expires: Date.now() +
+        (res.status===404 ? RANKS_MISS_TTL_404_MS : RANKS_MISS_TTL_MS)};
+      return null;
+    }
     const doc = await res.json();
-    ranksCache[name] = doc;
+    ranksCache[name] = {doc:doc};
     return doc;
   }catch(e){
+    /* An abort is the CALLER changing its mind, not the file being unavailable.
+       Caching it as a miss would make a fast tab-switch look like missing data. */
     if(e && e.name === "AbortError") throw e;
-    ranksCache[name] = null;
+    ranksCache[name] = {__miss:true, expires: Date.now()+RANKS_MISS_TTL_MS};
     return null;
   }
 }
@@ -4409,7 +4450,15 @@ async function insightFacts(item){
   if(!catInfo) return {status:"unpublished"};
   const periods = await loadRanksJson("periods_"+item.cat+".json");
   const navs    = await loadRanksJson("navs_"+item.cat+"_"+item.plan+".json");
-  const out = {status:"ok", catInfo:catInfo, periods:periods, navs:navs,
+  /* The CATEGORY status comes from the period-file gate alone; each plan's grid is
+     gated separately and its status nested under catInfo.plans[plan]. Nothing read
+     it, so a run that published fresh period returns but had navs_<CAT>_<PLAN>.json
+     refused rendered a CURRENT track record above a LAST-GOOD peer ranking, in one
+     pane, with no warning anywhere. Two runs' data, presented as one. */
+  const planInfo = (catInfo.plans && catInfo.plans[item.plan]) || null;
+  const out = {status:"ok", catInfo:catInfo, planInfo:planInfo,
+               planStale: !!(planInfo && planInfo.status === "stale"),
+               periods:periods, navs:navs,
                track:periodRows(periods, item.plan, item.code),
                spanDays:null, tooShort:false, rank:null, summary:null,
                inCohort:false, own:null, window:null};
@@ -4485,9 +4534,18 @@ async function fillInsightDetail(pane, item, gen){
        and still sit mid-table among funds that ran the same window. */
     html += '<div class="ins-sub">Top peers in category</div>'+topListHtml(res, own);
   }
-  if(catInfo.status === "stale"){
+  /* Reuses the existing .ins-note styling; only the CONDITION and the wording change,
+     so which half is stale is stated rather than left for the reader to assume. */
+  if(catInfo.status === "stale" && f.planStale){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s data failed its last publish check '+
             "and may be out of date.</div>";
+  }else if(f.planStale){
+    html += '<div class="ins-note"><b>Note:</b> the '+escapeHtml(item.plan)+' peer grid failed its last '+
+            "publish check, so the track record above is current but the peer ranking below is from an "+
+            "earlier run. The two are not describing the same day.</div>";
+  }else if(catInfo.status === "stale"){
+    html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s track record failed its last publish '+
+            "check and may be out of date.</div>";
   }
   pane.innerHTML = html;
 }

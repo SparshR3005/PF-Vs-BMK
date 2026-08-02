@@ -133,6 +133,198 @@ test_a_twenty_year_sip_still_finds_its_grid_start()
 test_ranks_fetch_workflow_commits_before_it_fails()
 
 
+
+# ================================================ v17: the manifest lifecycle (F-02)
+# main() used to build a FRESH manifest and fill it only from the categories this run
+# discovered, then write it unconditionally. Everything it did not reach was deleted:
+# a category missing from discovery vanished from index.json, so the client read it as
+# unpublished even though its last-good files were on disk; --canary rewrote the global
+# manifest to one category; and the exception handler read the NEW dict, so it could
+# never preserve the committed metadata its own comment promised.
+#
+# These are END-TO-END: they run the real main() against a temp data dir with the
+# network stubbed, rather than asserting on the shape of the source.
+
+def _seed_manifest(tmp, cats):
+    (tmp / "data" / "ranks").mkdir(parents=True, exist_ok=True)
+    (tmp / "data" / "ranks" / "index.json").write_text(
+        json.dumps({"generated_utc": "2026-01-01T00:00:00Z", "categories": cats}),
+        encoding="utf-8")
+
+
+def _run_main(tmp, universe, histories, argv):
+    """Drive the real main() with discovery and history fetching stubbed."""
+    import io as _io
+    import contextlib as _ctx
+    old_out, old_argv = R.OUT_DIR, sys.argv
+    old_disc, old_hist = R.discover_universe, R.fetch_histories
+    R.OUT_DIR = tmp / "data" / "ranks"
+    sys.argv = ["fetch_ranks.py"] + argv
+    R.discover_universe = lambda *a, **k: universe
+    R.fetch_histories = lambda funds, *a, **k: histories(funds)
+    buf = _io.StringIO()
+    try:
+        with _ctx.redirect_stdout(buf):
+            code = R.main()
+    finally:
+        R.OUT_DIR, sys.argv = old_out, old_argv
+        R.discover_universe, R.fetch_histories = old_disc, old_hist
+    return code, buf.getvalue()
+
+
+def _manifest(tmp):
+    return json.loads((tmp / "data" / "ranks" / "index.json").read_text(encoding="utf-8"))
+
+
+PRIOR = {
+    "FLEXI_CAP": {"status": "ok", "as_of": "2026-07-31", "ranked": 87,
+                  "plans": {"Direct": {"grid": 45, "status": "ok"}}},
+    "MID_CAP":   {"status": "ok", "as_of": "2026-07-31", "ranked": 62,
+                  "plans": {"Direct": {"grid": 32, "status": "ok"}}},
+}
+
+with tempfile.TemporaryDirectory() as _d:
+    _tmp = Path(_d)
+    _seed_manifest(_tmp, PRIOR)
+    # Discovery only sees MID_CAP, and every history fetch for it fails.
+    _code, _log = _run_main(
+        _tmp,
+        [{"code": "1", "name": "A", "plan": "Direct", "cat": "MID_CAP"}],
+        lambda funds: [],
+        [])
+    _m = _manifest(_tmp)
+    ok("a category absent from discovery is NOT deleted from the manifest",
+       "FLEXI_CAP" in _m["categories"])
+    eq("...and keeps its committed as_of",
+       _m["categories"]["FLEXI_CAP"].get("as_of"), "2026-07-31")
+    eq("...and its committed ranked count",
+       _m["categories"]["FLEXI_CAP"].get("ranked"), 87)
+    eq("...but is marked stale, not ok",
+       _m["categories"]["FLEXI_CAP"].get("status"), "stale")
+    eq("a category whose every history failed keeps its committed metadata",
+       _m["categories"]["MID_CAP"].get("ranked"), 62)
+    eq("...and is stale rather than 'missing'",
+       _m["categories"]["MID_CAP"].get("status"), "stale")
+    ok("...and the run exits NON-ZERO rather than reporting success", _code != 0)
+
+with tempfile.TemporaryDirectory() as _d:
+    _tmp = Path(_d)
+    _seed_manifest(_tmp, PRIOR)
+    _before = (_tmp / "data" / "ranks" / "index.json").read_text(encoding="utf-8")
+    _code, _log = _run_main(
+        _tmp,
+        [{"code": "1", "name": "A", "plan": "Direct", "cat": "MID_CAP"}],
+        lambda funds: [],
+        ["--canary", "MID_CAP"])
+    _after = (_tmp / "data" / "ranks" / "index.json").read_text(encoding="utf-8")
+    ok("a --canary run does not rewrite the global manifest at all", _before == _after)
+    ok("...and says so in the log", "deliberately NOT rewritten" in _log)
+
+# stale_entry / load_committed_manifest in isolation
+ok("stale_entry keeps the previous metadata",
+   R.stale_entry({"as_of": "2026-07-31", "ranked": 9}, "x")["ranked"] == 9)
+eq("stale_entry marks the entry stale",
+   R.stale_entry({"as_of": "2026-07-31"}, "x")["status"], "stale")
+eq("stale_entry records WHY, so a bare 'stale' isn't a guess",
+   R.stale_entry({}, "no histories returned")["stale_reason"], "no histories returned")
+ok("stale_entry copies rather than aliasing the committed entry",
+   (lambda prev: (R.stale_entry(prev, "x"), prev.get("status"))[1] is None)({"as_of": "z"}))
+with tempfile.TemporaryDirectory() as _d:
+    _p = Path(_d) / "index.json"
+    ok("a missing manifest yields {} rather than raising",
+       R.load_committed_manifest(_p) == {})
+    _p.write_text("{ not json", encoding="utf-8")
+    ok("an unreadable manifest yields {} rather than raising",
+       R.load_committed_manifest(_p) == {})
+    _p.write_text(json.dumps({"categories": {"ELSS": {"status": "ok"}}}), encoding="utf-8")
+    eq("a readable manifest yields its categories",
+       R.load_committed_manifest(_p), {"ELSS": {"status": "ok"}})
+
+# ============================================ v17: partial universe is refused (F-01)
+_saved_get = R.get_json
+try:
+    R.get_json = lambda url, timeout, attempts=3: (
+        {"data": [{"schemeCode": 1, "schemeName": "X Growth", "isinGrowth": "I"}],
+         "page": 1, "totalPages": 2}, 0.0, 10, 200)
+    _lines = []
+    ok("a paginated /mf response fails closed instead of publishing page 1",
+       R.discover_universe(5.0, 2, _lines.append) is None)
+    ok("...and says why", any("paginated" in l for l in _lines))
+finally:
+    R.get_json = _saved_get
+
+# ======================================== v17: completeness budget (F-06) and F-12
+_calls = {"n": 0}
+
+
+def _resolver(url, timeout, attempts=3):
+    # /mf list first, then one /latest per candidate; every third lookup fails.
+    if url.endswith("/mf"):
+        return ([{"schemeCode": i, "schemeName": f"Fund {i} Growth Direct",
+                  "isinGrowth": f"IN{i}"} for i in range(1, 31)], 0.0, 10, 200)
+    _calls["n"] += 1
+    if _calls["n"] % 3 == 0:
+        return None, 0.0, 0, 500
+    return ({"meta": {"scheme_category": "Equity Scheme - Mid Cap Fund"}}, 0.0, 10, 200)
+
+
+_saved_get = R.get_json
+try:
+    R.get_json = _resolver
+    _lines = []
+    ok("a third of category lookups failing fails the whole discovery closed",
+       R.discover_universe(5.0, 2, _lines.append) is None)
+    ok("...and reports the success rate", any("lookups FAILED" in l for l in _lines))
+finally:
+    R.get_json = _saved_get
+
+ok("a fetch-success floor exists rather than being inlined",
+   isinstance(R.MIN_FETCH_SUCCESS, float) and 0.5 < R.MIN_FETCH_SUCCESS < 1.0)
+ok("...with an absolute tolerance, because one timeout in an 8-fund cohort is 12.5%",
+   isinstance(R.FETCH_FAILURE_TOLERANCE, int) and R.FETCH_FAILURE_TOLERANCE >= 1)
+ok("a resolve-success floor exists too",
+   isinstance(R.MIN_RESOLVE_SUCCESS, float) and 0.5 < R.MIN_RESOLVE_SUCCESS < 1.0)
+
+with tempfile.TemporaryDirectory() as _d:
+    _tmp = Path(_d)
+    _seed_manifest(_tmp, PRIOR)
+    _uni = [{"code": str(i), "name": f"F{i}", "plan": "Direct", "cat": "MID_CAP"}
+            for i in range(1, 21)]
+    # 12 of 20 histories come back: 60%, and 8 missing > tolerance -> refuse.
+    _code, _log = _run_main(_tmp, _uni, lambda funds: funds[:12], [])
+    _m = _manifest(_tmp)
+    ok("a materially incomplete history fetch refuses to publish",
+       "refusing to publish a partial cohort" in _log)
+    eq("...the category stays stale with its committed count",
+       _m["categories"]["MID_CAP"].get("ranked"), 62)
+    ok("...and the run exits non-zero", _code != 0)
+
+# F-12: discovery order is deterministic, so --max-funds is reproducible
+_saved_get = R.get_json
+try:
+    R.get_json = lambda url, timeout, attempts=3: (
+        ([{"schemeCode": i, "schemeName": f"Fund {i} Growth Direct",
+           "isinGrowth": f"IN{i}"} for i in range(1, 16)], 0.0, 10, 200)
+        if url.endswith("/mf") else
+        ({"meta": {"scheme_category": "Equity Scheme - Mid Cap Fund"}}, 0.0, 10, 200))
+    _a = [u["code"] for u in R.discover_universe(5.0, 4, lambda m: None)]
+    _b = [u["code"] for u in R.discover_universe(5.0, 4, lambda m: None)]
+    eq("two discovery runs return the same order, so --max-funds is reproducible", _a, _b)
+    eq("...and that order is by scheme code", _a, sorted(_a, key=str))
+finally:
+    R.get_json = _saved_get
+
+# ==================================================== v17: non-finite NAV rows (F-11)
+ok("a +inf NAV never reaches the splice logic",
+   R._rows_to_points([{"date": "01-01-2020", "nav": "inf"},
+                      {"date": "02-01-2020", "nav": "10"}]) == [(date(2020, 1, 2), 10.0)])
+ok("a NaN NAV is dropped too",
+   R._rows_to_points([{"date": "01-01-2020", "nav": "nan"}]) == [])
+ok("ordinary rows are untouched",
+   len(R._rows_to_points([{"date": "01-01-2020", "nav": "10"},
+                          {"date": "02-01-2020", "nav": "11"}])) == 2)
+
+
 print("Run python tests/test_fetch_ranks.py")
 
 AS_OF = date(2026, 7, 17)
@@ -744,8 +936,11 @@ _first_stmt = next((ln.strip() for ln in _loop.split("\n")[1:]
                     if ln.strip() and not ln.strip().startswith("#")), "")
 eq("the first statement inside the category loop is a try", _first_stmt, "try:")
 ok("a category failure is counted rather than raised", "failed += 1" in _main)
+# Was a source-shape assertion on a literal dict written inline. That literal moved
+# into stale_entry(), and a test that pins wording rather than behaviour goes red on a
+# refactor while staying green on a regression. Asserted end-to-end below instead.
 ok("a failed category is marked stale, not dropped from the manifest",
-   '"status": "stale", "error"' in _main)
+   "stale_entry(" in _main and "committed_cats.get(cat)" in _main)
 ok("the run still exits non-zero when a category failed",
    "if failed:\n        return 1" in _main)
 ok("the summary line reports category errors", "category error(s)" in _main)

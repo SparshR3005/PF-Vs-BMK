@@ -52,6 +52,7 @@ USAGE
 """
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -181,6 +182,24 @@ MIN_QUARTILE_UNIVERSE = 8
 # Losing a couple of funds is normal churn at any cohort size; only refuse a
 # small-cohort drop when it is both proportionally AND absolutely large.
 SMALL_COHORT_TOLERANCE = 3
+
+# ---- COMPLETENESS BUDGET -------------------------------------------------------
+# safe_to_publish() compares FINAL COUNTS against the committed file, which cannot
+# see a selective failure: if mfapi drops the same handful of funds every night, the
+# count is stable and the gate is happy while the ranks are quietly biased. Worse,
+# get_json() returns None after three failed retries and the fund simply vanishes --
+# indistinguishable from a scheme that was never rankable.
+#
+# So measure the fetch itself, not just its result. A category whose histories came
+# back materially incomplete is refused and marked stale rather than published as if
+# it were whole. Same two-sided shape as safe_to_publish(): a proportional floor with
+# an absolute tolerance, because in an 8-fund cohort one timeout is 12.5%.
+MIN_FETCH_SUCCESS = 0.90
+FETCH_FAILURE_TOLERANCE = 2
+
+# Fraction of the /latest category lookups that must succeed before the universe is
+# trusted at all. Below this the discovery is not a universe, it is a sample.
+MIN_RESOLVE_SUCCESS = 0.90
 
 
 # ------------------------------------------------------------------ pure maths
@@ -525,6 +544,45 @@ def write_json_atomic(path, payload):
     os.replace(tmp, path)
 
 
+def load_committed_manifest(path):
+    """The categories block of the manifest already on disk, or {}.
+
+    THE MANIFEST DESCRIBES THE WHOLE DATASET, BUT A RUN ONLY EVER SEES PART OF IT.
+    main() used to build a fresh manifest and fill it from the categories discovered
+    THIS run, then write it unconditionally. Everything else was deleted:
+
+      * a category missing from discovery vanished from index.json entirely, so the
+        client read it as unpublished (fillInsightDetail -> "no ranking data is
+        published") even though its last-good files were still sitting on disk;
+      * `--canary MID_CAP` rewrote the global manifest to contain only MID_CAP;
+      * the per-category exception handler read `manifest["categories"].get(cat)` --
+        the NEW dict -- so it could never preserve the committed metadata its own
+        comment promised to keep.
+
+    fetch_tri.py already guards exactly this and says why: "a partial run cannot
+    describe the whole dataset without republishing every absent index as stale."
+    This is that guard, on the ranks side.
+    """
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    cats = doc.get("categories")
+    return copy.deepcopy(cats) if isinstance(cats, dict) else {}
+
+
+def stale_entry(previous, reason):
+    """Keep a category's committed metadata, but mark it stale and say why.
+
+    Dropping the entry tells the client the category does not exist; marking it stale
+    tells the client the committed files are real but old. Those mean different
+    things and the client renders them differently."""
+    entry = copy.deepcopy(previous) if isinstance(previous, dict) else {}
+    entry["status"] = "stale"
+    entry["stale_reason"] = reason
+    return entry
+
+
 def committed_meta(path):
     """(as_of, count) from a file already on disk, or (None, None).
 
@@ -597,7 +655,13 @@ def discover_universe(timeout, concurrency, log):
         log("FATAL: unexpected /mf shape")
         return None
     if not complete:
-        log("WARNING: /mf looks paginated; universe may be partial")
+        # FAIL CLOSED. This used to log and continue, so a provider pagination change
+        # would publish rankings built from page 1 -- every fund on later pages simply
+        # absent, with count-based gates unable to see it because the counts would
+        # shrink together across every category. A skipped night costs nothing.
+        log("FATAL: /mf looks paginated and pagination is not implemented; "
+            "refusing to publish rankings from a partial universe")
+        return None
 
     has_isin = any(isinstance(s, dict) and "isinGrowth" in s for s in all_schemes)
 
@@ -644,26 +708,48 @@ def discover_universe(timeout, concurrency, log):
     log(f"name filters: {len(all_schemes)} -> {len(candidates)} candidates")
 
     def resolve(c):
+        """("ok"|"skip"|"fail", entry).
+
+        A LOOKUP FAILURE AND A NON-RANKABLE SCHEME ARE DIFFERENT THINGS. Both used to
+        return None, so a category lookup that timed out was counted as "this fund is
+        not rankable" -- the universe silently shrank and nothing said so."""
         payload, _, _, _ = get_json(f"{API}/mf/{c['code']}/latest", timeout)
         if payload is None:
-            return None
+            return "fail", None
         cat = ((payload.get("meta") or {}).get("scheme_category"))
         key = category_key(cat)
         if key is None or key in UNRANKABLE_KEYS:
-            return None
+            return "skip", None
         c["cat"] = key
-        return c
+        return "ok", c
 
-    resolved, done = [], 0
+    resolved, done, lookup_failed = [], 0, 0
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futs = [pool.submit(resolve, c) for c in candidates]
         for fut in as_completed(futs):
-            r = fut.result()
+            status, r = fut.result()
             done += 1
-            if r:
+            if status == "ok":
                 resolved.append(r)
+            elif status == "fail":
+                lookup_failed += 1
             if done % 500 == 0:
                 log(f"  categorised {done}/{len(candidates)} -> {len(resolved)} rankable")
+
+    ok_rate = (len(candidates) - lookup_failed) / len(candidates) if candidates else 0.0
+    if lookup_failed:
+        log(f"  {lookup_failed} of {len(candidates)} category lookups FAILED "
+            f"({ok_rate:.1%} succeeded)")
+    if candidates and ok_rate < MIN_RESOLVE_SUCCESS:
+        log(f"FATAL: only {ok_rate:.1%} of category lookups succeeded "
+            f"(floor {MIN_RESOLVE_SUCCESS:.0%}) -- this is a sample, not a universe; "
+            f"refusing to publish")
+        return None
+
+    # Deterministic order so --max-funds and every diagnostic are reproducible.
+    # Results arrive in as_completed() order, i.e. network timing, so slicing them
+    # gave a different cohort on every run and made a failure impossible to repeat.
+    resolved.sort(key=lambda r: str(r["code"]))
     log(f"universe: {len(resolved)} rankable funds across "
         f"{len({r['cat'] for r in resolved})} categories")
     return resolved
@@ -679,7 +765,10 @@ def _rows_to_points(rows):
             v = float(r.get("nav"))
         except (ValueError, TypeError):
             continue
-        if v > 0:
+        # isfinite as well as > 0: float("inf") > 0 is True, so a non-finite upstream
+        # NAV could reach the merger splice, make its ratio inf, and produce a
+        # "NAV jumps inf%" refusal that reads like a bad chain rather than bad data.
+        if math.isfinite(v) and v > 0:
             out.append((d, v))
     out.sort(key=lambda p: p[0])
     return out
@@ -692,7 +781,7 @@ def fetch_histories(funds, timeout, concurrency, log):
     This MUST mirror the client's splice. A holding whose Portfolio row starts in
     2020 but whose peer grid starts at the 2022 merger would be reported as "its
     history does not cover this window" in Insights while Portfolio shows three
-    years of it — two panes disagreeing about one fund, which is the defect class
+    years of it â€” two panes disagreeing about one fund, which is the defect class
     the drift guard in mf_universe.py exists to prevent."""
     spliced_ok, spliced_refused = [], []
 
@@ -774,8 +863,11 @@ def main():
     for u in universe:
         by_cat.setdefault(u["cat"], []).append(u)
 
+    # Seed from what is ALREADY PUBLISHED, then update only what this run actually
+    # concluded. A fresh dict here deleted every category the run did not reach.
+    committed_cats = load_committed_manifest(OUT_DIR / "index.json")
     manifest = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "categories": {}}
+                "categories": copy.deepcopy(committed_cats)}
     written = refused = failed = 0
 
     for cat in sorted(by_cat):
@@ -793,12 +885,34 @@ def main():
             funds = by_cat[cat]
             if args.max_funds:
                 funds = funds[: args.max_funds]
-            log(f"{cat}: fetching {len(funds)} histories")
+            attempted = len(funds)
+            log(f"{cat}: fetching {attempted} histories")
             funds = fetch_histories(funds, args.timeout, args.concurrency, log)
             if not funds:
-                log(f"{cat}: no histories returned -- skipping")
-                manifest["categories"][cat] = {"status": "missing"}
+                # Was {"status":"missing"} and exit 0 -- a category whose every history
+                # fetch failed looked to the client like a category that does not exist,
+                # and the Action stayed green. Keep the committed metadata, mark it
+                # stale, and count it as the failure it is.
+                failed += 1
+                log(f"{cat}: NO histories returned -- keeping last-good, marking stale")
+                manifest["categories"][cat] = stale_entry(
+                    committed_cats.get(cat), "no histories returned")
                 continue
+            # ---- COMPLETENESS BUDGET (see MIN_FETCH_SUCCESS) ----
+            missing = attempted - len(funds)
+            rate = len(funds) / attempted if attempted else 0.0
+            if missing and rate < MIN_FETCH_SUCCESS and missing > FETCH_FAILURE_TOLERANCE:
+                failed += 1
+                log(f"{cat}: only {len(funds)}/{attempted} histories fetched "
+                    f"({rate:.1%} < {MIN_FETCH_SUCCESS:.0%}, {missing} missing) -- "
+                    f"refusing to publish a partial cohort; keeping last-good")
+                manifest["categories"][cat] = stale_entry(
+                    committed_cats.get(cat),
+                    f"only {len(funds)}/{attempted} histories fetched")
+                continue
+            if missing:
+                log(f"{cat}: {missing}/{attempted} histories missing "
+                    f"({rate:.1%} fetched) -- within tolerance")
 
             # Parse once; both the period table and the grid reuse it.
             as_of = None
@@ -834,8 +948,10 @@ def main():
                 log(f"{cat}: dropped {dropped_future} future-dated NAV row(s) "
                     f"(after {future_horizon.isoformat()})")
             if as_of is None:
-                log(f"{cat}: no parseable NAV -- skipping")
-                manifest["categories"][cat] = {"status": "missing"}
+                failed += 1
+                log(f"{cat}: no parseable NAV -- keeping last-good, marking stale")
+                manifest["categories"][cat] = stale_entry(
+                    committed_cats.get(cat), "no parseable NAV")
                 continue
 
             usable = [f for f in funds if f["pts"]]
@@ -891,7 +1007,12 @@ def main():
             else:
                 status_as_of, status_ranked = committed_meta(p_path)
             cat_status = {"status": "ok" if allowed else "stale", "as_of": status_as_of,
-                          "ranked": status_ranked, "plans": {}}
+                          "ranked": status_ranked, "plans": {},
+                          # Diagnostics, so a selective upstream failure is visible in
+                          # the published artefact rather than only in a run log.
+                          "attempted": attempted, "fetched": len(funds)}
+            if not allowed:
+                cat_status["stale_reason"] = "publish gate refused"
             # Why funds were left out, by cause. A bare count invites the wrong guess,
             # which is exactly what happened when 12 stale ELSS schemes were reported
             # as young ones.
@@ -923,12 +1044,30 @@ def main():
             failed += 1
             log(f"{cat}: FAILED ({type(exc).__name__}: {exc}) -- "
                 f"keeping last-good files, continuing with other categories")
-            prev = manifest["categories"].get(cat) or {}
-            prev.update({"status": "stale", "error": type(exc).__name__})
-            manifest["categories"][cat] = prev
+            # committed_cats, NOT manifest["categories"] -- the latter is the dict we
+            # are building, so on a category that failed before writing anything it is
+            # empty and "keeping last-good metadata" preserved nothing at all.
+            entry = stale_entry(committed_cats.get(cat), type(exc).__name__)
+            entry["error"] = type(exc).__name__
+            manifest["categories"][cat] = entry
             continue
-    if not args.dry_run:
+    # A category that is COMMITTED but absent from this discovery never entered the
+    # loop above, so nothing marked it either way. Silence here is what deleted it.
+    for cat in sorted(set(committed_cats) - set(by_cat)):
+        failed += 1
+        log(f"{cat}: committed but ABSENT from this run's universe -- "
+            f"keeping last-good, marking stale")
+        manifest["categories"][cat] = stale_entry(
+            committed_cats.get(cat), "absent from this run's universe")
+
+    # A partial run must never rewrite the manifest, for the reason fetch_tri.py's
+    # --only already states: it cannot describe the whole dataset. --canary and
+    # --max-funds are diagnostic paths, not publish paths.
+    partial = bool(args.canary or args.max_funds)
+    if not args.dry_run and not partial:
         write_json_atomic(OUT_DIR / "index.json", manifest)
+    elif partial:
+        log("partial run (--canary/--max-funds): manifest deliberately NOT rewritten")
     log(f"done: {written} file(s) written, {refused} refused, {failed} category error(s)"
         + (" (dry run -- nothing written)" if args.dry_run else ""))
     # A category that errored is a real failure even when others succeeded, so the

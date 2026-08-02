@@ -819,5 +819,90 @@ if(loaded){
      /Only one holding has a comparable benchmark window/.test(slice));
 })();
 
+
+// ============================ v17: the ranks negative cache must expire (F-05) =====
+// `null` used to be stored on ANY failure, and the first line returned it for the rest
+// of the session — so one 503 disabled Insights and the report until a page reload,
+// while the pane rendered "no ranking data is published", a claim about the DATA.
+// The BEHAVIOURAL test lives in tests/test_report.js, which is an async suite: this
+// file exits synchronously, so an async assertion here would never run and never fail.
+(function testRanksCacheShape(){
+  const src = HTML.match(/const RANKS_MISS_TTL_MS[\s\S]*?\n\}/)[0];
+  ok("the ranks loader has expiring miss TTLs, like loadTriFile", /RANKS_MISS_TTL_MS\s*=/.test(src));
+  ok("...with a longer hold for a real 404", /RANKS_MISS_TTL_404_MS\s*=/.test(src));
+  ok("a miss is stored as an expiring record, not a bare null",
+     /__miss:true, expires:/.test(src) && !/ranksCache\[name\] = null/.test(src));
+  ok("a fresh miss short-circuits, so no retry storm", /hit\.__miss && Date\.now\(\) < hit\.expires/.test(src));
+  ok("an abort is rethrown BEFORE anything is cached",
+     src.indexOf('name === "AbortError") throw e') < src.indexOf("__miss:true, expires: Date.now()+RANKS_MISS_TTL_MS"));
+})();
+
+// ============================ v17: prototype-free portfolio map (F-13) ============
+(function testPortfolioMap(){
+  // IIFE-wrapped for the same reason as above: a sloppy-mode eval hoists function
+  // declarations into the enclosing scope and collides with any local of that name.
+  const P = eval("(function(){" + grabFn("pfMap") + "\n" + grabFn("pfHas") +
+                 "\nreturn {pfMap:pfMap, pfHas:pfHas};})()");
+  const pfMap = P.pfMap, pfHas = P.pfHas;
+  const m = pfMap({"My Portfolio": []});
+  ok("the map has no prototype at all", Object.getPrototypeOf(m) === null);
+  ok("a real name is found", pfHas(m, "My Portfolio"));
+  ok("an INHERITED name is not mistaken for a portfolio", !pfHas(m, "constructor"));
+  ok("...nor is toString", !pfHas(m, "toString"));
+  ok("...nor hasOwnProperty", !pfHas(m, "hasOwnProperty"));
+
+  // The write-side hazard: on a plain {}, this REPLACES the prototype and the key
+  // vanishes from Object.keys(). On a null-prototype map it is an ordinary own key.
+  const plain = {}; plain["__proto__"] = [{code:"1"}];
+  ok("PLAIN object: assigning __proto__ creates no own key",
+     Object.keys(plain).length === 0);
+  ok("PLAIN object: ...it replaces the prototype instead",
+     Object.getPrototypeOf(plain) !== Object.prototype);
+  const safe = pfMap(); safe["__proto__"] = [{code:"1"}];
+  ok("pfMap: __proto__ is an ordinary own key", Object.keys(safe).length === 1);
+  ok("...and is reachable through pfHas", pfHas(safe, "__proto__"));
+  ok("...and the map still has no prototype", Object.getPrototypeOf(safe) === null);
+})();
+
+// ============================ v17: server search applies the same gates (F-10) ====
+// loadSchemeList() drops a blank isinGrowth WHEN THE FIELD IS PRESENT — that is what
+// marks a legacy/closed record. serverSearch mapped the field through and never
+// applied the rule, so the fallback path (used exactly when the full list is
+// unavailable) could offer a dead scheme the normal picker hides.
+(function testServerSearchIsinGate(){
+  const src = HTML.slice(HTML.indexOf("async function serverSearch("));
+  const body = src.slice(0, src.indexOf("\n}"));
+  ok("serverSearch detects whether the response carries isinGrowth at all",
+     /hasGrowthIsinField\s*=\s*arr\.some/.test(body));
+  ok("...and drops blank-ISIN records when it does",
+     /!hasGrowthIsinField\s*\|\|\s*String\(s\.isinGrowth\|\|""\)\.trim\(\)/.test(body));
+  ok("...conditionally, so a response without the field is not emptied",
+     body.indexOf("!hasGrowthIsinField ||") > 0);
+  // The rule itself must match the local one, or the two paths disagree about a fund.
+  const local = HTML.slice(HTML.indexOf("async function loadSchemeList("));
+  ok("the local list applies the same conditional rule",
+     /hasGrowthIsinField\s*&&\s*!String\(s\.isinGrowth\|\|""\)\.trim\(\)/.test(local));
+})();
+
+// ============================ v17: the stale PLAN grid is disclosed (F-03) ========
+// Category status came from the period-file gate alone; each plan's grid is gated
+// separately and nested under catInfo.plans[plan]. Nothing read it, so fresh period
+// returns above a refused peer grid rendered as one coherent pane.
+(function testPlanStaleWiring(){
+  ok("insightFacts reads the SELECTED plan's status",
+     /const planInfo = \(catInfo\.plans && catInfo\.plans\[item\.plan\]\) \|\| null;/.test(HTML));
+  ok("...and exposes it as planStale",
+     /planStale: !!\(planInfo && planInfo\.status === "stale"\)/.test(HTML));
+  ok("the pane distinguishes a stale plan grid from a stale category",
+     /the track record above is current but the peer ranking below is from an/.test(HTML));
+  ok("...and still covers the both-stale case",
+     /catInfo\.status === "stale" && f\.planStale/.test(HTML));
+  ok("the report carries the same distinction",
+     /f\.planStale && !\(f\.catInfo && f\.catInfo\.status==="stale"\)/.test(HTML));
+  // It must reuse the existing note styling rather than introduce a new one.
+  ok("the new notice reuses the existing .ins-note class, adding no styling",
+     (HTML.match(/ins-note"><b>Note:<\/b>/g) || []).length >= 3);
+})();
+
 console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);
