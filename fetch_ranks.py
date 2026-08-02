@@ -132,7 +132,31 @@ MAX_BOUNDARY_STALE_DAYS = 30
 # within 7 days of the scheduled date, so any wider hole can drop installments.
 GRID_MAX_GAP_DAYS = 7
 GRID_STEP_DAYS = 7
-GRID_YEARS = 11           # 10y horizon plus buffer
+# How far back the published grid reaches. This is NOT a display horizon -- it is
+# the hard limit on how long a SIP the client can rank, and it was 11 ("10y horizon
+# plus buffer"), which silently capped the whole feature at eleven years.
+#
+# rankCandidates() has no knowledge of this cutoff. Once a SIP's first instalment
+# falls more than 7 days before the grid start, EVERY peer accumulates skipped>0,
+# both pool filters return empty, and the eligible universe collapses to zero.
+# Measured against the committed navs_LARGE_CAP_Direct.json (grid start 2015-08-03):
+#
+#     SIP start 2015-08-01  ->  132 instalments, universe 21, own rank 4
+#     SIP start 2015-07-20  ->  133 instalments, universe  0, no rank at all
+#
+# Twelve days apart. And the pane then reported the collapse as "its history does
+# not cover it" with "35 started after your SIP began" -- three false statements
+# about the funds, caused by a storage artifact.
+#
+# Worse, the cliff MOVES: cutoff = as_of - GRID_YEARS*365.25, so it advances a day
+# every day. A holding that ranked correctly last month falls off this month.
+#
+# 20 years puts the cutoff around 2006, which is at or before the inception of
+# essentially every scheme in these cohorts, so the limit stops being reachable in
+# practice rather than merely being pushed back. Measured cost: the navs payload
+# grows about 1.53x in total (3.1 MB -> ~4.8 MB across all 22 files); only funds
+# that genuinely have 20 years of history grow at all.
+GRID_YEARS = 20
 MIN_GRID_POINTS = 8       # below this a fund cannot support any useful window
 
 # Publishing gate. A category file is only replaced if the new one still covers a

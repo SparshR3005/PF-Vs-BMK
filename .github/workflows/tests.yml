@@ -123,4 +123,4 @@ jobs:
         run: python tests/test_mergers.py
 
       - name: Syntax check ranking scripts
-        run: python -m py_compile mf_universe.py probe_ranks.py fetch_ranks.py
+        run: python -m py_compile mf_universe.py mf_mergers.py probe_ranks.py fetch_ranks.py

@@ -39,7 +39,32 @@ jobs:
           python tests/test_fetch_ranks.py
           python tests/test_mergers.py
 
+      # continue-on-error is LOAD-BEARING, not laziness.
+      #
+      # fetch_ranks.py deliberately writes every file it can and THEN returns 1 --
+      # on a refused publish gate (v13 #5) or a per-category exception. Its own
+      # comment says "everything that could be written already has been by this
+      # point, so failing here costs no data". That was FALSE as wired: a failing
+      # step aborts the job, so "Commit updated data" never ran and every category
+      # that published successfully was thrown away with the runner.
+      #
+      # It also latched. safe_to_publish() compares against the COMMITTED count, so
+      # with nothing committed the count never updated, the refusal reproduced the
+      # next night, and ALL ELEVEN categories stopped updating -- not just the one
+      # that was refused. Reachable without anything exotic: get_json() drops a fund
+      # after 3 failed retries, so a partial mfapi wobble during discovery shrinks a
+      # cohort past the 80% / 3-fund gate.
+      #
+      # tri-fetch.yml already has the right shape and says why: its --audit step runs
+      # AFTER the commit, because "failing earlier would mean one wedged index blocks
+      # the 38 healthy ones". This is the same trade on the ranks side.
+      #
+      # NOTE the gate above is deliberately NOT continue-on-error: a red test suite
+      # must still stop the fetch and the commit. Only the fetch itself is allowed to
+      # fail soft, and the final step below re-raises it.
       - name: Fetch ranking data
+        id: fetch
+        continue-on-error: true
         run: python fetch_ranks.py --concurrency 8
 
       - name: Commit updated data
@@ -53,3 +78,15 @@ jobs:
             git commit -m "Update ranking data [skip ci]"
             git push || (git pull --rebase --autostash && git push)
           fi
+
+      # Re-raise the fetch's exit code now that whatever DID publish is safely
+      # committed. A refusal repeats every night until someone looks, which is the
+      # point -- but it must be visible without also costing a day of good data.
+      - name: Fail if the fetch refused a publish or errored a category
+        if: steps.fetch.outcome == 'failure'
+        run: |
+          echo "fetch_ranks.py exited non-zero: a category errored, or a publish gate"
+          echo "refused. Anything publishable was still committed by the step above."
+          echo "Read the fetch log, then re-run with --force ONLY after confirming"
+          echo "the drop is real."
+          exit 1

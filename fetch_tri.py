@@ -15,7 +15,7 @@ import math
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -27,6 +27,20 @@ OUT_DIR = Path("data/tri")
 START_DATE = "01-Jan-1999"          # DD-MMM-YYYY, endpoint format
 MIN_ROWS = 200                       # a real series has thousands; guards against []/wall
 MAX_STALE_DAYS = 7
+
+# A TRI value cannot be dated in the future. fetch_ranks.py already guards this
+# ("MFAPI occasionally serves a malformed row"), and the two fetchers disagreeing
+# about a safety property is exactly how the bare-Infinity value reached disk in
+# v8 #2 -- one writer set allow_nan=False and the other did not.
+#
+# Here the blast radius is larger than a single bad row: doc["end"] is the max date
+# in the series, so ONE future-dated row makes is_fresh() false, which fails the
+# index; and if that index is in REQUIRED_KEYS the soft completeness gate exits 1
+# before anything is written, so ALL 39 series are skipped for the night. --force
+# is no escape either -- it bypasses the continuity gate, not the freshness one.
+# Dropping the row at parse, before it can reach max(), keeps the failure local to
+# the row instead of the run. Two days of slack absorbs IST-vs-UTC skew.
+MAX_FUTURE_DAYS = 2
 
 # An OPTIONAL index that fails keeps its last-good file and is flagged in the
 # manifest -- deliberately, so one bad sector fetch never blocks the broad-market
@@ -259,14 +273,23 @@ def fetch_index(page, context, name: str, end: str):
 
 def rows_to_doc(key: str, name: str, rows: list) -> dict:
     series = {}
+    horizon = (today_ist() + timedelta(days=MAX_FUTURE_DAYS)).isoformat()
+    dropped_future = 0
     for row in rows:
         try:
             iso_date = to_iso(row["Date"])
+            # ISO dates compare chronologically as plain strings.
+            if iso_date > horizon:
+                dropped_future += 1
+                continue
             tri_value = float(row["TotalReturnsIndex"])
             if math.isfinite(tri_value) and tri_value > 0:
                 series[iso_date] = tri_value
         except (KeyError, TypeError, ValueError):
             continue
+    if dropped_future:
+        print("    [%s] dropped %d future-dated row(s) after %s"
+              % (name, dropped_future, horizon))
 
     ordered = dict(sorted(series.items()))
     dates = list(ordered)

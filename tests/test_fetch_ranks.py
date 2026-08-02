@@ -11,6 +11,7 @@ collapsed data.
 """
 
 import json
+import re
 import math
 import sys
 import tempfile
@@ -45,6 +46,91 @@ def eq(label, got, want):
 
 def near(label, got, want, tol):
     ok(f"{label} (got {got!r})", got is not None and abs(got - want) <= tol)
+
+
+
+# ============================================================ v16: the 11-year cliff
+# GRID_YEARS was 11 ("10y horizon plus buffer"), which is not a display horizon at
+# all -- it is the hard limit on how long a SIP the browser can rank. rankCandidates()
+# has no knowledge of it, so once the first instalment fell more than 7 days before
+# the grid start, EVERY peer accumulated skipped>0 and the eligible universe went to
+# zero. Measured on the committed navs_LARGE_CAP_Direct.json (grid start 2015-08-03):
+# a 2015-08-01 SIP ranked 4 of 21; a 2015-07-20 SIP ranked at all. Twelve days.
+def test_the_published_grid_reaches_back_further_than_eleven_years():
+    as_of = date(2026, 7, 31)
+    rows, d = [], date(2000, 1, 3)
+    while d <= as_of:                      # 26 years of weekday NAV
+        if d.weekday() < 5:
+            rows.append({"date": d.strftime("%d-%m-%Y"), "nav": "100.0"})
+        d += timedelta(days=1)
+    grid = R.build_weekly_grid(rows, as_of)
+    assert grid, "a 26-year daily series must produce a grid"
+    t0 = grid[0]
+    span_years = (as_of - t0).days / 365.25
+    # Fails against GRID_YEARS = 11, which caps span_years at ~11.0.
+    ok("the grid spans more than 11 years of history", span_years > 11.5)
+    ok("...and reaches back the configured 20", span_years > 19.5)
+
+
+def test_a_twenty_year_sip_still_finds_its_grid_start():
+    # The cliff MOVES: cutoff = as_of - GRID_YEARS*365.25 advances a day every day,
+    # so a holding that ranked last month falls off this month. Pin the boundary.
+    as_of = date(2026, 7, 31)
+    rows, d = [], date(2000, 1, 3)
+    while d <= as_of:
+        if d.weekday() < 5:
+            rows.append({"date": d.strftime("%d-%m-%Y"), "nav": "100.0"})
+        d += timedelta(days=1)
+    t0 = R.build_weekly_grid(rows, as_of)[0]
+    ok("a SIP begun 15 years ago starts on or after the grid t0",
+          t0 <= as_of - timedelta(days=int(15 * 365.25)))
+    ok("the grid still honours the max-gap bound at 20 years",
+          max(b - a for a, b in zip(R.build_weekly_grid(rows, as_of)[1],
+                                    R.build_weekly_grid(rows, as_of)[1][1:]))
+          <= R.GRID_MAX_GAP_DAYS)
+
+
+# ====================================================== v16: the commit must survive
+# fetch_ranks.py writes everything publishable and THEN returns 1 (refused gate, or a
+# per-category exception). Its own comment says that "costs no data" -- which was false
+# as wired, because a failing step aborts the job and the commit step never ran, so
+# every category that DID publish was discarded with the runner. And it latched:
+# safe_to_publish() compares against the COMMITTED count, so with nothing committed the
+# refusal reproduced nightly and all eleven categories froze, not just the refused one.
+def test_ranks_fetch_workflow_commits_before_it_fails():
+    wf = (ROOT / ".github" / "workflows" / "ranks-fetch.yml").read_text(encoding="utf-8")
+    i_fetch = wf.find("- name: Fetch ranking data")
+    i_commit = wf.find("- name: Commit updated data")
+    ok("the workflow still has both a fetch and a commit step",
+       i_fetch > 0 and i_commit > 0)
+    ok("the commit step comes after the fetch step", i_fetch < i_commit)
+    fetch_step = wf[i_fetch:i_commit]
+    # Fails against the previous workflow, which had neither.
+    # Compare YAML KEYS, not raw text: the fetch step carries a long comment that
+    # explains continue-on-error, so a substring search would match the prose.
+    fetch_keys = [ln.strip() for ln in fetch_step.splitlines()
+                  if not ln.strip().startswith("#")]
+    ok("the fetch step is allowed to fail soft, so the commit still runs",
+       "continue-on-error: true" in fetch_keys)
+    ok("...and carries an id the failure step can reference",
+          re.search(r"id:\s*fetch", fetch_step) is not None)
+    after = wf[i_commit:]
+    ok("a later step re-raises the fetch failure",
+          re.search(r"if:\s*steps\.fetch\.outcome\s*==\s*'failure'", after) is not None)
+    ok("...and that step actually exits non-zero", "exit 1" in after)
+    # The gate must NOT be soft: a red suite has to stop the fetch AND the commit.
+    gate = wf[wf.find("- name: Regression tests (gate)"):i_fetch]
+    gate_keys = [ln.strip() for ln in gate.splitlines()
+                 if not ln.strip().startswith("#")]
+    ok("the regression-test gate is NOT continue-on-error",
+       not any(k.startswith("continue-on-error") for k in gate_keys))
+    ok("the commit step is unconditional (no if: that could skip it)",
+          "if:" not in wf[i_commit:i_commit + wf[i_commit:].find("- name:")])
+
+
+test_the_published_grid_reaches_back_further_than_eleven_years()
+test_a_twenty_year_sip_still_finds_its_grid_start()
+test_ranks_fetch_workflow_commits_before_it_fails()
 
 
 print("Run python tests/test_fetch_ranks.py")
@@ -195,10 +281,16 @@ mixed = daily_rows(3) + [{"date": "01-01-2026", "nav": "-5"},
 g2 = R.build_weekly_grid(mixed, AS_OF)
 ok("non-positive and unparseable NAVs are dropped", g2 is not None and all(v > 0 for v in g2[2]))
 
-# History older than the retention window must not bloat the grid.
-long_rows = daily_rows(20)
+# History older than the retention window must not bloat the grid. Expressed against
+# R.GRID_YEARS rather than a literal: the window moved from 11 to 20 (see the cliff
+# tests below) and a hard-coded 11 here would have to be hand-edited every time,
+# which is how a test stops describing the code it guards.
+long_rows = daily_rows(30)
 g3 = R.build_weekly_grid(long_rows, AS_OF)
-ok("history is capped at the retention window (~11y)", len(g3[2]) <= 11 * 53)
+ok("history is capped at the retention window (GRID_YEARS)",
+   len(g3[2]) <= (R.GRID_YEARS + 1) * 53)
+ok("...and the window really is the configured 20 years, not the old 11",
+   R.GRID_YEARS >= 20)
 
 
 # ------------------------------------------------------------------ returns

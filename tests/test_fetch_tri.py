@@ -484,6 +484,64 @@ def test_force_is_available_as_a_continuity_escape_hatch():
     assert "args.force" in src, "--force must actually bypass the gate"
 
 
+
+# ===================================================== v16: future-dated TRI rows
+# fetch_ranks.py already drops these ("MFAPI occasionally serves a malformed row");
+# fetch_tri.py did not, and the two fetchers disagreeing about a safety property is
+# exactly how the bare-Infinity value reached disk in v8 #2.
+#
+# The blast radius here is bigger than one row. doc["end"] is the MAX date in the
+# series, so a single future-dated row makes is_fresh() false, which fails that
+# index -- and if the index is in REQUIRED_KEYS the soft completeness gate exits 1
+# before ANYTHING is written, skipping all 39 series for the night. --force is no
+# escape: it bypasses the continuity gate, not the freshness one.
+def _row(iso, val):
+    d = datetime.datetime.strptime(iso, "%Y-%m-%d").date()
+    return {"Date": d.strftime("%d-%b-%Y"), "TotalReturnsIndex": str(val)}
+
+
+def _good_rows(n=300, end=None):
+    end = end or ft.today_ist()
+    out, d = [], end - datetime.timedelta(days=n)
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(_row(d.isoformat(), 1000.0))
+        d += datetime.timedelta(days=1)
+    return out
+
+
+def test_a_future_dated_row_is_dropped_at_parse():
+    far = ft.today_ist() + datetime.timedelta(days=400)
+    rows = _good_rows() + [_row(far.isoformat(), 1000.0)]
+    doc = ft.rows_to_doc("K", "NIFTY TEST", rows)
+    assert far.isoformat() not in doc["series"], "future row survived into the series"
+    assert doc["end"] < far.isoformat(), f"end was pulled forward to {doc['end']}"
+
+
+def test_the_future_row_no_longer_kills_the_whole_run():
+    # Before the guard: end = today+400 -> is_fresh() False -> the index fails, and a
+    # REQUIRED index failing means nothing is committed for ANY index that night.
+    far = ft.today_ist() + datetime.timedelta(days=400)
+    doc = ft.rows_to_doc("K", "NIFTY TEST", _good_rows() + [_row(far.isoformat(), 1000.0)])
+    assert ft.is_fresh(doc), "a single bad row still fails the freshness gate"
+    assert ft.validate_series(doc) == "", "the surviving series must still validate"
+
+
+def test_a_row_inside_the_skew_window_is_kept():
+    # Two days of slack absorbs IST-vs-UTC skew on the runner; it must not become a
+    # blanket ban on anything dated today or tomorrow.
+    soon = ft.today_ist() + datetime.timedelta(days=1)
+    doc = ft.rows_to_doc("K", "NIFTY TEST", _good_rows() + [_row(soon.isoformat(), 1000.0)])
+    assert soon.isoformat() in doc["series"], "a next-day row was wrongly dropped"
+
+
+def test_ordinary_rows_are_untouched_by_the_guard():
+    rows = _good_rows()
+    doc = ft.rows_to_doc("K", "NIFTY TEST", rows)
+    assert doc["count"] == len({ft.to_iso(r["Date"]) for r in rows})
+    assert ft.validate_series(doc) == ""
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

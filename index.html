@@ -3797,8 +3797,13 @@ function buildInsights(port, holdings){
   const withAlpha=rows.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
   if(withAlpha.length){
     const best=withAlpha[0], worst=withAlpha[withAlpha.length-1];
-    lines.push("Best performer vs its TRI: "+shortSchemeName(best.s.name)+" ("+pp(best.a)+" p.a.). "
-      +"Weakest: "+shortSchemeName(worst.s.name)+" ("+pp(worst.a)+" p.a.).");
+    // With one comparable holding, best AND worst are the same row; naming it twice
+    // reads as two findings where there is only one fund.
+    lines.push(withAlpha.length===1
+      ? "Only one holding has a comparable benchmark window: "+shortSchemeName(best.s.name)+
+        " ("+pp(best.a)+" p.a. vs its TRI)."
+      : "Best performer vs its TRI: "+shortSchemeName(best.s.name)+" ("+pp(best.a)+" p.a.). "
+        +"Weakest: "+shortSchemeName(worst.s.name)+" ("+pp(worst.a)+" p.a.).");
     const beating=withAlpha.filter(x=>x.a>=0).length;
     lines.push(beating+" of "+withAlpha.length+" comparable holdings beat their benchmark; "
       +(withAlpha.length-beating)+" lagged.");
@@ -3952,6 +3957,59 @@ function gridToNavArr(entry){
   return out;
 }
 
+/* First and last date of a fund's grid, WITHOUT materialising the array.
+   Two reasons this exists:
+
+   1. rankCandidates() used to call gridToNavArr(entry) TWICE per fund — once to
+      run the SIP and again purely to read arr[0].date and arr[arr.length-1].date.
+      The endpoints are just t0 and t0+d[last], so the second build was pure
+      allocation on the hot path (v14 measured ELSS alone at 574 ms cold).
+
+   2. More importantly, a fund that cannot place a single instalment has no run to
+      read endpoints from at all — and that is exactly the fund whose exclusion the
+      user most needs told about. Deriving the span from the entry means every fund
+      in the document gets classified, whether or not runSIP returned anything. */
+function gridSpan(entry){
+  const t0 = new Date(entry.t0+"T00:00:00");
+  const offs = (entry && entry.d) || [];
+  const last = new Date(t0.getTime());
+  if(offs.length) last.setDate(last.getDate()+offs[offs.length-1]);
+  return {first:t0, last:last};
+}
+
+/* Why each fund was left out of the eligible pool, by cause — counted over the
+   WHOLE published cohort, not just the funds that produced a run.
+
+   The previous version iterated `rows`, which only holds funds where runSIP
+   returned a finite XIRR. A fund dead enough that NO instalment could be placed
+   never entered `rows`, so it was counted in neither `universe`, nor `cohort`, nor
+   `excluded` — it simply vanished, while the note still presented itself as
+   accounting for the category. Measured on the committed ELSS Direct grid (52
+   funds), driving this code:
+
+       1-year   window  pool 46  note said "3 funds excluded"  6 were dropped
+       1.5-year window  pool 46  note said "5 funds excluded"  6 were dropped
+
+   and the hidden funds were 120079 HSBC Tax Saver, 132933/133364 SBI Long Term
+   Advantage I & II and 133324 Sundaram Long Term Tax Advantage — every one a dead
+   scheme. So the disclosure was least complete exactly where the survivorship bias
+   was worst: a fund stale enough to be excluded got counted, a fund stale enough to
+   place nothing did not.
+
+   Classified by the same rule for everyone rather than assuming a never-placed fund
+   is dead — it can equally be a LATE one, when a stopped SIP's window closes before
+   that fund's grid opens. universe + excluded === cohort now holds. */
+function classifyExclusions(spans, inPool, firstDate, valueDate){
+  const excluded = {stale:0, late:0, other:0};
+  for(const m of spans){
+    if(inPool.has(String(m.code))) continue;
+    if(m.last && daysBetween(m.last, valueDate) > DEAD_FUND_DAYS) excluded.stale++;
+    else if(m.first && firstDate && m.first > firstDate) excluded.late++;
+    else excluded.other++;
+  }
+  return excluded;
+}
+
 /* Every peer is run through the SAME runSIP() as the portfolio, with the SAME
    schedule array, rupee amount and valuation date. Only the NAV series differs.
    XIRR is invariant to a constant SIP amount, so this depends purely on the dates
@@ -3971,21 +4029,28 @@ function rankCandidates(navDoc, schedule, valueDate, ownCode){
     return {top:[], universe:0, ownRank:null, ownXirr:null, median:null, malformed:true};
   }
   const scheduled = schedule.length;
+  const firstDate = schedule.length ? schedule[0].date : null;
   const rows = [];
+  /* EVERY fund in the document gets a span record, including the ones runSIP
+     cannot place a single instalment for. Those used to disappear from the
+     accounting entirely — see classifyExclusions(). */
+  const spans = [];
   for(const code in navDoc.funds){
     const entry = navDoc.funds[code];
+    const span = gridSpan(entry);
+    spans.push({code:String(code), first:span.first, last:span.last});
     let r = null;
     try{ r = runSIP(gridToNavArr(entry), schedule, valueDate); }catch(e){ r = null; }
     // Number.isFinite, not isFinite: isFinite(null) is TRUE, so a peer whose XIRR
     // failed to solve would enter the pool and sort as if it returned 0%.
     if(!r || !Number.isFinite(r.xirr)) continue;
-    const arr = gridToNavArr(entry);
-    rows.push({code:code, name:entry.n, xirr:r.xirr, placed:r.placed,
+    rows.push({code:String(code), name:entry.n, xirr:r.xirr, placed:r.placed,
                skipped:r.skipped ? r.skipped.length : 0,
-               first:arr[0] ? arr[0].date : null,
-               last:arr.length ? arr[arr.length-1].date : null});
+               first:span.first, last:span.last});
   }
-  if(!rows.length) return {top:[], universe:0, ownRank:null, ownXirr:null, median:null};
+  if(!rows.length) return {top:[], universe:0, cohort:spans.length,
+                           excluded:classifyExclusions(spans, new Set(), firstDate, valueDate),
+                           ownRank:null, ownXirr:null, median:null};
 
   /* Without full-window eligibility a fund that launched mid-window posts a
      flattering short number and outranks funds that ran the whole period --
@@ -4024,15 +4089,11 @@ function rankCandidates(navDoc, schedule, valueDate, ownCode){
      A fund whose series ends well before the valuation date is dead or suspended; one
      whose series starts after the first instalment is a genuine late starter. */
   const inPool = new Set(pool.map(function(r){ return String(r.code); }));
-  const firstDate = schedule.length ? schedule[0].date : null;
-  const excluded = {stale:0, late:0, other:0};
-  for(const r of rows){
-    if(inPool.has(String(r.code))) continue;
-    if(r.last && daysBetween(r.last, valueDate) > DEAD_FUND_DAYS) excluded.stale++;
-    else if(r.first && firstDate && r.first > firstDate) excluded.late++;
-    else excluded.other++;
-  }
-  return {top:top, universe:pool.length, cohort:rows.length, excluded:excluded,
+  const excluded = classifyExclusions(spans, inPool, firstDate, valueDate);
+  /* `cohort` is now every fund the grid publishes, so universe + excluded === cohort
+     is an invariant rather than a coincidence. It used to be rows.length, which
+     already had the never-placed funds missing from it. */
+  return {top:top, universe:pool.length, cohort:spans.length, excluded:excluded,
           ownRank:ownRank, ownXirr:ownXirr, median:median};
 }
 

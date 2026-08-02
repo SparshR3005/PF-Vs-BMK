@@ -53,6 +53,10 @@ const NAME_ACRONYMS = new Set(["SBI","HSBC","ICICI","HDFC","UTI","LIC","IDFC","D
   "US","UK","ESG","REIT","INVIT","PSU","FMCG","IT","NIFTY","BSE","NSE","CRISIL"]);
 
 const NEEDED = ["titleCaseWord","titleCaseName","normaliseFundName","gridToNavArr",
+                // gridSpan/classifyExclusions are what rankCandidates now uses to
+                // account for funds that place no instalment at all. Without them it
+                // throws at load, which is this harness's drift guard doing its job.
+                "gridSpan","classifyExclusions",
                 "rankCandidates","signedPP","periodRows","periodTableHtml","topListHtml",
                 "excludedParts","excludedNote","rankSummary"];
 let loaded = true;
@@ -604,10 +608,18 @@ if(loaded){
   /* The drift guard. Two call sites is how the sheet and the screen come to print
      different ranks for one holding while both look authoritative — the same
      failure mf_universe.py exists to prevent on the Python side. */
+  /* Count CALL SITES, not mentions. The guard used to match raw text, so a comment
+     that referred to rankCandidates() by name — prose, not a call — failed it. A
+     drift guard that goes red on documentation trains you to delete documentation.
+     Block comments and whole-line // comments are stripped first; `//` is only
+     treated as a comment at the start of a line, so URLs like https://… inside
+     string literals are left intact and cannot mask a real call. */
+  const CODE = HTML.replace(/\/\*[\s\S]*?\*\//g, "")
+                   .split("\n").filter(l => !/^\s*\/\//.test(l)).join("\n");
   ok("rankCandidates has exactly ONE call site, inside insightFacts",
-     ((HTML.match(/rankCandidates\(/g) || []).length -
-      (HTML.match(/function rankCandidates\(/g) || []).length) === 1 &&
-     /out\.rank = rankCandidates\(navs, item\.schedule, item\.valueDate, item\.code\);/.test(HTML));
+     ((CODE.match(/rankCandidates\(/g) || []).length -
+      (CODE.match(/function rankCandidates\(/g) || []).length) === 1 &&
+     /out\.rank = rankCandidates\(navs, item\.schedule, item\.valueDate, item\.code\);/.test(CODE));
   ok("the rank sentence has one definition, parameterised by medium",
      /function rankSentence\(sum, planLabel, em\)/.test(HTML) &&
      (HTML.match(/rankSentence\(/g) || []).length === 3);
@@ -704,6 +716,108 @@ if(loaded){
   ok("index.html deduplicates NAV rows by calendar day",
      /byDay\.set\(/.test(HTML) && /conflicts/.test(HTML));
 }
+
+
+// ============ v16: every fund in the cohort is accounted for, against REAL data ====
+// rankCandidates() built `rows` only from funds where runSIP returned a finite XIRR.
+// A fund dead enough that NO instalment could be placed never entered `rows`, so it
+// was counted in neither `universe`, nor `cohort`, nor `excluded` -- it vanished,
+// while the note still presented itself as accounting for the category.
+//
+// Measured before the fix, on this exact committed file:
+//     1-year   window  pool 46  note said "3 funds excluded"  6 were really dropped
+//     1.5-year window  pool 46  note said "5 funds excluded"  6 were really dropped
+// and every hidden fund was a dead scheme (120079 HSBC Tax Saver, 132933/133364 SBI
+// Long Term Advantage I & II, 133324 Sundaram Long Term Tax Advantage) -- so the
+// disclosure was least complete exactly where the survivorship bias was worst.
+(function testExclusionAccounting(){
+  const fsx = require("fs"), px = require("path");
+  const file = px.join(__dirname, "..", "data", "ranks", "navs_ELSS_Direct.json");
+  if(!fsx.existsSync(file)){ console.log("  SKIP  navs_ELSS_Direct.json absent"); return; }
+  const navs = JSON.parse(fsx.readFileSync(file, "utf8"));
+  const total = Object.keys(navs.funds).length;
+  const vd = parseInput(navs.as_of);
+  const own = Object.keys(navs.funds)[0];
+
+  function windowOf(years){
+    const st = new Date(vd.getTime());
+    st.setDate(st.getDate() - Math.round(years * 365.25));
+    return uniformSchedule(scheduleDates(st, vd), 5000);
+  }
+
+  [1, 1.5, 3, 8].forEach(function(y){
+    const res = rankCandidates(navs, windowOf(y), vd, own);
+    const ex = res.excluded, exTotal = ex.stale + ex.late + ex.other;
+    // THE invariant. Fails against the previous code at 1y (46+3=49) and 1.5y (46+5=51).
+    ok(y + "y: universe + excluded accounts for every published fund",
+       res.universe + exTotal === total);
+    ok(y + "y: cohort is the whole published cohort, not just the funds that ran",
+       res.cohort === total);
+  });
+
+  // The specific funds that used to disappear are now counted, and counted as stale.
+  const res1 = rankCandidates(navs, windowOf(1), vd, own);
+  ok("the 1-year window discloses every dropped fund, not a subset",
+     res1.excluded.stale + res1.excluded.late + res1.excluded.other === total - res1.universe);
+  ok("...and they are reported as dead funds, which triggers the survivorship caveat",
+     res1.excluded.stale >= 6);
+  const parts = excludedParts(res1);
+  ok("the rendered note reaches the survivorship-bias caveat",
+     !!parts && /survivorship|flatters the surviving cohort/i.test(parts.caveat));
+  ok("...and its total matches the classifier", !!parts && parts.total === total - res1.universe);
+})();
+
+// ---- gridSpan must agree with gridToNavArr, or the perf refactor changed meaning --
+// rankCandidates used to build gridToNavArr(entry) TWICE per fund, the second time
+// only to read arr[0].date and arr[last].date. Deriving them from t0 + offsets gives
+// the same two dates -- asserted, not assumed.
+(function testGridSpanMatchesTheArray(){
+  const fsx = require("fs"), px = require("path");
+  const file = px.join(__dirname, "..", "data", "ranks", "navs_LARGE_CAP_Direct.json");
+  if(!fsx.existsSync(file)){ console.log("  SKIP  navs_LARGE_CAP_Direct.json absent"); return; }
+  const navs = JSON.parse(fsx.readFileSync(file, "utf8"));
+  let checked = 0, mismatch = 0;
+  for(const code in navs.funds){
+    const e = navs.funds[code];
+    const arr = gridToNavArr(e), span = gridSpan(e);
+    if(+span.first !== +arr[0].date || +span.last !== +arr[arr.length - 1].date) mismatch++;
+    checked++;
+  }
+  ok("gridSpan endpoints equal gridToNavArr's on every published fund",
+     checked > 0 && mismatch === 0);
+})();
+
+// ---- a never-placed fund is not blindly called dead -------------------------------
+// A fund can fail to place ANY instalment because it is LATE, not stale: a stopped
+// SIP's window can close before that fund's grid opens. Counting every never-placed
+// fund as `stale` would have been simpler and wrong.
+(function testNeverPlacedLateFund(){
+  const doc = {funds:{
+    "OLD": {n:"Old Fund", t0:"2015-01-05", d:[0,7,14,21,28,35,42,49], v:[10,11,12,13,14,15,16,17]},
+    "NEW": {n:"New Fund", t0:"2024-01-05", d:[0,7,14,21,28,35,42,49], v:[10,11,12,13,14,15,16,17]}
+  }};
+  const vd = parseInput("2015-02-23");
+  const sched = uniformSchedule(scheduleDates(parseInput("2015-01-05"), vd), 1000);
+  const res = rankCandidates(doc, sched, vd, "OLD");
+  ok("the late fund is counted even though it placed nothing",
+     res.universe + res.excluded.stale + res.excluded.late + res.excluded.other === 2);
+  ok("...and it is classified LATE, not stale",
+     res.excluded.late === 1 && res.excluded.stale === 0);
+})();
+
+
+// ---- buildInsights must not name one fund as both best and weakest ---------------
+// With a single comparable holding, withAlpha[0] and withAlpha[length-1] are the same
+// row, so the line read "Best performer: X. Weakest: X." — two findings where there
+// is one fund.
+(function testSingleHoldingBestWorst(){
+  const body = HTML.slice(HTML.indexOf("function buildInsights("));
+  const slice = body.slice(0, body.indexOf("\n}"));
+  ok("buildInsights special-cases a one-holding portfolio",
+     /withAlpha\.length===1/.test(slice));
+  ok("...and says so instead of printing the same fund twice",
+     /Only one holding has a comparable benchmark window/.test(slice));
+})();
 
 console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);
