@@ -19,6 +19,19 @@
   form-action 'none';">
 <meta name="referrer" content="no-referrer">
 <title>PF vs Benchmark — SIP XIRR</title>
+<!-- Lamp intro, part 1 of 3: arm the blackout before first paint so the page never
+     flashes into view ahead of the curtain. Runs in <head>, so it only ever fires
+     when JS is on. The timeout is a dead-man's switch: if the lamp script further
+     down never gets to run, the page unlocks itself instead of staying black. -->
+<script>
+(function(){
+  var h = document.documentElement;
+  h.classList.add('lamp-armed');
+  setTimeout(function(){
+    if (h.classList.contains('lamp-armed')) h.classList.remove('lamp-armed');
+  }, 5000);
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@600;700&display=swap" rel="stylesheet">
@@ -410,6 +423,159 @@
   color:var(--accent);font-weight:600;}
 .scopebar .scopenote{align-self:center;color:var(--sub);font-size:12px;margin-left:4px;}
 .leg-note{color:var(--sub);font-size:11.5px;margin-top:2px;letter-spacing:.01em;}
+
+/* ===========================================================================
+   LAMP INTRO — part 2 of 3
+   The page opens black with a brass pendant lamp hanging centre screen. Pull
+   its cord and the light blooms outward to reveal the site while the lamp
+   shrinks into the top-right corner. Click the corner lamp to go dark again.
+
+   Geometry notes, so this is not re-derived later:
+   - #lampHost is the only thing that moves. transform-origin is 50% 0, i.e.
+     the top-centre of the lamp body, so JS positions it by that single anchor
+     point in both states: transform:translate(tx,ty) scale(s) puts the anchor
+     at (BASE_W/2 + tx, ty). Everything else is a child and rides along.
+   - --lamp-cord and --lamp-rope are in LOCAL px (pre-scale). The drag handler
+     divides the pointer delta by the current scale so the cord tracks the
+     cursor 1:1 on screen at any lamp size.
+   - .lampSway's origin sits --lamp-cord above its own top edge, which is the
+     ceiling attachment point, so the cord + lamp swing as one rigid pendulum.
+   =========================================================================== */
+
+/* Registered so they interpolate. Where @property is unsupported these still
+   work as plain custom properties, they just snap instead of animating, and
+   the opacity fallback below carries the transition. */
+@property --lampReveal{syntax:'<length>';inherits:false;initial-value:0px;}
+@property --lamp-cord{syntax:'<length>';inherits:true;initial-value:0px;}
+
+:root{
+  --lamp-w:64px;                              /* lamp design width, pre-scale */
+  --lamp-dur:1150ms;
+  --lamp-ease:cubic-bezier(.16,.84,.28,1);
+}
+
+/* Pre-paint blackout. Painting it on <html> means the black is up before the
+   body (and therefore the curtain element) has even been parsed. */
+html.lamp-armed{background:#040705;}
+html.lamp-armed body{visibility:hidden;}
+html.lamp-armed #lampScene{visibility:visible;}
+
+html.lamp-intro,html.lamp-intro body{overflow:hidden;}
+
+#lampScene{position:fixed;inset:0;z-index:9000;pointer-events:none;
+  visibility:visible;-webkit-user-select:none;user-select:none;}
+
+/* Held for one frame at startup so the lamp does not animate in from its
+   default transform on first paint. */
+html.lamp-noanim #lampHost,
+html.lamp-noanim #lampCurtain{transition:none !important;}
+
+/* --- the curtain ------------------------------------------------------- */
+#lampCurtain{position:absolute;inset:0;background:#040705;
+  -webkit-mask-image:radial-gradient(circle at var(--lamp-mx,50%) var(--lamp-my,34%),
+    transparent max(0px,calc(var(--lampReveal) - 11vmax)),#000 var(--lampReveal));
+  mask-image:radial-gradient(circle at var(--lamp-mx,50%) var(--lamp-my,34%),
+    transparent max(0px,calc(var(--lampReveal) - 11vmax)),#000 var(--lampReveal));
+  transition:--lampReveal var(--lamp-dur) var(--lamp-ease),
+             opacity var(--lamp-dur) var(--lamp-ease);}
+/* No @property support: drop the mask entirely and fade instead, otherwise the
+   radius would snap to full and reveal the page with no transition at all. */
+html:not(.lamp-mask) #lampCurtain{-webkit-mask-image:none;mask-image:none;}
+html.lamp-intro #lampCurtain{opacity:1;pointer-events:auto;}
+html.lamp-lit   #lampCurtain{opacity:0;pointer-events:none;}
+
+/* --- the lamp ---------------------------------------------------------- */
+#lampHost{position:fixed;left:0;top:0;width:var(--lamp-w);
+  transform-origin:50% 0;
+  transform:translate(var(--lamp-tx,0px),var(--lamp-ty,0px)) scale(var(--lamp-s,1));
+  transition:transform var(--lamp-dur) var(--lamp-ease),
+             --lamp-cord var(--lamp-dur) var(--lamp-ease);
+  pointer-events:auto;will-change:transform;
+  -webkit-tap-highlight-color:transparent;}
+#lampHost svg{display:block;width:100%;height:auto;overflow:visible;}
+#lampHost:focus{outline:none;}
+#lampHost:focus-visible .lampSway{outline:2px solid var(--brass-2);
+  outline-offset:6px;border-radius:8px;}
+html.lamp-lit #lampHost{cursor:pointer;}
+html.lamp-lit #lampHost:hover{--lamp-on:1;}
+
+.lampSway{position:relative;
+  transform-origin:50% calc(-1 * var(--lamp-cord,0px));
+  animation:lampSway 6.5s ease-in-out infinite;}
+@keyframes lampSway{
+  0%,100%{transform:rotate(-.8deg);}
+  50%    {transform:rotate(.8deg);}
+}
+html.lamp-lit .lampSway,
+html.lamp-grab .lampSway{animation:none;transform:rotate(0deg);}
+
+/* suspension cord, drawn upward out of the top of the lamp */
+#lampCord{position:absolute;left:50%;bottom:100%;width:1.6px;
+  height:var(--lamp-cord,0px);transform:translateX(-50%);
+  background:linear-gradient(180deg,rgba(205,167,101,.18),rgba(205,167,101,.7));}
+
+/* --- the pull cord ------------------------------------------------------ */
+#lampPull{position:absolute;left:69%;top:57%;width:16px;margin-left:-8px;
+  height:var(--lamp-rope,26px);padding:0;border:0;background:none;
+  cursor:grab;touch-action:none;pointer-events:auto;
+  transition:height 520ms cubic-bezier(.34,1.56,.64,1),opacity 300ms linear;}
+html.lamp-grab #lampPull{cursor:grabbing;transition:opacity 300ms linear;}
+html.lamp-lit  #lampPull{opacity:0;pointer-events:none;}
+#lampPull:focus{outline:none;}
+#lampPull:focus-visible::before{box-shadow:0 0 0 2px var(--brass-2);}
+#lampPull::before{content:'';position:absolute;left:50%;top:0;width:1.6px;height:100%;
+  transform:translateX(-50%);border-radius:2px;
+  background:linear-gradient(180deg,rgba(205,167,101,.3),var(--brass));}
+#lampPull::after{content:'';position:absolute;left:50%;bottom:-2px;
+  width:8px;height:12px;transform:translateX(-50%);border-radius:50% 50% 44% 44%;
+  background:radial-gradient(circle at 34% 26%,var(--brass-2),var(--brass) 48%,#6d5429 100%);
+  box-shadow:0 0 0 .5px rgba(0,0,0,.55),0 0 var(--lamp-bead,0px) rgba(245,205,130,.9);}
+/* Idle attention cue, so it reads as grabbable without a tooltip. */
+html.lamp-intro:not(.lamp-grab) #lampPull::after{
+  animation:lampBead 2.9s ease-in-out .9s infinite;}
+@keyframes lampBead{
+  0%,100%{box-shadow:0 0 0 .5px rgba(0,0,0,.55),0 0 3px rgba(245,205,130,.3);}
+  50%    {box-shadow:0 0 0 .5px rgba(0,0,0,.55),0 0 14px rgba(245,205,130,.85);}
+}
+
+/* --- lit / unlit state inside the SVG ----------------------------------- */
+.lamp-lightsrc{opacity:var(--lamp-on,0);
+  transition:opacity 620ms ease-out;}
+.lamp-filament{opacity:calc(.18 + .82 * var(--lamp-on,0));
+  transition:opacity 620ms ease-out;}
+html.lamp-lit #lampHost{--lamp-on:1;}
+
+/* --- hint --------------------------------------------------------------- */
+#lampHint{position:fixed;left:50%;top:var(--lamp-hint-y,72%);
+  transform:translate(-50%,0);
+  font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.26em;
+  text-transform:uppercase;color:var(--faint);white-space:nowrap;
+  pointer-events:none;transition:opacity 320ms linear;
+  animation:lampHint 2.9s ease-in-out .9s infinite;}
+@keyframes lampHint{0%,100%{opacity:.45;}50%{opacity:.9;}}
+html.lamp-lit #lampHint,html.lamp-grab #lampHint{opacity:0;animation:none;}
+
+/* The parked lamp occupies roughly the top 71px of the right edge. The content
+   column is 1080px + 24px gutters, so it only clears the lamp once the viewport
+   is wider than about 1200px. Below that, reserve a band for it — otherwise the
+   lamp sits on top of the eyebrow and the h1. Measured, not guessed: at 375px
+   the unreserved lamp overlapped both. */
+@media (max-width:1200px){
+  html.lamp-lit body{padding-top:80px;}
+}
+
+@media (max-width:520px){
+  #lampHint{font-size:10px;letter-spacing:.2em;}
+}
+
+/* Honour the OS setting: keep the interaction, drop the motion. */
+@media (prefers-reduced-motion:reduce){
+  :root{--lamp-dur:1ms;}
+  .lampSway{animation:none;transform:none;}
+  #lampPull{transition:none;}
+  #lampPull::after,#lampHint{animation:none;}
+  #lampHint{opacity:.8;}
+}
 </style>
 </head>
 <body>
@@ -570,6 +736,311 @@
 
 <!-- polite live region so status messages are announced to screen readers -->
 <div class="sr-only" id="liveRegion" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ===== LAMP INTRO — part 3 of 3 ===================================== -->
+<div id="lampScene" aria-hidden="false">
+  <div id="lampCurtain"></div>
+
+  <div id="lampHost">
+    <div class="lampSway">
+      <div id="lampCord"></div>
+
+      <svg viewBox="0 0 64 96" role="img" aria-label="A brass pendant lamp">
+        <defs>
+          <linearGradient id="lmpBrass" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0"    stop-color="#5c4622"/>
+            <stop offset=".15"  stop-color="#b18c48"/>
+            <stop offset=".33"  stop-color="#f2dcab"/>
+            <stop offset=".5"   stop-color="#cda765"/>
+            <stop offset=".71"  stop-color="#87692f"/>
+            <stop offset=".88"  stop-color="#b18c48"/>
+            <stop offset="1"    stop-color="#4d3a1c"/>
+          </linearGradient>
+          <linearGradient id="lmpRim" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0"    stop-color="#4a381b"/>
+            <stop offset=".3"   stop-color="#d9b877"/>
+            <stop offset=".52"  stop-color="#a8853f"/>
+            <stop offset=".8"   stop-color="#c9a45f"/>
+            <stop offset="1"    stop-color="#3f2f16"/>
+          </linearGradient>
+          <radialGradient id="lmpGlass" cx=".4" cy=".34" r=".8">
+            <stop offset="0"   stop-color="#5b6360"/>
+            <stop offset=".62" stop-color="#333c39"/>
+            <stop offset="1"   stop-color="#1d2523"/>
+          </radialGradient>
+          <radialGradient id="lmpOn" cx=".42" cy=".36" r=".78">
+            <stop offset="0"   stop-color="#fffaf0"/>
+            <stop offset=".42" stop-color="#ffdf9f"/>
+            <stop offset="1"   stop-color="#eba946"/>
+          </radialGradient>
+          <radialGradient id="lmpHalo">
+            <stop offset="0"   stop-color="#ffe6b0" stop-opacity=".8"/>
+            <stop offset=".34" stop-color="#f5c878" stop-opacity=".3"/>
+            <stop offset=".67" stop-color="#cda765" stop-opacity=".09"/>
+            <stop offset="1"   stop-color="#cda765" stop-opacity="0"/>
+          </radialGradient>
+          <linearGradient id="lmpCone" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0"   stop-color="#ffdfa4" stop-opacity=".26"/>
+            <stop offset=".55" stop-color="#ffdfa4" stop-opacity=".07"/>
+            <stop offset="1"   stop-color="#ffdfa4" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+
+        <!-- light, painted behind the hardware -->
+        <g class="lamp-lightsrc">
+          <path d="M9 54 L-3 108 L67 108 L55 54 Z" fill="url(#lmpCone)"/>
+          <circle cx="32" cy="62" r="35" fill="url(#lmpHalo)"/>
+        </g>
+
+        <!-- bulb: dull glass always, warm core only when lit -->
+        <circle cx="32" cy="62" r="7.6" fill="url(#lmpGlass)"/>
+        <circle cx="32" cy="62" r="7.6" fill="url(#lmpOn)" class="lamp-lightsrc"/>
+        <path class="lamp-filament" d="M29.2 64.4 v-3.1 l1.9 2 1.8-2 1.9 2v-2.9"
+              fill="none" stroke="#ffd98a" stroke-width="1" stroke-linecap="round"
+              stroke-linejoin="round"/>
+
+        <!-- shade -->
+        <path d="M7 52.4 C7 29 17.5 13.6 32 13.6 C46.5 13.6 57 29 57 52.4 Z"
+              fill="url(#lmpBrass)"/>
+        <path d="M18.5 48 C18.5 30 23.5 18.5 29 16.2"
+              fill="none" stroke="#ffeec4" stroke-opacity=".3" stroke-width="1.4"
+              stroke-linecap="round"/>
+        <ellipse cx="32" cy="54.6" rx="24" ry="3.4" fill="#241a0c"/>
+        <rect x="6" y="50.6" width="52" height="4" rx="2" fill="url(#lmpRim)"/>
+
+        <!-- stem + ceiling canopy -->
+        <rect x="30.6" y="4" width="2.8" height="11" rx="1.2" fill="url(#lmpBrass)"/>
+        <path d="M27.4 0 H36.6 L34.8 5.2 H29.2 Z" fill="url(#lmpBrass)"/>
+      </svg>
+
+      <button type="button" id="lampPull" aria-label="Pull the cord to switch the lamp on"></button>
+    </div>
+  </div>
+
+  <p id="lampHint">Pull the cord</p>
+</div>
+
+<script>
+/* Lamp intro behaviour. Self-contained and independent of the app script below:
+   if anything in here throws, the catch at the bottom tears the whole thing
+   down and hands the user a normal, lit page. */
+(function(){
+"use strict";
+var html    = document.documentElement;
+var scene   = document.getElementById('lampScene');
+var curtain = document.getElementById('lampCurtain');
+var host    = document.getElementById('lampHost');
+var pull    = document.getElementById('lampPull');
+var hint    = document.getElementById('lampHint');
+
+var BASE_W     = 64;   // must match --lamp-w and the svg viewBox width
+var BASE_H     = 96;   // svg viewBox height
+var INTRO_W    = 248;  // lamp width on screen during the intro, px
+var CORNER_W   = 42;   // lamp width once parked in the corner, px
+var CORNER_PAD = 14;   // gap from the right edge
+var CORNER_TOP = 8;    // gap from the top edge; see the reserved band in CSS
+var ROPE_BASE  = 26;   // resting pull-cord length, local px
+var PULL_MAX   = 44;   // furthest the cord will stretch, local px
+var PULL_TRIG  = 27;   // pull past this and the switch fires, local px
+
+var lit = false, dragging = false, startY = 0, scale = 1;
+/* Set once a pointer drag has actually moved, so the click that browsers fire
+   after the drag does not re-trigger the switch. Must be cleared whenever the
+   cord becomes usable again, otherwise a stale true swallows the next
+   keyboard activation, which arrives as a click with no pointer events. */
+var suppressClick = false;
+
+function px(n){ return (Math.round(n * 100) / 100) + 'px'; }
+
+/* Positions the lamp by its single anchor point: the top-centre of the lamp
+   body, which is also the transform origin. Everything else hangs off it. */
+function layout(){
+  var vw = innerWidth, vh = innerHeight, ax, ay, s;
+  // A background or not-yet-composited tab can report a zero viewport. Laying
+  // out against that yields scale(0), so skip and let a later resize or
+  // visibilitychange retry.
+  if (vw < 1 || vh < 1) return;
+  if (lit){
+    s  = Math.min(CORNER_W, vw * 0.12) / BASE_W;
+    ax = vw - CORNER_PAD - (BASE_W * s) / 2;
+    ay = CORNER_TOP;
+  } else {
+    s  = Math.min(INTRO_W, vw * 0.58, vh * 0.30) / BASE_W;
+    ax = vw / 2;
+    ay = Math.round(vh * 0.26);
+  }
+  scale = s;
+  host.style.setProperty('--lamp-tx',   px(ax - BASE_W / 2));
+  host.style.setProperty('--lamp-ty',   px(ay));
+  host.style.setProperty('--lamp-s',    s.toFixed(4));
+  host.style.setProperty('--lamp-cord', px(ay / s));   // reaches the top edge
+  curtain.style.setProperty('--lamp-mx', px(ax));      // light starts at the bulb
+  curtain.style.setProperty('--lamp-my', px(ay + 62 * s));
+  if (hint){
+    hint.style.setProperty('--lamp-hint-y',
+      px(Math.min(ay + BASE_H * s + 26, vh - 54)));
+  }
+}
+
+/* Keep the hidden page out of the tab order while the curtain is down. */
+function setInert(on){
+  var kids = document.body.children, i, el;
+  for (i = 0; i < kids.length; i++){
+    el = kids[i];
+    if (el === scene || el.tagName === 'SCRIPT') continue;
+    if (on) el.setAttribute('inert', ''); else el.removeAttribute('inert');
+  }
+}
+
+/* Only one of the two controls is live at a time, so they swap roles rather
+   than nesting two focusable elements inside each other. */
+function setRoles(){
+  if (lit){
+    host.setAttribute('role', 'button');
+    host.setAttribute('tabindex', '0');
+    host.setAttribute('aria-label', 'Switch the lamp off and dim the page');
+    pull.setAttribute('tabindex', '-1');
+    pull.setAttribute('aria-hidden', 'true');
+  } else {
+    host.removeAttribute('role');
+    host.removeAttribute('tabindex');
+    host.removeAttribute('aria-label');
+    pull.removeAttribute('tabindex');
+    pull.removeAttribute('aria-hidden');
+  }
+}
+
+function light(){
+  if (lit) return;
+  lit = true;
+  html.classList.remove('lamp-intro');
+  html.classList.add('lamp-lit');
+  curtain.style.setProperty('--lampReveal', '170vmax');
+  host.style.setProperty('--lamp-rope', ROPE_BASE + 'px');
+  host.style.setProperty('--lamp-bead', '0px');
+  host.style.removeProperty('--lamp-on');     // let .lamp-lit drive it to 1
+  layout();
+  setInert(false);
+  setRoles();
+}
+
+function dark(){
+  if (!lit) return;
+  lit = false;
+  suppressClick = false;          // the cord is live again; start it clean
+  html.classList.add('lamp-intro');
+  html.classList.remove('lamp-lit');
+  curtain.style.setProperty('--lampReveal', '0px');
+  host.style.setProperty('--lamp-on', '0');
+  layout();
+  setInert(true);
+  setRoles();
+  try { pull.focus({ preventScroll: true }); } catch (_){}
+}
+
+/* --- pulling the cord --------------------------------------------------- */
+pull.addEventListener('pointerdown', function(e){
+  if (lit) return;
+  dragging = true; startY = e.clientY; suppressClick = false;
+  html.classList.add('lamp-grab');
+  try { pull.setPointerCapture(e.pointerId); } catch (_){}
+});
+
+pull.addEventListener('pointermove', function(e){
+  if (!dragging || lit) return;
+  // Divide by scale so the cord tracks the cursor 1:1 on screen whatever
+  // size the lamp is currently rendered at.
+  var d = (e.clientY - startY) / scale;
+  if (d < 0) d = 0; else if (d > PULL_MAX) d = PULL_MAX;
+  if (d > 4) suppressClick = true;
+  var p = Math.min(1, d / PULL_TRIG);
+  host.style.setProperty('--lamp-rope', px(ROPE_BASE + d));
+  host.style.setProperty('--lamp-on', (p * 0.32).toFixed(3));  // pre-glow tease
+  host.style.setProperty('--lamp-bead', px(3 + p * 11));
+  if (d >= PULL_TRIG){ endDrag(e); light(); }
+});
+
+function endDrag(e){
+  if (!dragging) return;
+  dragging = false;
+  html.classList.remove('lamp-grab');
+  if (e){ try { pull.releasePointerCapture(e.pointerId); } catch (_){} }
+  host.style.setProperty('--lamp-rope', ROPE_BASE + 'px');   // springs back
+  if (!lit){
+    host.style.setProperty('--lamp-on', '0');
+    host.style.setProperty('--lamp-bead', '0px');
+  }
+}
+pull.addEventListener('pointerup', endDrag);
+pull.addEventListener('pointercancel', endDrag);
+
+// A tap that never became a drag, plus Enter/Space, still work the switch.
+pull.addEventListener('click', function(e){
+  e.preventDefault();
+  if (suppressClick){ suppressClick = false; return; }
+  if (!lit) light();
+});
+
+/* --- clicking the parked lamp turns it back off ------------------------- */
+host.addEventListener('click', function(e){
+  if (!lit) return;
+  if (e.target && e.target.closest && e.target.closest('#lampPull')) return;
+  dark();
+});
+host.addEventListener('keydown', function(e){
+  if (!lit) return;
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar'){
+    e.preventDefault();
+    dark();
+  }
+});
+
+// Escape hatch for anyone who does not work out the drag.
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape' && !lit) light();
+});
+
+/* Called directly rather than through requestAnimationFrame: rAF does not run
+   in a hidden tab, so a page opened in the background would keep whatever
+   (possibly zero) viewport it was first laid out against. layout() only reads
+   innerWidth/innerHeight, so calling it straight is cheap enough. */
+addEventListener('resize', layout);
+addEventListener('orientationchange', layout);
+addEventListener('pageshow', layout);
+addEventListener('load', layout);
+document.addEventListener('visibilitychange', function(){
+  if (!document.hidden) layout();
+});
+
+try {
+  if (!scene || !curtain || !host || !pull) throw new Error('lamp markup missing');
+
+  // The expanding light needs both a mask and animatable custom properties.
+  // Without them the curtain cross-fades instead, which still reads fine.
+  if (window.CSS && CSS.supports && typeof CSS.registerProperty === 'function' &&
+      (CSS.supports('mask-image', 'radial-gradient(#000 0,#000 1px)') ||
+       CSS.supports('-webkit-mask-image', 'radial-gradient(#000 0,#000 1px)'))){
+    html.classList.add('lamp-mask');
+  }
+
+  html.classList.add('lamp-noanim');
+  curtain.style.setProperty('--lampReveal', '0px');
+  host.style.setProperty('--lamp-rope', ROPE_BASE + 'px');
+  host.style.setProperty('--lamp-on', '0');
+  layout();
+  void host.offsetWidth;                       // flush before transitions arm
+  html.classList.remove('lamp-noanim', 'lamp-armed');
+  html.classList.add('lamp-intro');
+  setInert(true);
+  setRoles();
+} catch (err){
+  html.classList.remove('lamp-armed', 'lamp-intro', 'lamp-grab', 'lamp-noanim');
+  try { setInert(false); } catch (_){}
+  if (scene) scene.style.display = 'none';
+  console.error('[lamp] intro disabled:', err);
+}
+})();
+</script>
 
 <!-- xlsx-js-style: SheetJS fork that supports cell fills + number formats (needed for coloured, %-formatted export) -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"
