@@ -109,11 +109,21 @@ if(loaded){
      !/^(direct|regular|growth)$/i.test(normaliseFundName("Some Fund - Direct Plan - Growth")));
 
   // ------------------------------------------------------------ grid decoding
+  // Date-only values are built at LOCAL midnight: gridToNavArr does
+  // new Date(t0+"T00:00:00"), and a datetime string with no zone suffix is
+  // parsed as local. Asserting one through toISOString() re-interprets it in
+  // UTC, which shifts the calendar day for any runner not on Greenwich -- these
+  // two read 2020-01-05 / 2020-01-26 in IST while passing in CI. The code was
+  // right and the assertion was wrong, so compare the LOCAL calendar date,
+  // which is the thing actually under test and is timezone-independent.
+  // (Same idiom the SIP-date guard below already uses: getFullYear/getMonth/getDate.)
+  const localDate = d =>
+    `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   const grid = { t0:"2020-01-06", d:[0,7,14,21], v:[100,101,102,103] };
   const arr = gridToNavArr(grid);
   eq("grid decodes to one point per offset", arr.length, 4);
-  eq("first date is t0", arr[0].date.toISOString().slice(0,10), "2020-01-06");
-  eq("offsets become real dates", arr[3].date.toISOString().slice(0,10), "2020-01-27");
+  eq("first date is t0", localDate(arr[0].date), "2020-01-06");
+  eq("offsets become real dates", localDate(arr[3].date), "2020-01-27");
   ok("navs are carried through", arr[2].nav === 102);
   ok("dates strictly increase", arr.every((p,i)=> i===0 || p.date > arr[i-1].date));
 
