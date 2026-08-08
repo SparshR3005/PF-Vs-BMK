@@ -503,7 +503,7 @@ html.lamp-lit #lampHost:hover{--lamp-on:1;}
 /* The lamp holds centre stage for a beat after the switch fires, so the light
    is seen spreading before the lamp starts travelling. Only on the way out:
    dropping the class restores a zero delay, so coming back is immediate. */
-html.lamp-lit #lampHost{transition-delay:260ms;}
+html.lamp-lit #lampHost{transition-delay:500ms;}
 
 /* A table lamp stands on its base, so it does not swing. It leans very
    slightly toward the chain while the chain is being pulled, pivoting on the
@@ -529,6 +529,15 @@ html.lamp-lit  #lampPull{opacity:0;pointer-events:none;}
   width:8px;height:12px;transform:translateX(-50%);border-radius:50% 50% 44% 44%;
   background:radial-gradient(circle at 34% 26%,var(--brass-2),var(--brass) 48%,#6d5429 100%);
   box-shadow:0 0 0 .5px rgba(0,0,0,.55),0 0 var(--lamp-bead,0px) rgba(245,205,130,.9);}
+/* Tapping the cord does not switch the lamp on -- it has to be pulled. The tap
+   bounces it instead, which shows what the control wants without a tooltip. */
+#lampPull.tug{animation:lampTug 440ms cubic-bezier(.34,1.56,.64,1);}
+@keyframes lampTug{
+  0%  {height:var(--lamp-rope,26px);}
+  38% {height:calc(var(--lamp-rope,26px) + 10px);}
+  100%{height:var(--lamp-rope,26px);}
+}
+
 /* Idle attention cue, so it reads as grabbable without a tooltip. */
 html.lamp-intro:not(.lamp-grab) #lampPull::after{
   animation:lampBead 2.9s ease-in-out .9s infinite;}
@@ -822,11 +831,12 @@ html.lamp-lit #lampHint,html.lamp-grab #lampHint{opacity:0;animation:none;}
         <rect x="8.4" y="44.6" width="47.2" height="3.6" rx="1.8" fill="url(#lmpRim)"/>
       </svg>
 
-      <button type="button" id="lampPull" aria-label="Pull the cord to switch the lamp on"></button>
+      <button type="button" id="lampPull"
+              aria-label="Switch the lamp on: drag the cord downwards, or press Enter"></button>
     </div>
   </div>
 
-  <p id="lampHint">Pull the cord</p>
+  <p id="lampHint">Grab the cord &amp; pull down</p>
 </div>
 
 <script>
@@ -989,12 +999,21 @@ function endDrag(e){
 pull.addEventListener('pointerup', endDrag);
 pull.addEventListener('pointercancel', endDrag);
 
-// A tap that never became a drag, plus Enter/Space, still work the switch.
+/* A tap does NOT work the switch -- the cord has to be grabbed and pulled. A
+   tap just bounces the cord, which teaches the gesture instead of rewarding
+   the wrong one. Keyboard activation still has to work, or the page cannot be
+   opened without a mouse: Enter/Space on a button fires a click with
+   detail === 0, which is what tells it apart from a pointer tap. */
 pull.addEventListener('click', function(e){
   e.preventDefault();
   if (suppressClick){ suppressClick = false; return; }
-  if (!lit) light();
+  if (lit) return;
+  if (e.detail === 0){ light(); return; }        // keyboard
+  pull.classList.remove('tug');                  // restart if already running
+  void pull.offsetWidth;
+  pull.classList.add('tug');
 });
+pull.addEventListener('animationend', function(){ pull.classList.remove('tug'); });
 
 /* --- clicking the parked lamp turns it back off ------------------------- */
 host.addEventListener('click', function(e){
