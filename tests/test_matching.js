@@ -135,6 +135,14 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
     "Equity Scheme - Dividend Yield Fund": "DIV_YIELD",
     "Equity Scheme - Sectoral/ Thematic": "SECTORAL",
     "ELSS": "ELSS",
+    // The label MFAPI began serving on 2026-08-28 for 21 live ELSS funds (HDFC,
+    // ICICI Prudential, Nippon India, Canara Robeco, Bandhan, Edelweiss, LIC MF,
+    // JM, Bank of India, Bajaj Finserv). CATEGORY_CANON is an exact lookup, so
+    // this resolved to null, isUnsupportedCategory() fired and computeScheme()
+    // THREW: ten flagship tax savers could not be added to a portfolio at all.
+    "Equity Schemes - ELSS- Tax Saver Fund": "ELSS",
+    "Equity Scheme - ELSS Fund": "ELSS",
+    "ELSS- Tax Saver Fund": "ELSS",
   };
   Object.entries(ACCEPT).forEach(([cat, key]) => {
     ok("accepts " + JSON.stringify(cat) + " -> " + key, A.categoryKey(cat) === key, String(A.categoryKey(cat)));
@@ -142,7 +150,8 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
 
   // Junk values observed live on legacy/closed MFAPI records. Each of these used to
   // pass the gate and get benchmarked against Nifty 500.
-  ["1", "1099 Days", "Growth", "Income", "IDF", "Payout",
+  ["elssomething", "Equity Scheme - Elssomething Fund",
+   "1", "1099 Days", "Growth", "Income", "IDF", "Payout",
    "Formerly Known as IIFL Mutual Fund", ""].forEach(junk => {
     ok("rejects junk category " + JSON.stringify(junk), A.isUnsupportedCategory(junk));
   });

@@ -331,6 +331,18 @@ for _cat, _want in [
     ("Equity Schemes - Focused Fund",       "FOCUSED"),
     ("Equity Schemes - ELSS",               "ELSS"),
     ("Equity Schemes - Thematic Fund",      "SECTORAL"),
+    # MFAPI hangs a DESCRIPTIVE SUFFIX off the ELSS category. The first spelling
+    # below is the one it started serving on 2026-08-28 for 21 of the 69 committed
+    # ELSS funds; CATEGORY_CANON is an exact lookup, so it resolved to None, those
+    # funds left the universe, and the publish gate refused ELSS at 48 vs 69. The
+    # rest are the obvious next spellings -- the fold covers them in advance rather
+    # than waiting for each one to break a night of data.
+    ("Equity Schemes - ELSS- Tax Saver Fund", "ELSS"),
+    ("Equity Scheme - ELSS- Tax Saver Fund",  "ELSS"),
+    ("Equity Scheme - ELSS Fund",             "ELSS"),
+    ("Equity Schemes - ELSS Tax Saver Fund",  "ELSS"),
+    ("ELSS- Tax Saver Fund",                  "ELSS"),
+    ("ELSS Tax Saver",                        "ELSS"),
     # the singular spelling must keep working unchanged
     ("Equity Scheme - Contra Fund",         "CONTRA"),
     ("Equity Scheme - Mid Cap Fund",        "MID_CAP"),
@@ -343,7 +355,11 @@ for _cat, _want in [
 # licence to rewrite it.
 for _cat in ("Debt Scheme - Liquid Fund", "Debt Schemes - Liquid Fund",
              "Hybrid Scheme - Aggressive Hybrid Fund", "Other Schemes - Index Funds",
-             "Solution Oriented Scheme - Retirement Fund", "", "   "):
+             "Solution Oriented Scheme - Retirement Fund", "", "   ",
+             # The ELSS suffix fold is word-bounded on purpose: "elss" starting a
+             # LONGER word is not the ELSS category and must not be laundered into
+             # one. Without the bound these would both resolve to ELSS.
+             "elssomething", "Equity Scheme - Elssomething Fund"):
     ok(f"{_cat!r} is still rejected", P.CATEGORY_CANON.get(P.norm_category(_cat)) is None)
 
 ok("the fold is anchored at the start of the string",
@@ -356,6 +372,17 @@ if _norm_js:
        "equity schemes -" in _norm_js.group(1) and "equity scheme -" in _norm_js.group(1))
     ok("...and the fold is anchored there as well",
        "^equity schemes -" in _norm_js.group(1))
+    # The ELSS suffix fold has to exist on BOTH sides or the client and the nightly
+    # job disagree about the same fund: the drift that broke ELSS made
+    # categoryKey() return null in index.html too, so isUnsupportedCategory() fired
+    # and computeScheme() threw -- the funds could not be added to a portfolio at
+    # all, not merely dropped from the rankings.
+    ok("index.html folds the ELSS suffix too",
+       "^equity scheme - elss" in _norm_js.group(1))
+    ok("...and the bare ELSS form as well",
+       "^elss" in _norm_js.group(1))
+    ok("...and both ELSS folds are word-bounded there",
+       _norm_js.group(1).count(chr(92) + "b") >= 2)
 
 
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")

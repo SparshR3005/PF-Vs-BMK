@@ -9,6 +9,86 @@ appended verbatim below, newest release first.
 
 ---
 
+# v18 - the category label that quietly emptied ELSS
+
+Response to the nightly `Fetch ranking data` failure on run `33129926611`
+(2026-08-28). Same rule as v5-v17: **every claim names the test that proves it**,
+and nothing is listed as done unless the test fails against v17 and passes against
+this one.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       40   unchanged
+python3 tests/test_fetch_ranks.py    196   unchanged
+python3 tests/test_probe_ranks.py    104   + ELSS suffix fold, both sides   (was 93)
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             34   unchanged
+node    tests/test_matching.js       128   + ELSS suffix fold, client       (was 123)
+node    tests/test_insights.js       218   unchanged
+node    tests/test_report.js          60   unchanged
+```
+
+**797 tests**, up from v17's 781. One mutation: reverting `mf_universe.py` and
+`index.html` to v17 turns the 11 new Python assertions and the 5 new JS assertions
+red, and nothing else.
+
+---
+
+## 1 - MFAPI hung a suffix off the ELSS category, and an exact lookup dropped the funds
+
+**`mf_universe.py` - `norm_category()`; `index.html` - `normCategory()`**
+
+On 2026-08-28 MFAPI began serving `"Equity Schemes - ELSS- Tax Saver Fund"` in place
+of `"Equity Scheme - ELSS"`. `CATEGORY_CANON` is an **exact dict lookup**, so
+`category_key()` returned `None` and the funds left the universe entirely:
+
+- discovery fell **81 -> 60** ELSS funds, the cohort fell **69 -> 48**, and
+  `safe_to_publish()` refused all three ELSS files at 70% (`<80%`). That refusal was
+  **correct** - publishing would have silently dropped ten AMCs' flagship tax savers
+  out of the rankings - and the v17 commit-then-re-raise wiring did its job: the ten
+  healthy categories still published, and only ELSS held last-good data;
+- the **same lookup backs `isUnsupportedCategory()`**, so in the browser
+  `computeScheme()` **threw** on those funds. They could not be added to a portfolio
+  at all, with *"this tool only benchmarks actively-managed equity funds"* shown for a
+  category the tool fully supports. Identical to the v8 thematic case, and to the
+  Invesco Contra/Midcap case the plural fold was written for.
+
+**The gate caught the cliff, not the leak.** The same drift had already taken 16 funds
+- Axis, DSP, Mirae Asset, Invesco India, HSBC, Mahindra Manulife, Groww and NJ, both
+plans each - **before** 2026-08-28. Each night lost a handful, every drop stayed inside
+the 80% floor, and each shrunken cohort became the new baseline: the 2026-08-26 run
+logged `periods 69 vs 71 committed` and published without complaint. A percentage floor
+measured against the *last published* count cannot see a slow leak, only a cliff.
+
+**Fix:** fold the suffix away in `norm_category()` / `normCategory()` rather than
+enumerate the spelling, for the reason the plural rule beside it already states -
+adding one more KEY only ever fixes the variant MFAPI is serving today. There is
+exactly one SEBI ELSS category, so any category string beginning `elss` **is** that
+category whatever is hung off the end:
+
+```
+^equity scheme - elss\b.*  ->  equity scheme - elss
+^elss\b.*                  ->  elss
+```
+
+Anchored so a string that merely contains `elss` is untouched, and word-bounded so
+`"Elssomething"` is still rejected. Applied to both copies; `tests/test_probe_ranks.py`
+fails if either side carries the fold without the other.
+
+**Measured against live MFAPI** (`--dry-run --canary ELSS`, 2026-08-28): ELSS universe
+**60 -> 97**, ranked cohort **48 -> 85** against 69 committed (1.23x, inside the 1.60
+growth ceiling, so it publishes without `--force`). **Zero** committed funds absent.
+Every other category unchanged to the fund - CONTRA 7, DIV_YIELD 22, FLEXI_CAP 92,
+FOCUSED 56, LARGE_CAP 68, LARGE_MID 73, MID_CAP 66, MULTI_CAP 63, SMALL_CAP 71,
+VALUE 43 - so the fold touches ELSS and nothing else.
+
+The 12 `stale` exclusions are unchanged and correct: dormant closed-end series funds
+(SBI Long Term Advantage I-VI, Sundaram Long Term Tax Advantage I, HSBC Tax Saver
+Equity, Navi ELSS), last reporting between 2025-02 and 2026-04.
+
+---
+
 # v17 — the manifest that deleted categories, and a cache that never forgave
 
 Response to an external audit (findings F-01 … F-14). Same rule as v5–v16: **every

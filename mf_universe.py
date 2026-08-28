@@ -102,7 +102,31 @@ def norm_category(c):
     # identical to normCategory() in index.html -- a fund the client accepts but
     # this module rejects silently vanishes from the rankings.
     n = re.sub(r"\s+", " ", str(c or "").lower()).strip()
-    return re.sub(r"^equity schemes -", "equity scheme -", n)
+    n = re.sub(r"^equity schemes -", "equity scheme -", n)
+    # ELSS carries a DESCRIPTIVE SUFFIX that the plural fold above cannot reach.
+    # On 2026-08-28 mfapi began serving "Equity Schemes - ELSS- Tax Saver Fund"
+    # for 21 of the 69 committed ELSS funds -- HDFC, ICICI Prudential, Nippon
+    # India, Canara Robeco, Bandhan, Edelweiss, LIC MF, JM, Bank of India and
+    # Bajaj Finserv, all reporting NAVs normally. CATEGORY_CANON is an EXACT dict
+    # lookup, so the new suffix made category_key() return None and those funds
+    # left the universe entirely: discovery fell 81 -> 60, the cohort fell 69 ->
+    # 48, and safe_to_publish() refused all three ELSS files at 70% (<80%).
+    #
+    # That refusal was correct -- publishing would have silently dropped ten AMCs'
+    # flagship tax savers out of the rankings -- but the same lookup is what
+    # index.html's isUnsupportedCategory() uses, so those funds could not be added
+    # to a portfolio at all while this was live.
+    #
+    # Folded, not enumerated, for the reason the plural rule states above: adding
+    # one more KEY fixes only the spelling mfapi is serving TODAY. There is exactly
+    # one SEBI ELSS category, so ANY category string that begins with "elss" is
+    # that category no matter what is hung off the end, and the next variant
+    # ("ELSS Fund", "ELSS - Tax Saving") costs nothing. Anchored and word-bounded:
+    # the anchor keeps it from rewriting a string that merely contains "elss", and
+    # \b stops it swallowing a hypothetical "elssomething".
+    n = re.sub(r"^equity scheme - elss\b.*", "equity scheme - elss", n)
+    # ...and the same for the bare form, which mfapi serves on 10 live ELSS funds.
+    return re.sub(r"^elss\b.*", "elss", n)
 
 
 def category_key(category):
