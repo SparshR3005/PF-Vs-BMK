@@ -9,6 +9,124 @@ appended verbatim below, newest release first.
 
 ---
 
+# v19 - telling an outage apart from a decision
+
+Response to the nightly `Fetch ranking data` failure on run `33438885781`
+(2026-08-31), which was red for a reason nobody could act on. Same rule as v5-v18:
+**every claim names the test that proves it**, and nothing is listed as done unless
+the test fails against v18 and passes against this one.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       40   unchanged
+python3 tests/test_fetch_ranks.py    220   + exit-code split, freshness bound   (was 196)
+python3 tests/test_probe_ranks.py    104   unchanged
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             34   unchanged
+node    tests/test_matching.js       128   unchanged
+node    tests/test_insights.js       218   unchanged
+node    tests/test_report.js          60   unchanged
+```
+
+**821 tests**, up from v18's 797. Two mutations, both caught and both **red rather
+than boom**: reverting `fetch_ranks.py` fails 3 assertions (including a guarded
+`AttributeError` report), and reverting `.github/workflows/ranks-fetch.yml` alone
+fails the 3 workflow assertions.
+
+---
+
+## 1 - Two opposite events sent the same red email (run 33438885781)
+
+**`fetch_ranks.py` - `discover_universe()`, `main()`; `.github/workflows/ranks-fetch.yml`**
+
+Within four days the ranking job went red twice, for events with nothing in common:
+
+- **2026-08-28** - ELSS's publish gate refused. A category had been quietly losing
+  funds for days and somebody had to look. The red email was doing its job.
+- **2026-08-31** - `/mf` returned **502** during discovery. Nothing was fetched,
+  nothing was committed (`No data changes to commit.`), no publish decision was
+  reached. There was no action for anyone to take.
+
+Both exited `1` through the same step, so the notification could not tell them apart.
+Two alarms that look identical but mean opposite things train the reader to ignore
+both - which costs exactly when the first kind arrives. This is the v16
+`NIFTY_HEALTHCARE` lesson pointed the other way: that was a job staying green while
+serving frozen data; this is a job going red while nothing is wrong.
+
+**Fix - say which happened.** Three named exit codes, and a workflow that reads them:
+
+```
+EXIT_OK                    = 0
+EXIT_NEEDS_REVIEW          = 1   a gate refused, or a category errored: read the log
+EXIT_UPSTREAM_UNAVAILABLE  = 2   the provider was unreachable: nothing to decide
+```
+
+`discover_universe()` now raises `UpstreamUnavailable` on the two transport failures -
+a `/mf` that does not answer, and the `MIN_RESOLVE_SUCCESS` floor tripping because
+lookups are failing wholesale. Both still fail **closed**; nothing is ever published
+from a partial universe. What changed is only who gets told.
+
+Deliberately **not** reclassified: a `/mf` whose shape changed, and a `/mf` that turns
+out to be paginated. Those are provider API changes that need code, so they keep
+returning `None` and stay loud. Pinned by *"an unrecognised /mf shape stays a LOUD
+failure, not an outage"* and *"a paginated /mf stays a LOUD failure too"*.
+
+The workflow captures the code (`echo "code=$rc" >> "$GITHUB_OUTPUT"`) because
+`continue-on-error` collapses every non-zero exit into `outcome == 'failure'`. The
+re-raise step gained `&& steps.fetch.outputs.code != '2'`; an unset or empty code
+still fails loudly, so only a code the fetcher explicitly set to 2 can be quiet.
+
+## 2 - ...but a quiet exit must not let the data rot
+
+A soft exit is only safe while the published files are still worth serving. `/mf`
+could stay down for a week and every run would go green.
+
+So `EXIT_UPSTREAM_UNAVAILABLE` is **conditional on freshness**.
+`committed_data_age_days()` reads `generated_utc`, which only advances on a successful
+publish and is therefore exactly "how long since the rankings last moved". Past
+`MAX_UPSTREAM_OUTAGE_DAYS = 4` the outage stops being weather and the run goes red
+after all. Four days clears a Friday outage plus the weekend (the cron is Mon-Fri)
+without crying wolf.
+
+Three ways it refuses to guess, each pinned by a test:
+
+- a **future** stamp is a clock fault, not freshness - clamped to 0 rather than
+  wrapping negative and sailing under every bound;
+- a missing, unparseable, or timestamp-less manifest returns `None`;
+- and `None` means **fail loud**. An unprovable claim of freshness is the one thing a
+  quiet exit must never rest on.
+
+**Verified against the live outage** (2026-09-01, `--dry-run`, mfapi still down):
+
+```
+FATAL: /mf returned 0
+UPSTREAM UNAVAILABLE (/mf returned 0) -- nothing was fetched, nothing was written,
+and no publish decision was made. Published data is 3.2 days old, inside the 4-day
+bound, so the last-good files keep serving and this run is NOT a failure to review.
+EXIT=2
+```
+
+`data/` untouched. Had the same outage persisted two more days, the identical call
+would have returned 1 and gone red.
+
+## 3 - The suite goes red, not boom
+
+The v19 assertions are wrapped in `_v19_upstream_outage_tests()` and called inside
+`try/except AttributeError`. Run against pre-v19 sources, every assertion would
+otherwise raise on the first `R.EXIT_*` it touched and abort the run with a stack
+trace that reads like a broken test rather than a caught regression -
+`tests/test_matching.js` already guards its extraction for exactly this reason. A
+mutation check that aborts proves nothing.
+
+One pre-existing assertion changed with it: *"the run still exits non-zero when a
+category failed"* pinned the literal `return 1`, which is now
+`return EXIT_NEEDS_REVIEW`. Its intent is unchanged and still enforced -
+`EXIT_NEEDS_REVIEW == 1` is asserted directly, so nothing that used to page stops
+paging.
+
+---
+
 # v18 - the category label that quietly emptied ELSS
 
 Response to the nightly `Fetch ranking data` failure on run `33129926611`

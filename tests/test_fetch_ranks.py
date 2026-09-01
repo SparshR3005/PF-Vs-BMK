@@ -272,8 +272,16 @@ _saved_get = R.get_json
 try:
     R.get_json = _resolver
     _lines = []
+    # v19: still fails CLOSED -- nothing is published from a sample -- but it now
+    # raises UpstreamUnavailable rather than returning None, because wholesale
+    # lookup failure is the provider being unwell, not a decision to review.
+    try:
+        R.discover_universe(5.0, 2, _lines.append)
+        _raised = False
+    except R.UpstreamUnavailable:
+        _raised = True
     ok("a third of category lookups failing fails the whole discovery closed",
-       R.discover_universe(5.0, 2, _lines.append) is None)
+       _raised)
     ok("...and reports the success rate", any("lookups FAILED" in l for l in _lines))
 finally:
     R.get_json = _saved_get
@@ -942,7 +950,7 @@ ok("a category failure is counted rather than raised", "failed += 1" in _main)
 ok("a failed category is marked stale, not dropped from the manifest",
    "stale_entry(" in _main and "committed_cats.get(cat)" in _main)
 ok("the run still exits non-zero when a category failed",
-   "if failed:\n        return 1" in _main)
+   "if failed:\n        return EXIT_NEEDS_REVIEW" in _main)
 ok("the summary line reports category errors", "category error(s)" in _main)
 
 
@@ -1007,6 +1015,180 @@ ok("the per-plan grid count falls back to what is on disk",
 # A refusal LATCHES -- safe_to_publish compares against the committed count -- so
 # exiting 0 reproduces the nine-day NIFTY_HEALTHCARE freeze on the ranks side.
 ok("a refused publish exits non-zero", "if refused:\n        print(" in _src)
+
+# ============================ v19: an outage the provider owns vs a call to review
+#
+# Wrapped in a function and guarded: run this suite against pre-v19 fetch_ranks.py
+# and every assertion below would raise AttributeError on the first R.EXIT_* it
+# touched, aborting the run with a stack trace that reads like a broken test
+# rather than a caught regression. Same reason tests/test_matching.js guards its
+# extraction: the suite has to go RED, not boom, or it is useless as a mutation
+# check.
+def _v19_upstream_outage_tests():
+    # fetch_ranks.py exited 1 for BOTH "ELSS's publish gate refused, a category is quietly
+    # losing funds, go look" (2026-08-28) and "mfapi's /mf returned 502, nothing was
+    # fetched or written" (2026-08-31). Same red email, opposite meanings; the second kind
+    # is the one that teaches the reader to stop opening them.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: E402
+
+    ok("the three exit codes are distinct",
+       len({R.EXIT_OK, R.EXIT_NEEDS_REVIEW, R.EXIT_UPSTREAM_UNAVAILABLE}) == 3)
+    ok("...and OK is still 0, so success is unchanged", R.EXIT_OK == 0)
+    ok("...and a reviewable failure is still 1, so nothing that used to page stops paging",
+       R.EXIT_NEEDS_REVIEW == 1)
+
+
+    def _stamp(days_ago):
+        return (_dt.now(_tz.utc) - _td(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+    with tempfile.TemporaryDirectory() as _d:
+        _t = Path(_d)
+        _p = _t / "index.json"
+
+        _p.write_text(json.dumps({"generated_utc": _stamp(1), "categories": {}}),
+                      encoding="utf-8")
+        _age = R.committed_data_age_days(_p)
+        ok("a day-old manifest measures about a day old",
+           _age is not None and 0.9 < _age < 1.1)
+
+        # A future stamp is a clock fault, not freshness. It must not wrap negative and
+        # sail under every bound.
+        _p.write_text(json.dumps({"generated_utc": _stamp(-5), "categories": {}}),
+                      encoding="utf-8")
+        ok("a future-dated manifest clamps to 0 rather than going negative",
+           R.committed_data_age_days(_p) == 0.0)
+
+        # Every unreadable shape must be None -- "cannot confirm fresh", never "fresh".
+        _p.write_text("{ not json", encoding="utf-8")
+        ok("an unparseable manifest gives no age", R.committed_data_age_days(_p) is None)
+        _p.write_text(json.dumps({"categories": {}}), encoding="utf-8")
+        ok("a manifest with no generated_utc gives no age",
+           R.committed_data_age_days(_p) is None)
+        _p.write_text(json.dumps({"generated_utc": "yesterday-ish"}), encoding="utf-8")
+        ok("an unparseable timestamp gives no age", R.committed_data_age_days(_p) is None)
+        ok("a missing manifest gives no age",
+           R.committed_data_age_days(_t / "nope.json") is None)
+
+        # ---- the classification the Action reads ----
+        _p.write_text(json.dumps({"generated_utc": _stamp(1), "categories": {}}),
+                      encoding="utf-8")
+        ok("a fresh publish plus an outage is a QUIET skip",
+           R.upstream_outage_exit("/mf returned 502", lambda m: None, _p)
+           == R.EXIT_UPSTREAM_UNAVAILABLE)
+
+        _p.write_text(json.dumps({"generated_utc": _stamp(R.MAX_UPSTREAM_OUTAGE_DAYS + 1),
+                                  "categories": {}}), encoding="utf-8")
+        ok("...but an outage that has already frozen the data past the bound goes LOUD",
+           R.upstream_outage_exit("/mf returned 502", lambda m: None, _p)
+           == R.EXIT_NEEDS_REVIEW)
+
+        _p.write_text("{ not json", encoding="utf-8")
+        ok("...and an unprovable freshness goes loud rather than assuming the best",
+           R.upstream_outage_exit("/mf returned 502", lambda m: None, _p)
+           == R.EXIT_NEEDS_REVIEW)
+
+        _lines = []
+        R.upstream_outage_exit("/mf returned 502", _lines.append, _t / "absent.json")
+        ok("the outage path says which provider call failed",
+           any("502" in l for l in _lines))
+
+    # ---- discovery classifies the failure it saw ----
+    _saved_get = R.get_json
+    try:
+        R.get_json = lambda url, timeout, attempts=3: (None, 0.0, 0, 502)
+        try:
+            R.discover_universe(5.0, 2, lambda m: None)
+            _raised = False
+        except R.UpstreamUnavailable:
+            _raised = True
+        ok("a dead /mf raises UpstreamUnavailable rather than looking like a bad decision",
+           _raised)
+    finally:
+        R.get_json = _saved_get
+
+    # A provider API CHANGE is not weather: it needs code, so it must stay loud. Both of
+    # these must keep returning None (-> EXIT_NEEDS_REVIEW), and must never raise.
+    _saved_get = R.get_json
+    try:
+        R.get_json = lambda url, timeout, attempts=3: ("not a list or dict", 0.0, 10, 200)
+        ok("an unrecognised /mf shape stays a LOUD failure, not an outage",
+           R.discover_universe(5.0, 2, lambda m: None) is None)
+    finally:
+        R.get_json = _saved_get
+
+    _saved_get = R.get_json
+    try:
+        R.get_json = lambda url, timeout, attempts=3: (
+            {"data": [{"schemeCode": 1, "schemeName": "X Growth", "isinGrowth": "I"}],
+             "page": 1, "totalPages": 2}, 0.0, 10, 200)
+        ok("a paginated /mf stays a LOUD failure too",
+           R.discover_universe(5.0, 2, lambda m: None) is None)
+    finally:
+        R.get_json = _saved_get
+
+
+    # ---- end to end through the real main() ----
+    def _run_main_raising(tmp, exc, argv):
+        """Drive main() with discovery raising, so the exit code is the real one."""
+        import io as _io
+        import contextlib as _ctx
+
+        def _boom(*a, **k):
+            raise exc
+
+        old_out, old_argv, old_disc = R.OUT_DIR, sys.argv, R.discover_universe
+        R.OUT_DIR = tmp / "data" / "ranks"
+        sys.argv = ["fetch_ranks.py"] + argv
+        R.discover_universe = _boom
+        buf = _io.StringIO()
+        try:
+            with _ctx.redirect_stdout(buf):
+                code = R.main()
+        finally:
+            R.OUT_DIR, sys.argv, R.discover_universe = old_out, old_argv, old_disc
+        return code, buf.getvalue()
+
+
+    with tempfile.TemporaryDirectory() as _d:
+        _t = Path(_d)
+        (_t / "data" / "ranks").mkdir(parents=True)
+        _mp = _t / "data" / "ranks" / "index.json"
+        _mp.write_text(json.dumps({"generated_utc": _stamp(1),
+                                   "categories": {"ELSS": {"status": "ok"}}}),
+                       encoding="utf-8")
+        _code, _out = _run_main_raising(_t, R.UpstreamUnavailable("/mf returned 502"), [])
+        ok("main() exits UPSTREAM_UNAVAILABLE when the provider is down and data is fresh",
+           _code == R.EXIT_UPSTREAM_UNAVAILABLE)
+        ok("...and says nothing was fetched or written", "nothing was fetched" in _out)
+        ok("...and leaves the committed manifest exactly as it was",
+           json.loads(_mp.read_text(encoding="utf-8"))["categories"]
+           == {"ELSS": {"status": "ok"}})
+
+        _mp.write_text(json.dumps({"generated_utc": _stamp(R.MAX_UPSTREAM_OUTAGE_DAYS + 2),
+                                   "categories": {}}), encoding="utf-8")
+        _code, _ = _run_main_raising(_t, R.UpstreamUnavailable("/mf returned 502"), [])
+        ok("...but the same outage goes LOUD once the data has frozen past the bound",
+           _code == R.EXIT_NEEDS_REVIEW)
+
+    # ---- the workflow has to actually READ the distinction ----
+    _wf = (ROOT / ".github" / "workflows" / "ranks-fetch.yml").read_text(encoding="utf-8")
+    ok("the fetch step records its exit code for later steps to branch on",
+       "GITHUB_OUTPUT" in _wf and re.search(r"code=\$rc", _wf) is not None)
+    ok("the re-raise step no longer fires on a bare outage",
+       re.search(r"steps\.fetch\.outputs\.code\s*!=\s*'2'", _wf) is not None)
+    ok("...and an outage is still reported, as a warning on a green run",
+       "::warning" in _wf
+       and re.search(r"steps\.fetch\.outputs\.code\s*==\s*'2'", _wf) is not None)
+    ok("a refused gate still exits non-zero", "exit 1" in _wf)
+
+
+try:
+    _v19_upstream_outage_tests()
+except AttributeError as _exc:
+    ok("fetch_ranks.py exposes the upstream-outage classification "
+       f"(missing: {_exc})", False)
+
 
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)

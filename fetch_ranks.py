@@ -201,6 +201,38 @@ FETCH_FAILURE_TOLERANCE = 2
 # trusted at all. Below this the discovery is not a universe, it is a sample.
 MIN_RESOLVE_SUCCESS = 0.90
 
+# ------------------------------------------------------------------ exit codes
+# The Action reads these to decide whether a human needs to look. Two failures that
+# both exited 1 are NOT the same event:
+#
+#   * 2026-08-28 -- ELSS's publish gate refused. A category was silently losing
+#     funds and somebody had to look. The red email was doing its job.
+#   * 2026-08-31 -- mfapi's /mf returned 502 during discovery. Nothing was fetched,
+#     nothing was committed, no publish decision was made, and there was no action
+#     for anyone to take. The red email was pure noise.
+#
+# Indistinguishable in the notification, they train the reader to ignore both --
+# which costs exactly when the first kind arrives. So say which happened.
+EXIT_OK = 0
+EXIT_NEEDS_REVIEW = 1        # a gate refused, or a category errored: read the log
+EXIT_UPSTREAM_UNAVAILABLE = 2  # the provider was unreachable: nothing to decide
+
+# ...but a soft exit must not let the data rot in silence. `generated_utc` only moves
+# on a successful publish, so a provider down for days makes it older and older. Past
+# this bound the outage stops being weather and starts being something to chase, and
+# the run goes red after all. Four days clears a Fri-outage-plus-weekend (the cron is
+# Mon-Fri) without firing, which is the case that would otherwise cry wolf.
+MAX_UPSTREAM_OUTAGE_DAYS = 4
+
+
+class UpstreamUnavailable(Exception):
+    """The provider could not be reached, so no publish decision was reached either.
+
+    Deliberately NOT raised for a /mf whose SHAPE changed or that turned out to be
+    paginated. Those are provider API changes that need code, and they must stay
+    loud; this is only for "the server did not answer".
+    """
+
 
 # ------------------------------------------------------------------ pure maths
 def build_weekly_grid(rows, as_of, years=GRID_YEARS, max_gap=GRID_MAX_GAP_DAYS):
@@ -571,6 +603,60 @@ def load_committed_manifest(path):
     return copy.deepcopy(cats) if isinstance(cats, dict) else {}
 
 
+def committed_data_age_days(path, now=None):
+    """How old is the published data, in days? None when that cannot be established.
+
+    `generated_utc` only advances on a successful publish, so this is exactly "how
+    long since the rankings last moved" -- which is what decides whether an upstream
+    outage is still weather (EXIT_UPSTREAM_UNAVAILABLE) or has gone on long enough to
+    need chasing (EXIT_NEEDS_REVIEW).
+
+    Returns None rather than guessing when the manifest is missing, unreadable or
+    carries no usable timestamp. The caller treats None as "cannot confirm the data is
+    fresh" and fails LOUD: an unprovable claim of freshness is the one thing a quiet
+    exit must never be built on.
+    """
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    stamp = doc.get("generated_utc") if isinstance(doc, dict) else None
+    try:
+        when = datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    delta = (now or datetime.now(timezone.utc)) - when
+    # A future stamp means a clock problem, not fresh data. Clamp at 0 so it reads as
+    # "not stale" rather than wrapping negative and silently passing every bound.
+    return max(0.0, delta.total_seconds() / 86400.0)
+
+
+def upstream_outage_exit(detail, log, manifest_path):
+    """Classify a provider outage: quiet skip, or loud enough to chase?
+
+    Nothing has been fetched or written when this is reached, so the only question is
+    whether the SILENCE is safe -- i.e. whether what is already published is still
+    recent enough to keep serving without telling anyone.
+    """
+    age = committed_data_age_days(manifest_path)
+    if age is None:
+        log(f"UPSTREAM UNAVAILABLE ({detail}) -- and the committed manifest gives no "
+            f"readable generated_utc, so the published data cannot be shown to be "
+            f"fresh. Failing loudly rather than skipping quietly on an assumption.")
+        return EXIT_NEEDS_REVIEW
+    if age > MAX_UPSTREAM_OUTAGE_DAYS:
+        log(f"UPSTREAM UNAVAILABLE ({detail}) -- and the published data is already "
+            f"{age:.1f} days old (bound {MAX_UPSTREAM_OUTAGE_DAYS}). An outage this "
+            f"long is no longer routine; failing so somebody looks at the provider.")
+        return EXIT_NEEDS_REVIEW
+    log(f"UPSTREAM UNAVAILABLE ({detail}) -- nothing was fetched, nothing was "
+        f"written, and no publish decision was made. Published data is {age:.1f} "
+        f"days old, inside the {MAX_UPSTREAM_OUTAGE_DAYS}-day bound, so the last-good "
+        f"files keep serving and this run is NOT a failure to review.")
+    return EXIT_UPSTREAM_UNAVAILABLE
+
+
 def stale_entry(previous, reason):
     """Keep a category's committed metadata, but mark it stale and say why.
 
@@ -648,8 +734,11 @@ def discover_universe(timeout, concurrency, log):
     """
     raw, _, _, status = get_json(f"{API}/mf", timeout)
     if raw is None:
+        # UPSTREAM, not us. get_json() has already retried; the provider is simply
+        # not answering. Nothing has been fetched or written, so there is no data
+        # decision here for anyone to review -- see EXIT_UPSTREAM_UNAVAILABLE.
         log(f"FATAL: /mf returned {status}")
-        return None
+        raise UpstreamUnavailable(f"/mf returned {status}")
     all_schemes, complete = unwrap_list(raw)
     if all_schemes is None:
         log("FATAL: unexpected /mf shape")
@@ -741,10 +830,14 @@ def discover_universe(timeout, concurrency, log):
         log(f"  {lookup_failed} of {len(candidates)} category lookups FAILED "
             f"({ok_rate:.1%} succeeded)")
     if candidates and ok_rate < MIN_RESOLVE_SUCCESS:
+        # Same class as a dead /mf: the provider is failing lookups wholesale. Still
+        # fails CLOSED -- nothing is published from a sample -- but there is nothing
+        # a human can do about it either, so it is upstream weather, not a review.
         log(f"FATAL: only {ok_rate:.1%} of category lookups succeeded "
             f"(floor {MIN_RESOLVE_SUCCESS:.0%}) -- this is a sample, not a universe; "
             f"refusing to publish")
-        return None
+        raise UpstreamUnavailable(
+            f"only {ok_rate:.1%} of category lookups succeeded")
 
     # Deterministic order so --max-funds and every diagnostic are reproducible.
     # Results arrive in as_completed() order, i.e. network timing, so slicing them
@@ -849,15 +942,22 @@ def main():
         print(f"[{time.monotonic()-started:7.1f}s] {msg}", flush=True)
 
     log("discovering universe")
-    universe = discover_universe(args.timeout, args.concurrency, log)
+    try:
+        universe = discover_universe(args.timeout, args.concurrency, log)
+    except UpstreamUnavailable as exc:
+        # The provider did not answer. Distinguished from every other failure here
+        # because it is the one that needs nobody -- see EXIT_UPSTREAM_UNAVAILABLE.
+        return upstream_outage_exit(str(exc), log, OUT_DIR / "index.json")
     if not universe:
-        return 1
+        # A /mf whose shape changed, or that is paginated. Provider API change: needs
+        # code, so it stays loud.
+        return EXIT_NEEDS_REVIEW
     if args.canary:
         universe = [u for u in universe if u["cat"] == args.canary]
         log(f"canary {args.canary}: {len(universe)} funds")
         if not universe:
             log("FATAL: canary category matched no funds")
-            return 1
+            return EXIT_NEEDS_REVIEW
 
     by_cat = {}
     for u in universe:
@@ -1073,7 +1173,7 @@ def main():
     # A category that errored is a real failure even when others succeeded, so the
     # Action must go red rather than reporting a partial run as success.
     if failed:
-        return 1
+        return EXIT_NEEDS_REVIEW
     # A refusal LATCHES: safe_to_publish() compares against the COMMITTED count, so
     # the same category is refused every night until someone looks. Exiting 0 because
     # other categories wrote is the nine-day NIFTY_HEALTHCARE shape exactly -- a job
@@ -1083,8 +1183,8 @@ def main():
         print(f"{refused} categor(y/ies) refused their publish gate and are serving "
               f"last-good data. This repeats nightly until reviewed; re-run with "
               f"--force only after confirming the drop is real.")
-        return 1
-    return 0
+        return EXIT_NEEDS_REVIEW
+    return EXIT_OK
 
 
 if __name__ == "__main__":

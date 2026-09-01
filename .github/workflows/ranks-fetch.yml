@@ -65,7 +65,20 @@ jobs:
       - name: Fetch ranking data
         id: fetch
         continue-on-error: true
-        run: python fetch_ranks.py --concurrency 8
+        # The EXIT CODE is captured, not just pass/fail, because fetch_ranks.py now
+        # distinguishes "a gate refused / a category errored" (1, read the log) from
+        # "the provider never answered" (2, nobody can do anything). continue-on-error
+        # alone collapses both into outcome == 'failure'.
+        # `set +e` because the default shell is `bash -e`, which would abort on the
+        # non-zero exit before the code could be recorded. `exit $rc` at the end keeps
+        # steps.fetch.outcome meaningful for the re-raise step below.
+        run: |
+          set +e
+          python fetch_ranks.py --concurrency 8
+          rc=$?
+          set -e
+          echo "code=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
 
       - name: Commit updated data
         run: |
@@ -82,11 +95,26 @@ jobs:
       # Re-raise the fetch's exit code now that whatever DID publish is safely
       # committed. A refusal repeats every night until someone looks, which is the
       # point -- but it must be visible without also costing a day of good data.
+      #
+      # Exit 2 is EXCLUDED here: that is "mfapi did not answer", which publishes
+      # nothing, decides nothing, and needs nobody. It used to go red identically to a
+      # refused gate, and two alarms that look the same but mean opposite things train
+      # the reader to ignore the one that matters. An unset/empty code still fails
+      # loudly -- only a code the fetcher explicitly set to 2 is allowed to be quiet.
       - name: Fail if the fetch refused a publish or errored a category
-        if: steps.fetch.outcome == 'failure'
+        if: steps.fetch.outcome == 'failure' && steps.fetch.outputs.code != '2'
         run: |
           echo "fetch_ranks.py exited non-zero: a category errored, or a publish gate"
           echo "refused. Anything publishable was still committed by the step above."
           echo "Read the fetch log, then re-run with --force ONLY after confirming"
           echo "the drop is real."
           exit 1
+
+      # Exit 2: say so in the run summary, but keep the job GREEN so no notification
+      # goes out. Not silent -- fetch_ranks.py only returns 2 while the committed data
+      # is inside MAX_UPSTREAM_OUTAGE_DAYS; past that it returns 1 and the step above
+      # fires instead, so a provider that stays down still surfaces on its own.
+      - name: Note that the provider was unavailable (not a failure)
+        if: steps.fetch.outputs.code == '2'
+        run: |
+          echo "::warning title=Upstream provider unavailable::mfapi could not be reached, so no ranking data was fetched or committed. The published files are unchanged and still serving. This run is deliberately green; if the outage persists the fetch starts exiting 1 and this job goes red."
