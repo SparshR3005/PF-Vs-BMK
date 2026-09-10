@@ -9,6 +9,105 @@ appended verbatim below, newest release first.
 
 ---
 
+# v21 - enforcing frame-ancestors where a meta tag cannot
+
+The CSP has carried `frame-ancestors 'none'` since it was written. It has never once
+been enforced. Same rule as v5-v20: **every claim names the test that proves it**, and
+nothing is listed as done unless the test fails against v20 and passes against this one.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       40   unchanged
+python3 tests/test_fetch_ranks.py    220   unchanged
+python3 tests/test_probe_ranks.py    116   unchanged
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             45   + frame guard, four framing modes   (was 34)
+node    tests/test_matching.js       128   unchanged
+node    tests/test_insights.js       218   unchanged
+node    tests/test_report.js          61   unchanged
+```
+
+**845 tests**, up from v20's 834. Two mutations, both caught: deleting the guard fails
+the presence assertion, and flipping it to the *naive* form (reveal, then navigate)
+fails four behavioural assertions.
+
+---
+
+## 1 - `frame-ancestors 'none'` was decorative
+
+**`index.html` - document head**
+
+Browsers honour `frame-ancestors` **only** from a real HTTP response header. GitHub
+Pages sends no custom headers, so delivered via `<meta>` it is silently dropped, and
+Chrome has been saying so on every single page load:
+
+```
+The Content Security Policy directive 'frame-ancestors' is ignored
+when delivered via a <meta> element.
+```
+
+Every other directive in that CSP works from a meta tag. This one never has and never
+will, on this host. So the page has been framable the whole time, with the rest of the
+policy giving a fair impression that it was not.
+
+The exposure is modest but real and specific: the page carries an **Erase browser data**
+control and a portfolio editor backed by `localStorage`. Clickjacking a destructive
+one-click control is exactly the shape this directive exists to stop.
+
+**Fix - enforce the same intent in script, and FAIL CLOSED.**
+
+```
+<style id="frame-guard">html{display:none !important;}</style>
+```
+
+The document is hidden by the stylesheet *before any script runs*, and is revealed only
+after the guard confirms it is the top document. This is the whole design:
+
+- the **naive** frame-buster paints first and then assigns `top.location`. It loses a
+  race it cannot afford - a framing page cancels the navigation with `onbeforeunload`
+  or a 204, and meanwhile the victim is looking at a live, clickable UI;
+- here **breaking out is the bonus and refusing to render is the guarantee**. On every
+  framed path the guard style is never removed, whether the navigation lands or not.
+
+`<html>` rather than `<body>`, so nothing paints at all - not even the page background -
+while the check runs.
+
+Three details that are deliberate, each pinned by a test:
+
+- **an unreadable `window.top` counts as framed.** Reading it across origins can itself
+  throw; a throw means there is a parent we are not allowed to see. The `catch` sets
+  `framed = true`, never false. No answer resolves to the restrictive answer.
+- **a sandboxed frame stays blank.** `sandbox="allow-scripts"` without
+  `allow-top-navigation` makes the breakout throw. The naive form renders anyway; this
+  one swallows the throw and stays hidden.
+- **`<noscript>` may override the hide.** With scripting off the guard can never run and
+  the page would be blank for good. Without JS this document has no data, no controls
+  and no behaviour, so there is nothing left to clickjack - and styles inside
+  `<noscript>` apply only when scripting is disabled.
+
+**The guard is its own `<script>` block in `<head>`, and must stay out of last place.**
+`tests/test_report.js` evaluates `scripts[scripts.length - 1]` to get the application.
+Were the guard ever to become the last block, that harness would evaluate the guard
+instead of the app and its sixty-one assertions would pass against nothing at all.
+Pinned by *"...and it is NOT the last block, which test_report.js evaluates as the app"*.
+
+**Verified in a real browser**, not only in the harness, because the failure mode of
+getting this wrong is a blank site for everyone:
+
+- top-level -> renders normally, `✓ Ready`, guard style removed;
+- ordinary frame -> breaks out, attacker page **replaced** (final URL `index.html`,
+  attacker DOM gone);
+- `sandbox="allow-scripts"` frame -> attacker page survives because top navigation is
+  blocked, and the frame stays **completely blank**.
+
+**No functional change to the application.** The guard runs before the app script,
+shares no state with it, and adds one `<style>`, one `<noscript>` and one `<script>` to
+the head. The CSP line is left exactly as it was: inert on this host, but correct, and
+it becomes load-bearing the day this is served from anywhere that sends headers.
+
+---
+
 # v20 - the truncated body, and a date test that only held for eleven months
 
 Response to the `Fetch ranking data` failure on run `34515426960` (2026-09-10) and to

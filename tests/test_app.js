@@ -177,6 +177,93 @@ function extractFn(name) {
 })();
 
 // ============================================ #3 retry race, behavioural sim
+/* The clickjacking guard. `frame-ancestors 'none'` is in the CSP but a <meta> CSP
+   cannot deliver it -- browsers honour that directive from an HTTP header only, and
+   GitHub Pages sends none, so Chrome logs "...is ignored when delivered via a <meta>
+   element" on every load. The script guard is the enforcement.
+
+   These run the REAL extracted guard against a fake window, because the property
+   that matters is behavioural: does it fail CLOSED. A source-shape assertion would
+   stay green if someone flipped the default to visible. */
+(function testFrameGuard() {
+  const vm = require("vm");
+
+  const blocks = [...HTML.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  const guardBlocks = blocks.filter(b => b.includes("frame-guard"));
+  ok("exactly one script block carries the frame guard", guardBlocks.length === 1,
+     String(guardBlocks.length));
+  if (guardBlocks.length !== 1) return;
+  const SRC = guardBlocks[0];
+
+  /* tests/test_report.js evaluates scripts[scripts.length - 1] to get the app. If
+     the guard ever became the LAST block, that harness would silently evaluate the
+     guard instead of the application and every report test would go green against
+     nothing at all. */
+  ok("...and it is NOT the last block, which test_report.js evaluates as the app",
+     !blocks[blocks.length - 1].includes("frame-guard"));
+
+  // Fails closed at rest: the document is hidden by the stylesheet BEFORE any script
+  // runs, so a guard that never executes leaves the page blank rather than exposed.
+  ok("the guard stylesheet hides the document by default",
+     /<style id="frame-guard">html\{display:none !important;\}<\/style>/.test(HTML));
+  ok("...and only <noscript> may override it, for a page that has nothing to hijack",
+     /<noscript><style>html\{display:block !important;\}<\/style><\/noscript>/.test(HTML));
+
+  function runGuard(opts) {
+    const removed = [];
+    const navigated = [];
+    const guardEl = { parentNode: { removeChild(el) { removed.push(el); } } };
+    const win = { location: { href: "https://sparshr3005.github.io/PF-Vs-BMK/" } };
+    win.self = win;
+    Object.defineProperty(win, "top", {
+      get() {
+        if (opts.topThrows) throw new Error("cross-origin access denied");
+        if (!opts.framed) return win;              // we ARE the top document
+        return { location: { replace(u) {
+          if (opts.navThrows) throw new Error("sandboxed: top navigation blocked");
+          navigated.push(u);
+        } } };
+      }
+    });
+    const ctx = {
+      window: win,
+      document: { getElementById: id => (id === "frame-guard" ? guardEl : null) }
+    };
+    vm.createContext(ctx);
+    let threw = null;
+    try { vm.runInContext(SRC, ctx, { filename: "frame-guard" }); }
+    catch (e) { threw = e; }
+    return { revealed: removed.length === 1, navigated, threw };
+  }
+
+  // Top-level: reveal, and do not navigate anywhere.
+  let r = runGuard({ framed: false });
+  ok("top-level: the guard style is removed so the page renders",
+     r.revealed && !r.threw, r.threw && r.threw.message);
+  ok("...and nothing navigates", r.navigated.length === 0);
+
+  // Framed: never reveal. Breaking out is a bonus, staying blank is the guarantee.
+  r = runGuard({ framed: true });
+  ok("framed: the page is NOT revealed", !r.revealed && !r.threw,
+     r.threw && r.threw.message);
+  ok("...and it attempts to break out to its own URL",
+     r.navigated.length === 1
+     && r.navigated[0] === "https://sparshr3005.github.io/PF-Vs-BMK/");
+
+  // Sandboxed frame: top navigation is blocked outright. This is the case the naive
+  // frame-buster gets wrong -- it navigates, fails, and leaves a live UI on screen.
+  r = runGuard({ framed: true, navThrows: true });
+  ok("sandboxed frame: the blocked navigation does not escape as an error", !r.threw,
+     r.threw && r.threw.message);
+  ok("...and the page STAYS hidden rather than falling back to visible", !r.revealed);
+
+  // A cross-origin parent can make even reading window.top throw. That is not an
+  // excuse to render: no answer means assume the restrictive one.
+  r = runGuard({ topThrows: true });
+  ok("an unreadable window.top is treated as framed, not as safe",
+     !r.revealed && !r.threw, r.threw && r.threw.message);
+})();
+
 (function testRetryRace() {
   // Mirrors the fixed control flow: capture id -> await -> re-resolve by id.
   async function retry(schemes, idx, compute, mutateDuringAwait) {

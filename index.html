@@ -18,6 +18,44 @@
   base-uri 'self';
   form-action 'none';">
 <meta name="referrer" content="no-referrer">
+<!-- CLICKJACKING. The `frame-ancestors 'none'` above is INERT and always will be:
+     browsers honour that directive only from a real HTTP header, and GitHub Pages
+     sends none. Chrome says so on every single load -- "The Content Security Policy
+     directive 'frame-ancestors' is ignored when delivered via a <meta> element."
+     So enforce the SAME intent in script.
+
+     FAIL CLOSED: hide first, reveal only after confirming we are the top document.
+     The naive form (paint, then set top.location) loses a race it cannot afford --
+     the framing page can cancel the navigation with onbeforeunload or a 204, and
+     the user sees a live, clickable UI in the meantime. Here the breakout is the
+     bonus; refusing to render is the actual guarantee.
+
+     Hiding <html> rather than <body> so nothing paints at all, not even the page
+     background, while the check runs. -->
+<style id="frame-guard">html{display:none !important;}</style>
+<!-- With scripting off the guard below can never run, so the page would stay blank
+     for good. Reveal it: without JS this document has no data, no controls and no
+     behaviour, so there is nothing left to clickjack. Styles inside <noscript> are
+     applied ONLY when scripting is disabled, and this one wins on source order. -->
+<noscript><style>html{display:block !important;}</style></noscript>
+<script>
+(function(){
+  var guard = document.getElementById("frame-guard");
+  var framed;
+  // Reading window.top across origins can itself throw. A throw means there IS a
+  // parent we are not allowed to see -- i.e. framed. Default to the restrictive
+  // answer, never the convenient one.
+  try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (!framed) {
+    if (guard && guard.parentNode) guard.parentNode.removeChild(guard);
+    return;
+  }
+  // Framed. Try to escape, but a sandboxed iframe without allow-top-navigation
+  // makes this throw and a hostile parent can simply cancel it -- so the guard
+  // style is NEVER removed on this path, whether the navigation lands or not.
+  try { window.top.location.replace(window.location.href); } catch (e) {}
+})();
+</script>
 <title>PF vs Benchmark — SIP XIRR</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
