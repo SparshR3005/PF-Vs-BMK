@@ -19,7 +19,8 @@ import json
 import re
 import time
 from datetime import date
-from urllib.error import HTTPError, URLError
+from http.client import HTTPException
+from urllib.error import HTTPError, URLError  # noqa: F401  URLError re-exported
 from urllib.request import Request, urlopen
 
 API = "https://api.mfapi.in"
@@ -167,7 +168,39 @@ def get_json(url, timeout, attempts=3):
             if e.code == 429:
                 time.sleep(2.0 * (i + 1))
                 continue
-        except (URLError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+        # WHAT COUNTS AS RETRYABLE, and why this list is wider than it looks.
+        #
+        # It used to read (URLError, TimeoutError, json.JSONDecodeError,
+        # ValueError), which misses the most ordinary transport fault there is: a
+        # response whose BODY is truncated. res.read() then raises
+        # http.client.IncompleteRead -- which is NOT a ValueError, NOT a URLError
+        # and NOT an OSError. Its bases are (HTTPException, Exception). So it
+        # escaped get_json entirely, unretried, and skipped every safety net this
+        # module feeds:
+        #
+        #   2026-09-10, run 34515426960 -- mfapi was slow (discovery alone took 17
+        #   minutes against a normal 2). ONE truncated history response took out
+        #   ELSS and another took out MID_CAP: "FAILED (IncompleteRead(16186 bytes
+        #   read, 185955 more expected))". Both kept last-good files and the run
+        #   exited 1. A retry would very likely have fixed it -- and even failing
+        #   that, the fund should merely have DROPPED, leaving the completeness
+        #   budget (MIN_FETCH_SUCCESS) to judge whether the category still stood.
+        #   Instead the exception jumped to the per-category handler and skipped
+        #   the whole ladder.
+        #
+        # So catch what the failure IS, not which module happened to name it:
+        #   OSError       -- URLError, TimeoutError, ConnectionResetError,
+        #                    ssl.SSLError. URLError and TimeoutError are both
+        #                    OSError subclasses, so naming them separately only
+        #                    ever looked more complete than it was.
+        #   HTTPException -- IncompleteRead, BadStatusLine, LineTooLong, and the
+        #                    HTTPException half of RemoteDisconnected.
+        #   ValueError    -- the JSON parse; json.JSONDecodeError IS a ValueError.
+        #
+        # HTTPError is urllib's and subclasses OSError, but it is caught above, so
+        # status-code handling still wins. Nothing in this try block touches the
+        # disk, so a broad OSError here can only mean the network.
+        except (OSError, HTTPException, ValueError) as e:
             last = e
         time.sleep(0.6 * (i + 1))
     return None, 0.0, 0, getattr(last, "code", 0)

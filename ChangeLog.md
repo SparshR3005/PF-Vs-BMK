@@ -9,6 +9,136 @@ appended verbatim below, newest release first.
 
 ---
 
+# v20 - the truncated body, and a date test that only held for eleven months
+
+Response to the `Fetch ranking data` failure on run `34515426960` (2026-09-10) and to
+a `tests/test_report.js` regression found while checking it. Same rule as v5-v19:
+**every claim names the test that proves it**, and nothing is listed as done unless
+the test fails against v19 and passes against this one.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       40   unchanged
+python3 tests/test_fetch_ranks.py    220   unchanged
+python3 tests/test_probe_ranks.py    116   + get_json transport-fault retry   (was 104)
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             34   unchanged
+node    tests/test_matching.js       128   unchanged
+node    tests/test_insights.js       218   unchanged
+node    tests/test_report.js          61   + month-form probe                  (was 60)
+```
+
+**834 tests**, up from v19's 821. Reverting `mf_universe.py` turns 7 of the new
+assertions red, cleanly - the harness catches the escaping exception and reports it
+as a failure rather than aborting the run.
+
+---
+
+## 1 - One truncated response killed two whole categories (run 34515426960)
+
+**`mf_universe.py` - `get_json()`**
+
+mfapi was slow that evening: discovery alone took **17 minutes** against a normal two.
+Two categories then died outright:
+
+```
+ELSS:    FAILED (IncompleteRead(16186 bytes read, 185955 more expected))
+MID_CAP: FAILED (IncompleteRead(36666 bytes read, 161420 more expected))
+done: 27 file(s) written, 0 refused, 2 category error(s)
+```
+
+`get_json()` exists to absorb exactly this. It caught
+`(URLError, TimeoutError, json.JSONDecodeError, ValueError)` - timeouts, DNS failures,
+resets that arrive wrapped, bad JSON - and then let the most ordinary flake of all
+straight through. A **truncated response body** makes `res.read()` raise
+`http.client.IncompleteRead`, and its bases are `(HTTPException, Exception)`:
+
+- **not** a `ValueError`
+- **not** a `URLError`
+- **not** even an `OSError`
+
+So it matched no clause, escaped `get_json` unretried, and skipped the entire ladder
+this module feeds - the three retries, the per-fund drop, and the `MIN_FETCH_SUCCESS`
+completeness budget that decides whether a category still stands. It landed straight in
+the per-category handler, which correctly kept last-good files and marked the category
+stale. One bad packet, one dead category, two nights of frozen ELSS and MID_CAP data.
+
+**Fix:** catch what the failure *is*, not whichever module happened to name it.
+
+```
+OSError        URLError, TimeoutError, ConnectionResetError, ssl.SSLError
+               (URLError and TimeoutError are both OSError subclasses, so naming
+                them separately only ever LOOKED more complete than it was)
+HTTPException  IncompleteRead, BadStatusLine, LineTooLong, and the HTTPException
+               half of RemoteDisconnected
+ValueError     the JSON parse; json.JSONDecodeError IS a ValueError
+```
+
+Both halves of the behaviour are pinned: a flake that clears is **retried and
+succeeds**, and a flake that never clears **exhausts and returns `None`** - the shape
+every caller already handles - so the fund merely drops and the completeness budget
+gets to do its job.
+
+**`HTTPError` order is now load-bearing.** urllib's `HTTPError` subclasses `OSError`,
+so moving the broad clause above it would swallow the 404-is-final and 429-backoff
+handling entirely. Pinned by *"a 404 is still final and still reports its status, not
+swallowed as OSError"* and *"a 5xx still retries and still surfaces its code rather
+than a bare 0"*.
+
+The three taxonomy assertions are deliberately facts about Python, not about this fix:
+they stay green either way and exist so that anyone "tidying" the clause back to
+`(URLError, TimeoutError, ValueError)` is told, in the test name, precisely what breaks.
+
+## 2 - A date assertion that could only pass for eleven months of the year
+
+**`tests/test_report.js`**
+
+Found while checking the suite, not reported by the job. The Excel report test asserted:
+
+```
+/\d{2} [A-Z][a-z]{2} \d{4}/   // a month abbreviation of EXACTLY three letters
+```
+
+CLDR abbreviates September as **"Sept"** - four letters. `fmtDate()` is
+`toLocaleDateString("en-IN", {day:"2-digit", month:"short", year:"numeric"})`, so the
+workbook read `11 Sept 2026` and the assertion failed.
+
+It went red on 2026-09-10 rather than on 2026-09-01 because the regex scans the whole
+workbook: on the 1st the committed data still carried August value dates, and
+`01 Aug 2026` matched. Only once every date in the data had moved into September did
+the test have nothing left to match. **The suite was green while the bug was already
+there**, which is the part worth remembering.
+
+**Fix:** derive the month forms from the app's own formatter instead of guessing at
+them - whatever the runtime's CLDR emits is by definition what the report contains -
+and keep the assertion about the *form* surviving the ISO to dd-mm-yyyy pass. It still
+rejects ISO, dashed dd-mm-yyyy, and a malformed month, so it has not been widened into
+vacuity.
+
+`fmtDate` is now exported through the test sandbox epilogue to make this possible. The
+app is untouched; `tests/test_insights.js` still pins the `fmtDate` source line exactly.
+
+**No functional impact.** `fmtDate` is display-only: nothing in the codebase parses a
+month name, `month:"short"` appears in exactly one place, and report sheets are
+rejected by the importer rather than round-tripped. `11 Sept 2026` is correct output.
+
+## 3 - Not a fault: the TRI failure on 2026-09-09
+
+Run `34385902514` failed in 14 seconds at *Install Playwright + Chromium*:
+
+```
+E: Some index files failed to download. They have been ignored, or old ones used instead.
+Failed to install browsers
+Error: Installation process exited with code: 100
+```
+
+An apt mirror on the GitHub runner, nothing to do with this repository. It self-cleared
+on the next run and all 39 TRI indices are fresh to 2026-09-10. Recorded here only so
+the next reader does not go looking for a bug that was never ours.
+
+---
+
 # v19 - telling an outage apart from a decision
 
 Response to the nightly `Fetch ranking data` failure on run `33438885781`

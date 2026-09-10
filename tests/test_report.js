@@ -100,7 +100,7 @@ const EPILOGUE = `
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
-  fmtISO, normaliseDateCell
+  fmtISO, normaliseDateCell, fmtDate
 };`;
 
 vm.createContext(sandbox);
@@ -298,8 +298,25 @@ S.schemes = [
      all.includes(S.schemes[0].startStr.split("-").reverse().join("-")));
   ok("the Insights track-record as-of is reformatted too",
      !/as of \d{4}-\d{2}-\d{2}/.test(insAll));
-  ok("fmtDate-style dates are untouched — '01 Aug 2026' was kept",
-     /\d{2} [A-Z][a-z]{2} \d{4}/.test(all));
+  /* fmtDate-style dates must survive the ISO -> dd-mm-yyyy pass untouched.
+     This asserted /\d{2} [A-Z][a-z]{2} \d{4}/ -- a month abbreviation of EXACTLY
+     three letters. CLDR abbreviates September as "Sept", four letters, so the
+     workbook read "11 Sept 2026" and the assertion failed. It surfaced only on
+     2026-09-10, when the committed data's value dates finally moved wholly into
+     September; on 2026-09-01 an August date was still present and matched, so the
+     suite was green while the bug was already there. A date test that holds for
+     eleven months of the year is worse than none.
+     So derive the month forms from the app's OWN formatter instead of guessing at
+     them: whatever the runtime's CLDR emits is by definition what the report
+     contains, and the assertion stays about the FORM surviving the conversion. */
+  const MONTH_FORMS = Array.from({length: 12},
+    (_, m) => S.fmtDate(new Date(2026, m, 15)).split(" ")[1]);
+  ok("every month abbreviation is non-empty, so the probe itself is sound",
+     MONTH_FORMS.length === 12 && MONTH_FORMS.every(x => /^[A-Za-z]+$/.test(x)),
+     MONTH_FORMS.join(","));
+  ok("fmtDate-style dates are untouched (e.g. '01 Aug 2026' / '11 Sept 2026')",
+     new RegExp("\\d{2} (" + MONTH_FORMS.join("|") + ") \\d{4}").test(all),
+     MONTH_FORMS.join(","));
 
   /* The dashed form is not a style preference: normaliseDateCell() reads a dashed
      DD-MM-YYYY as day-first, but rejects the slashed form as ambiguous whenever

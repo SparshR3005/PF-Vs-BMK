@@ -385,5 +385,127 @@ if _norm_js:
        _norm_js.group(1).count(chr(92) + "b") >= 2)
 
 
+# ===================== v20: the transport fault get_json refused to retry
+# 2026-09-10, run 34515426960: mfapi was slow (discovery alone took 17 minutes
+# against a normal 2) and TWO categories died outright --
+#   ELSS:    FAILED (IncompleteRead(16186 bytes read, 185955 more expected))
+#   MID_CAP: FAILED (IncompleteRead(36666 bytes read, 161420 more expected))
+# -- because a truncated response body is the one transport fault get_json did not
+# catch. It retried timeouts, DNS failures, resets and bad JSON, then let the most
+# ordinary flake of all escape unretried, straight past the retry, past the
+# per-fund drop, and past the MIN_FETCH_SUCCESS completeness budget, into the
+# per-category handler. 27 of 33 files written; the run exited 1.
+import http.client as _hc  # noqa: E402
+
+# The taxonomy fact that made this a bug. If someone ever "tidies" the except clause
+# back to (URLError, TimeoutError, ValueError), this is what silently breaks again.
+ok("IncompleteRead is NOT a ValueError, so a ValueError clause cannot catch it",
+   not issubclass(_hc.IncompleteRead, ValueError))
+ok("...nor an OSError, so a URLError/TimeoutError clause cannot either",
+   not issubclass(_hc.IncompleteRead, OSError))
+ok("...it is an HTTPException, which is what must be caught by name",
+   issubclass(_hc.IncompleteRead, _hc.HTTPException))
+
+
+class _Res:
+    """Minimal urlopen() context manager whose read() can misbehave."""
+
+    def __init__(self, boom, body=b'{"ok": true}', status=200):
+        self.boom, self.body, self.status = boom, body, status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        exc = self.boom()
+        if exc is not None:
+            raise exc
+        return self.body
+
+
+def _with_stubbed_urlopen(sequence):
+    """Run get_json against a scripted series of read() outcomes.
+
+    Returns (result_tuple_or_raised_exception, attempts_made).
+    """
+    calls = {"n": 0}
+
+    def _open(req, timeout=None):
+        def boom():
+            calls["n"] += 1
+            item = sequence[min(calls["n"] - 1, len(sequence) - 1)]
+            return item() if callable(item) else item
+        return _Res(boom)
+
+    real_open, real_sleep = P.urlopen, P.time.sleep
+    P.urlopen, P.time.sleep = _open, (lambda s: None)
+    try:
+        try:
+            return P.get_json("https://example.invalid/x", 5), calls["n"]
+        except BaseException as exc:          # noqa: BLE001 - that IS the regression
+            return exc, calls["n"]
+    finally:
+        P.urlopen, P.time.sleep = real_open, real_sleep
+
+
+_trunc = lambda: _hc.IncompleteRead(b"{partial", 185955)  # noqa: E731
+
+# A flake that clears on retry must simply succeed. Before v20 the FIRST one raised.
+_res, _n = _with_stubbed_urlopen([_trunc, _trunc, None])
+ok("a truncated body is retried rather than raised", not isinstance(_res, BaseException))
+ok("...and the retry actually returns the payload once the body arrives whole",
+   (not isinstance(_res, BaseException)) and _res[0] == {"ok": True})
+ok("...having made every attempt it was given", _n == 3)
+
+# A flake that never clears must EXHAUST and return None -- so the fund merely drops
+# and MIN_FETCH_SUCCESS decides whether the category still stands. That laddering is
+# the whole point; an exception skips all of it.
+_res, _n = _with_stubbed_urlopen([_trunc])
+ok("a persistently truncated body exhausts the retries instead of escaping",
+   not isinstance(_res, BaseException))
+ok("...and reports failure as None, the shape every caller already handles",
+   (not isinstance(_res, BaseException)) and _res[0] is None)
+ok("...after exactly `attempts` tries, not one", _n == 3)
+
+# Same class of fault, different exception: a mid-body reset is an OSError, which the
+# old clause also failed to catch unless it happened to arrive wrapped in URLError.
+_res, _n = _with_stubbed_urlopen([lambda: ConnectionResetError("peer reset"), None])
+ok("a mid-body connection reset is retried too",
+   (not isinstance(_res, BaseException)) and _res[0] == {"ok": True})
+
+# ORDER IS LOAD-BEARING. urllib's HTTPError subclasses OSError, so the broad OSError
+# clause would swallow it -- and with it 404/429 handling -- if it were ever moved
+# above the HTTPError clause. These pin the status behaviour, not the source shape.
+_saved_open, _saved_sleep = P.urlopen, P.time.sleep
+try:
+    def _raise_404(req, timeout=None):
+        raise P.HTTPError("https://example.invalid/x", 404, "Not Found", None, None)
+
+    P.urlopen, P.time.sleep = _raise_404, (lambda s: None)
+    _payload, _el, _nb, _status = P.get_json("https://example.invalid/x", 5)
+    ok("a 404 is still final and still reports its status, not swallowed as OSError",
+       _payload is None and _status == 404)
+finally:
+    P.urlopen, P.time.sleep = _saved_open, _saved_sleep
+
+_saved_open, _saved_sleep = P.urlopen, P.time.sleep
+try:
+    _hits = {"n": 0}
+
+    def _raise_500(req, timeout=None):
+        _hits["n"] += 1
+        raise P.HTTPError("https://example.invalid/x", 500, "Server Error", None, None)
+
+    P.urlopen, P.time.sleep = _raise_500, (lambda s: None)
+    _payload, _el, _nb, _status = P.get_json("https://example.invalid/x", 5)
+    ok("a 5xx still retries and still surfaces its code rather than a bare 0",
+       _payload is None and _status == 500 and _hits["n"] == 3)
+finally:
+    P.urlopen, P.time.sleep = _saved_open, _saved_sleep
+
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
