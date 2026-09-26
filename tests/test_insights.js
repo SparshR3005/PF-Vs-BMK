@@ -283,6 +283,16 @@ if(loaded){
   ok("every CSS variable used by Insights is defined by the theme"
      + (undefinedVars.length ? " (missing: " + undefinedVars.join(", ") + ")" : ""),
      undefinedVars.length === 0);
+  // v22: ...and across the WHOLE file. The check above stops at the end of the Insights
+  // block, and the All / Live SIP sub-tab styles written just below it used --sub and
+  // --fg, which the theme never defined, so the scope buttons, leg notes and "retained"
+  // row text fell back to full-brightness text. Same bug class as --ink/--pos/--neg,
+  // one screen further down.
+  const everyVar = [...new Set((HTML.match(/var\((--[a-z0-9-]+)/g) || []).map(m => m.slice(4)))];
+  const undefinedAnywhere = everyVar.filter(v => !themeDefined.has(v));
+  ok("every CSS variable used ANYWHERE in index.html is defined by the theme"
+     + (undefinedAnywhere.length ? " (missing: " + undefinedAnywhere.join(", ") + ")" : ""),
+     undefinedAnywhere.length === 0);
 
   // A <button> inherits font but NOT colour, so this is load-bearing.
   ok("the row button inherits its text colour", /\.ins-summary\{color:inherit/.test(cssBlock));
@@ -393,6 +403,10 @@ if(loaded){
           grabFn("poolRuns"), grabFn("scopeLegs"), grabFn("groupHoldings"),
           grabFn("scopeApplies"), grabFn("groupSchedule"), grabFn("insightsItems")].join("\n"));
   } catch(e){ v10Loaded = false; ok("could not load the v10 grouping layer: "+e.message, false); }
+  // v22's helper, loaded on its own: against code that predates it the scope functions
+  // still load, so the v22 assertions below fail on BEHAVIOUR rather than on absence.
+  try { eval(grabFn("legIsLive")); }
+  catch(e){ ok("index.html has legIsLive(): "+e.message, false); }
 
   if(v10Loaded){
     // Real published series, not a synthetic curve. A smooth exponential gives
@@ -493,6 +507,27 @@ if(loaded){
     schemes = [ mk("111","2019-03-05","",10000,b), mk("111","2019-03-05","",3000,leg("2019-03-05",null,3000)) ];
     const overlap = groupSchedule(groupHoldings(schemes)[0]);
     ok("two legs sharing a date sum their amounts", overlap[0].amount === 13000);
+
+    // ---- v22: an end date still to come is a LIVE SIP, not an ended one
+    // SIP mandates are registered with an end date years out, and a user who copies
+    // theirs in ("until Dec 2030") has an ongoing SIP. "Live SIP" keyed on the end date
+    // merely EXISTING, so it dropped that leg, the page split into All / Live SIP over
+    // it, and Insights scheduled instalments all the way to the mandate end: 107 of
+    // them to 2030 for a SIP valued in 2026, printed in the peer-window line.
+    const future = new Date(); future.setFullYear(future.getFullYear() + 5);
+    const FUT = isoDate(future);
+    schemes = [ mk("444","2019-03-05",FUT,5000,b) ];
+    eq("a leg whose end date is still to come is LIVE", scopeLegs(schemes,"live").length, 1);
+    ok("...so on its own it does not split the page into All and Live SIP", scopeApplies() === false);
+    eq("...and it is counted as a live leg of its scheme", groupHoldings(schemes)[0].liveCount, 1);
+    const fsched = groupSchedule(groupHoldings(schemes)[0]);
+    ok("...and its peer schedule stops at the valuation date, not at the mandate end",
+       fsched.length > 0 && fsched[fsched.length-1].date <= VD);
+    eq("...placing exactly the instalments an open-ended SIP would", fsched.length,
+       groupSchedule(groupHoldings([mk("444","2019-03-05","",5000,b)])[0]).length);
+    schemes = [ mk("555","2018-02-05","2019-02-05",1500,a) ];
+    ok("a leg whose end date has passed is still ended",
+       scopeLegs(schemes,"live").length === 0 && scopeApplies() === true);
 
     // ---- insightsItems is one row per scheme and honours the sub-tab
     schemes = [ mk("111","2018-02-05","2019-02-05",1500,a),
@@ -629,7 +664,10 @@ if(loaded){
   ok("rankCandidates has exactly ONE call site, inside insightFacts",
      ((CODE.match(/rankCandidates\(/g) || []).length -
       (CODE.match(/function rankCandidates\(/g) || []).length) === 1 &&
-     /out\.rank = rankCandidates\(navs, item\.schedule, item\.valueDate, item\.code\);/.test(CODE));
+     /out\.rank = rankCandidates\(navs, win\.schedule, win\.valueDate, item\.code\);/.test(CODE));
+  // v22: ...and that call ranks over the window the peer grid covers, not the live one.
+  ok("insightFacts bounds the peer window by the grid's as_of before ranking",
+     /const win = peerWindow\(item\.schedule, item\.valueDate, navs\.as_of\);/.test(CODE));
   ok("the rank sentence has one definition, parameterised by medium",
      /function rankSentence\(sum, planLabel, em\)/.test(HTML) &&
      (HTML.match(/rankSentence\(/g) || []).length === 3);
@@ -904,7 +942,12 @@ if(loaded){
   ok("...and exposes it as planStale",
      /planStale: !!\(planInfo && planInfo\.status === "stale"\)/.test(HTML));
   ok("the pane distinguishes a stale plan grid from a stale category",
-     /the track record above is current but the peer ranking below is from an/.test(HTML));
+     /the track record above is current but the peer ranking is from an/.test(HTML));
+  // v22: these notes are printed AFTER both sections -- in the pane and in the sheet --
+  // so "the peer ranking below" pointed at nothing, and the too-short note said "the
+  // track record below" about a table drawn above it.
+  ok("v22: no Insights note points 'below' at a section printed above it",
+     !/track record below/.test(HTML) && !/peer ranking below/.test(HTML));
   ok("...and still covers the both-stale case",
      /catInfo\.status === "stale" && f\.planStale/.test(HTML));
   ok("the report carries the same distinction",
@@ -912,6 +955,66 @@ if(loaded){
   // It must reuse the existing note styling rather than introduce a new one.
   ok("the new notice reuses the existing .ins-note class, adding no styling",
      (HTML.match(/ins-note"><b>Note:<\/b>/g) || []).length >= 3);
+})();
+
+// ============== v22: the peer ranking stops where the peer grid stops ==============
+// navs_<CAT>_<PLAN>.json is written by the nightly job before mfapi has posted that
+// day's NAVs, so the grid always ends a trading day behind the live NAV a holding is
+// valued on (committed at the time: every grid ended 2026-09-24 while data/tri and live
+// NAV had reached 2026-09-25). An instalment dated after the grid's last point has no
+// peer NAV within 7 days, so runSIP() skipped it for EVERY peer, both pool filters
+// emptied, and the pane said "could not be ranked ... its history does not cover it"
+// while blaming every fund in the category for "gaps in their NAV history". Measured on
+// the committed FLEXI_CAP Direct grid: a SIP on the 25th ranked against 0 of 45 peers,
+// the same SIP on the 20th against 27. About one day a month for every holding, and a
+// whole weekend whenever the SIP date is a Friday.
+(function testPeerWindowStopsAtTheGrid(){
+  const fsx = require("fs"), px = require("path");
+  const file = px.join(__dirname, "..", "data", "ranks", "navs_FLEXI_CAP_Direct.json");
+  if(!fsx.existsSync(file)){ console.log("  SKIP  navs_FLEXI_CAP_Direct.json absent"); return; }
+  // Loaded on its own, so a missing helper is ONE failure rather than the whole suite.
+  let peerWindow;
+  try { peerWindow = eval("(function(){" + grabFn("peerWindow") + "\nreturn peerWindow;})()"); }
+  catch(e){ ok("index.html has peerWindow(): " + e.message, false); return; }
+
+  const navs = JSON.parse(fsx.readFileSync(file, "utf8"));
+  const gridEnd = parseInput(navs.as_of);
+  const live = new Date(gridEnd.getTime()); live.setDate(live.getDate() + 1);  // live NAV, a day on
+  // Five years of monthly instalments whose LATEST lands on the live NAV date.
+  const start = new Date(live.getFullYear() - 5, live.getMonth(), live.getDate());
+  const sched = uniformSchedule(scheduleDates(start, live), 5000);
+  // A fund that covers the whole window and is still reporting, so "has a rank" is
+  // about the window rather than about which fund happened to be listed first.
+  const own = Object.keys(navs.funds).find(function(c){
+    const s = gridSpan(navs.funds[c]);
+    return s.first <= start && isoDate(s.last) === navs.as_of;
+  });
+  ok("fixture: the grid has a fund that covers the whole window", !!own);
+
+  const raw = rankCandidates(navs, sched, live, own);
+  ok("fixture: fed the live valuation date, the pool collapses to zero (the v22 bug)",
+     raw.universe === 0 && raw.ownRank === null);
+
+  const w = peerWindow(sched, live, navs.as_of);
+  eq("the peer window is valued on the grid's as_of, not the live NAV date",
+     isoDate(w.valueDate), navs.as_of);
+  ok("...and drops only the instalment the grid cannot price",
+     w.schedule.length === sched.length - 1 && w.schedule.every(function(e){ return e.date <= gridEnd; }));
+  const res = rankCandidates(navs, w.schedule, w.valueDate, own);
+  ok("ranked over the grid's own window, the cohort is back", res.universe > 0);
+  ok("...and the holding has a rank again", res.ownRank !== null);
+
+  // Every other case is left exactly as it was. A suspended fund's last NAV (and so
+  // its schedule's end) predates the grid's as_of; nothing about it should move.
+  const earlier = new Date(gridEnd.getTime()); earlier.setDate(earlier.getDate() - 30);
+  const sched2 = uniformSchedule(scheduleDates(start, earlier), 5000);
+  const w2 = peerWindow(sched2, earlier, navs.as_of);
+  ok("a holding valued BEFORE the grid's end keeps its own valuation date",
+     +w2.valueDate === +earlier);
+  ok("...and its schedule is untouched", w2.schedule.length === sched2.length);
+  ok("a grid with no as_of changes nothing",
+     peerWindow(sched, live, undefined).schedule.length === sched.length &&
+     +peerWindow(sched, live, undefined).valueDate === +live);
 })();
 
 console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);

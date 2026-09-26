@@ -1190,5 +1190,94 @@ except AttributeError as _exc:
        f"(missing: {_exc})", False)
 
 
+# ================================ v22: partial runs are diagnostic, and honest about it
+# The code and v17's changelog both say --canary and --max-funds are "diagnostic paths,
+# not publish paths" that "never write the manifest at all". Two things contradicted it.
+def _with_rows(funds):
+    for f in funds:
+        f["rows"] = daily_rows(3)
+    return funds
+
+
+# #6 --max-funds still wrote CATEGORY files -- truncated ones, which pass the publish gate
+# whenever the cap keeps 80% of the committed count. Measured: VALUE went 12 -> 10 funds
+# on disk, the run exited 0, and the untouched manifest still said 12: a manifest that
+# disagrees with its own payload, which this file says is worse than none.
+with tempfile.TemporaryDirectory() as _d:
+    _t = Path(_d)
+    _seed_manifest(_t, {"VALUE": {"status": "ok", "as_of": "2026-07-17", "ranked": 12}})
+    _pp = _t / "data" / "ranks" / "periods_VALUE.json"
+    _pp.write_text(json.dumps({"key": "VALUE", "count": 12}), encoding="utf-8")
+    _before = _pp.read_text(encoding="utf-8")
+    _uni = [{"code": str(500 + i), "name": f"V{i}", "plan": "Direct", "cat": "VALUE"}
+            for i in range(12)]
+    _code, _log = _run_main(_t, _uni, _with_rows, ["--max-funds", "10"])
+    ok("v22: --max-funds leaves the committed category file untouched",
+       _pp.read_text(encoding="utf-8") == _before)
+    ok("...and writes no peer grid either",
+       not list((_t / "data" / "ranks").glob("navs_*.json")))
+    ok("...and says the run was diagnostic", "no category file written" in _log)
+
+# #7 A SUCCESSFUL --canary run exited 1. The canary filters discovery to one category on
+# purpose, so every OTHER committed category is absent by construction -- and the
+# absent-category check counted each one as an error: "2 category error(s)", exit 1.
+with tempfile.TemporaryDirectory() as _d:
+    _t = Path(_d)
+    _seed_manifest(_t, {c: {"status": "ok", "as_of": "2026-07-17", "ranked": 10}
+                        for c in ("FLEXI_CAP", "MID_CAP", "SMALL_CAP")})
+    _uni = [{"code": str(100 + i), "name": f"F{i}", "plan": "Direct",
+             "cat": "MID_CAP" if i < 10 else "FLEXI_CAP"} for i in range(20)]
+    _code, _log = _run_main(_t, _uni, _with_rows, ["--canary", "MID_CAP"])
+    eq("v22: a successful --canary run exits 0", _code, R.EXIT_OK)
+    ok("...without reporting every other category as absent", "ABSENT" not in _log)
+    ok("...or counting them as category errors", "0 category error(s)" in _log)
+
+# #8 committed_data_age_days() -- and so whether a provider outage exits quietly -- reads
+# generated_utc as "when the rankings last MOVED", and its docstring (and v19's changelog)
+# say it only advances on a successful publish. It advanced on EVERY full run: one where
+# every category failed still stamped a fresh time, the data read as 0 days old, and a
+# following outage stayed quiet for up to MAX_UPSTREAM_OUTAGE_DAYS longer than it should.
+with tempfile.TemporaryDirectory() as _d:
+    _t = Path(_d)
+    _seed_manifest(_t, {"MID_CAP": {"status": "ok", "as_of": "2026-07-17", "ranked": 10}})
+    _code, _ = _run_main(_t, [{"code": "1", "name": "A", "plan": "Direct", "cat": "MID_CAP"}],
+                         lambda funds: [], [])
+    _m = _manifest(_t)
+    eq("v22: a run that published nothing keeps the committed generated_utc",
+       _m["generated_utc"], "2026-01-01T00:00:00Z")
+    eq("...while still recording the category as stale", _m["categories"]["MID_CAP"]["status"], "stale")
+    ok("...so the data's age still counts from the last real publish",
+       (R.committed_data_age_days(_t / "data" / "ranks" / "index.json") or 0) > 30)
+
+with tempfile.TemporaryDirectory() as _d:
+    _t = Path(_d)
+    _seed_manifest(_t, {})
+    _code, _ = _run_main(_t, [{"code": str(100 + i), "name": f"F{i}", "plan": "Direct",
+                               "cat": "MID_CAP"} for i in range(10)], _with_rows, [])
+    ok("...but a run that DID publish advances it",
+       _manifest(_t)["generated_utc"] != "2026-01-01T00:00:00Z")
+
+# #15 A comment in this file carried an em dash that had been saved as UTF-8, read back
+# as Windows-1252 and saved again. The paste-through-the-web-editor workflow this project
+# runs on is exactly where that happens, and inside a string rather than a comment it
+# would print straight into a client report. So scan every source file, not just this one.
+import os as _os  # noqa: E402
+
+# What UTF-8 dashes and quotes turn into via cp1252. Built with chr() so this file
+# never contains the sequence itself.
+_MOJIBAKE = chr(0xE2) + chr(0x20AC)
+_garbled = []
+for _dirpath, _dirnames, _files in _os.walk(ROOT):
+    _dirnames[:] = [d for d in _dirnames if d not in (".git", "node_modules", "data", "__pycache__")]
+    for _f in _files:
+        if _f.endswith((".py", ".js", ".html", ".md", ".yml")):
+            _p = Path(_dirpath) / _f
+            if _MOJIBAKE in _p.read_text(encoding="utf-8", errors="replace"):
+                _garbled.append(str(_p.relative_to(ROOT)))
+ok("v22: no source file carries UTF-8-read-as-cp1252 mojibake", not _garbled)
+if _garbled:
+    print(f"          found in {_garbled}")
+
+
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)

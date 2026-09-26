@@ -9,6 +9,273 @@ appended verbatim below, newest release first.
 
 ---
 
+# v22 - fifteen defects from a full-repository review
+
+Every file was read, and each defect below was reproduced against the real code and
+the committed data before it was touched. Same rule as v5-v21: **every claim names the
+test that proves it**, and nothing is listed as done unless the test fails against v21
+and passes against this one.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       42   + next-day row dropped, doc stays fresh (#2)            (was 40)
+python3 tests/test_fetch_ranks.py    231   + partial runs, generated_utc, mojibake (#6-#8, #15)   (was 220)
+python3 tests/test_probe_ranks.py    118   + Commodities name filter (#5)                          (was 116)
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             57   + header mapping, Tab trap, Refresh wiring (#3 #12 #14) (was 45)
+node    tests/test_matching.js       133   + sector routes vs the name filter (#5)                 (was 128)
+node    tests/test_insights.js       236   + peer window, future end dates, CSS, wording (#1 #4 #9 #13) (was 218)
+node    tests/test_report.js          83   + peer window, flat Alpha, loading, focus, Refresh (#1 #10-#12 #14) (was 61)
+```
+
+**917 tests**, up from v21's 845. Each fix's defect assertions were run against the
+previous code first and failed there; the controls beside them (what must NOT change)
+pass on both. #1, #4, #9 and #11 were also checked in a real browser against the
+committed data.
+
+---
+
+## 1 - Insights said a fund "could not be ranked", about one day a month
+
+**`index.html` - `peerWindow()`, `insightFacts()`**
+
+The peer grids are published before mfapi posts that day's NAVs, so they always end a
+trading day behind the live NAV a holding is valued on (at the time: every grid ended
+2026-09-24, `data/tri` and live NAV 2026-09-25). An instalment dated after the grid's
+last point has no peer NAV within 7 days, so `runSIP()` skipped it for **every** fund
+and both pool filters in `rankCandidates()` emptied. It hits any SIP whose latest
+instalment falls on the newest NAV date - about a day a month per holding, and a whole
+weekend when that date is a Friday.
+
+Reproduced in a real browser against the committed data (Canara Robeco Flexi Cap Direct,
+Rs 5,000 on the 25th since 2021):
+
+```
+v21  Your fund could not be ranked over this window (its history does not cover it).
+     45 funds excluded: 18 started after your SIP began, 27 had gaps in their NAV history.
+     No comparable peers with a full history over this window.
+v22  Your fund ranks 20 of 27 over this window.
+     18 funds excluded: 18 started after your SIP began.
+```
+
+`peerWindow()` values on the grid's `as_of` and drops any instalment after it, so every
+peer and the holding's own grid series describe the same days; the window line states
+that date. A holding valued *before* the grid's end (a suspended fund) keeps its own.
+
+*Proof:* `test_insights.js` *"the peer window is valued on the grid's as_of, not the live
+NAV date"*, *"ranked over the grid's own window, the cohort is back"* and seven more on the
+real FLEXI_CAP Direct grid, plus *"insightFacts bounds the peer window by the grid's as_of
+before ranking"*; `test_report.js` *"v22: a SIP whose latest instalment is newer than the
+peer grid is still RANKED"* and four more, through the real `insightFacts()`.
+
+`test_report.js`'s screen/sheet rank-agreement check used to pass `true` whenever the
+holding was not ranked - the exact state this bug produced. It now requires a ranked
+holding: *"the holding under test is ranked, so the agreement check is a real one"*.
+
+## 2 - One next-day TRI row could block the whole nightly fetch
+
+**`fetch_tri.py` - `MAX_FUTURE_DAYS`**
+
+v16's future-row guard allowed two days of slack "to absorb IST-vs-UTC skew", copied
+from `fetch_ranks.py`, whose `date.today()` is the runner's UTC date. This module
+compares IST with IST, and `is_fresh()` refuses any negative age - so a row dated
+tomorrow passed the guard, became `doc["end"]`, and failed the index anyway. On a
+required index that skips all 39 series for the night: the outcome the guard was added
+to prevent. `MAX_FUTURE_DAYS` is now 0 here (`fetch_ranks.py` keeps its 2).
+
+*Proof:* `test_a_next_day_row_does_not_fail_the_freshness_gate` and
+`test_a_next_day_row_is_dropped_at_parse`, both failing against 2.
+`test_a_row_dated_today_is_kept` replaces `test_a_row_inside_the_skew_window_is_kept`,
+which pinned the next-day row as KEPT and never asked whether the doc could publish.
+
+## 3 - Excel import could read the wrong column
+
+**`index.html` - `mapImportHeaders()`**
+
+#4 tested exact header names before substrings, but inside ONE left-to-right pass, so a
+loose match on an *earlier* column still claimed its field first: "Fund House" became
+the fund name ahead of "Fund Name", "Scheme Category" ahead of "Scheme Name", and an
+"Invested Amount" total ahead of "Monthly SIP" - every row then imported the total as its
+monthly instalment, marked Ready and pre-ticked. Now exact names win outright, substrings
+only fill what is still unmapped (a monthly/SIP column before a bare amount), and no
+column is claimed twice. A "Dividend" column is no longer read as the End date, nor an
+"ISIN Code" column as the AMFI code.
+
+*Proof:* `test_app.js` `testHeaderClassifier`, which now extracts the real function by
+name, adds ten v22 cases; the seven behavioural ones all map the wrong column under v21's
+loop. `test_report.js`'s report-sheet rejection check now uses the real mapper rather
+than a hand-copied subset of it.
+
+## 4 - A SIP with an end date still to come was treated as ended
+
+**`index.html` - `legIsLive()`, `scopeLegs()`, `scopeApplies()`, `groupHoldings()`, `groupSchedule()`**
+
+SIP mandates are registered with an end date years out, and a user who copies theirs in
+("until Dec 2030") has an ongoing SIP. "Live SIP" keyed on the end date merely existing,
+so it dropped that leg as ended, the date alone split the page into All / Live SIP, and
+Insights scheduled instalments to the mandate end (107 to 2030 for a SIP valued in
+2026). In a real browser, two ongoing legs - one to 2030 - produced the Live SIP split
+and *"1 ongoing SIP leg — ended legs excluded"*.
+
+A leg has now stopped once its end date is today or earlier, and `groupSchedule()` never
+schedules past the valuation date. The two "no live SIPs" messages say every SIP has
+already ended, instead of that every holding "has an end date".
+
+*Proof:* `test_insights.js` *"a leg whose end date is still to come is LIVE"* and four
+more, all failing against v21; the control *"a leg whose end date has passed is still
+ended"* holds on both.
+
+## 5 - An equity Commodities fund could not be found or imported by name
+
+**`index.html`, `mf_universe.py` - `NON_EQUITY_NAME_TOKENS`**
+
+`"commodit"` was a non-equity name token, so `loadSchemeList()` dropped ICICI Prudential
+Commodities Fund (147661 / 147662) - a live "Equity Scheme - Sectoral/ Thematic" fund that
+`SECTOR_KEYWORDS` routes to the Nifty Commodities TRI - before anyone could pick it, and
+that TRI was fetched nightly only as a fallback. Removed from both copies of the list.
+The non-equity commodity funds are still caught by "global", "gold" and "fof", and the
+category check on add remains the real gate. v9's reachability audit passed throughout:
+it counted a benchmark as reachable whenever a routing table *mentioned* its key.
+
+*Proof:* `test_matching.js` *"no sector keyword is itself caught by the non-equity name
+filter"* and *"ICICI Prudential Commodities Fund reaches the picker"* (both fail against
+v21), with *"...and each one routes to its OWN benchmark, not shadowed by an earlier
+rule"* and a global-fund control; `test_probe_ranks.py` *"an equity Commodities fund is
+NOT flagged non-equity"*.
+
+## 6 - `--max-funds` overwrote published files with truncated ones
+
+**`fetch_ranks.py` - `main()`**
+
+The code and v17 call `--canary` and `--max-funds` diagnostic paths that "never write the
+manifest at all" - but both still wrote category files, and `--max-funds` writes
+truncated ones, which pass the publish gate whenever the cap keeps 80% of the committed
+count. Measured: VALUE went 12 -> 10 funds on disk, exit 0, the manifest still saying 12.
+Partial runs now write nothing. The nightly job uses neither flag.
+
+*Proof:* `test_fetch_ranks.py` *"v22: --max-funds leaves the committed category file
+untouched"*, *"...and writes no peer grid either"*, *"...and says the run was
+diagnostic"*, through the real `main()`.
+
+## 7 - A successful `--canary` run always exited 1
+
+**`fetch_ranks.py` - `main()`**
+
+`--canary` narrows discovery to one category on purpose; the absent-category check then
+counted every other committed category as an error: "2 category error(s)", exit 1. The
+check is skipped for `--canary`; full runs keep it. The existing canary test only covered
+a run in which every fetch failed.
+
+*Proof:* *"v22: a successful --canary run exits 0"*, *"...without reporting every other
+category as absent"*, *"...or counting them as category errors"*.
+
+## 8 - `generated_utc` advanced on runs that published nothing
+
+**`fetch_ranks.py` - `committed_generated_utc()`, `main()`**
+
+`committed_data_age_days()` - and through it the quiet "provider unavailable" exit -
+reads `generated_utc` as when the rankings last moved, and v19 says it "only advances on
+a successful publish". It was stamped on every full run, so a night on which every
+category failed reset the data's age to 0.0 days, and a following outage stayed quiet for
+up to `MAX_UPSTREAM_OUTAGE_DAYS` longer. It is now carried forward from the committed
+manifest and advanced only when a file is written. The client never reads it.
+
+*Proof:* *"v22: a run that published nothing keeps the committed generated_utc"* and
+*"...so the data's age still counts from the last real publish"*, with the control
+*"...but a run that DID publish advances it"*.
+
+## 9 - Sub-tab, leg-note and retained-row text used colours that did not exist
+
+**`index.html` - `.scopebar`, `.leg-note`, the retained error row**
+
+Styled with `var(--sub)` and `var(--fg)`, which the theme never defined, so every one of
+them fell back to full-brightness text. Now `--muted` / `--text`; in a browser the three
+elements compute to `rgb(139, 160, 154)`, the `--muted` grey.
+
+*Proof:* `test_insights.js` *"every CSS variable used ANYWHERE in index.html is defined
+by the theme"* (failed: missing --sub, --fg). The existing check stopped at the end of
+the Insights block, one screen above these rules.
+
+## 10 - An exactly-flat Alpha was invisible in the report, and called a beat
+
+**`index.html` - `FILL`, `reportPortfolioSheet()`, `buildInsights()`**
+
+`perfBand()` calls a spread of exactly 0 "Matched". The sheet had no `FILL.match`, so those
+cells were white text on no fill; the banner said BEATING, the Alpha card was painted as a
+gain, and Key Insights said the portfolio "beat" its benchmark "by 0.00 pp" and counted
+every flat holding as beating. `test_report.js`'s own fixture benchmarks each holding
+against its own series, so every spread in it IS exactly 0 - the existing test already
+produced the invisible cells; nothing looked at the fills.
+
+*Proof:* `test_report.js` *"v22: every 'Matched' cell is filled, so its white text can be
+read"* and five more.
+
+## 11 - A loading portfolio said "No schemes yet"
+
+**`index.html` - `hydrateActive()`, `render()`**
+
+The table invited the user to "search a fund above and add your SIP" for the whole load
+of a portfolio that had holdings. It now says "Loading your portfolio…" (seen in a
+browser); an empty portfolio keeps the prompt.
+
+*Proof:* `test_report.js` *"v22: while a saved portfolio is loading, the table says it is
+loading"* and one more, through the real `hydrateActive()`.
+
+## 12 - The import review dialog lost keyboard focus
+
+**`index.html` - `renderImportPreview()`, `importModalKeydown()`**
+
+Each pick re-rendered the table and re-ran the dialog's opening steps: the element focus
+returns to on close was re-pointed at a dropdown the rebuild had removed, and focus was
+pulled back to Cancel after every pick. The Tab trap also skipped the fund pickers.
+
+*Proof:* `test_report.js` *"v22: a re-render keeps the element focus returns to when the
+dialog closes"*, *"...and does not pull focus back to Cancel after every pick"*;
+`test_app.js` *"v22 the import dialog's Tab trap includes its fund pickers"* (a source
+invariant, like #7-#9: it needs a real DOM).
+
+## 13 - Insights notes pointed "below" at text printed above them
+
+**`index.html` - `fillInsightDetail()`, `reportInsightsSheet()`**
+
+*Proof:* `test_insights.js` *"v22: no Insights note points 'below' at a section printed
+above it"*.
+
+## 14 - Refresh did not reload the Insights ranking files
+
+**`index.html` - `clearDataCaches()`**
+
+A tab left open across days re-valued holdings on today's NAV while Insights kept
+ranking against the first day's peer grids.
+
+*Proof:* `test_report.js` *"v22: after a Refresh, Insights fetches the ranking manifest
+again"*, *"...and the category files"*; `test_app.js` *"v22 the Refresh button clears
+every data cache, the ranking files included"*.
+
+## 15 - Mojibake in a comment
+
+**`fetch_ranks.py` - `fetch_histories()` docstring**
+
+An em dash saved as UTF-8, read back as Windows-1252 and saved again.
+
+*Proof:* `test_fetch_ranks.py` *"v22: no source file carries UTF-8-read-as-cp1252
+mojibake"*, which scans every .py/.js/.html/.md/.yml file in the repository.
+
+## Not done
+
+From the same review, deliberately left for a later release:
+
+- `tests/test_app.js`'s #3 retry source check still cannot fail (its pattern contains
+  spaces but is matched against whitespace-stripped text), and its behavioural retry
+  test runs a hand copy of the logic;
+- a few tests still exercise local copies rather than the shipped code
+  (`test_fetch_ranks.py`'s duplicate-date checks, `test_probe_ranks.py`'s `run_funnel()`);
+- holdings still load one at a time, on page load and during import validation;
+- `mf_universe.get_json()` still sleeps after its final failed attempt.
+
+---
+
 # v21 - enforcing frame-ancestors where a meta tag cannot
 
 The CSP has carried `frame-ancestors 'none'` since it was written. It has never once

@@ -438,16 +438,19 @@
 
 /* Sub-tabs. Deliberately lighter than .tabbar: this is a filter WITHIN a view,
    not a change of view, and rendering it at equal weight made the page look like
-   it had four top-level tabs. */
+   it had four top-level tabs.
+   Theme tokens only: these rules were written against --sub and --fg, which the
+   theme never defined, so every one of them silently fell back to full-brightness
+   text (v22). tests/test_insights.js now checks every var() in the file. */
 .scopebar{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap;}
-.scopebar button{background:transparent;border:1px solid var(--line);color:var(--sub);
+.scopebar button{background:transparent;border:1px solid var(--line);color:var(--muted);
   padding:5px 13px;border-radius:999px;font:inherit;font-size:12.5px;cursor:pointer;
   letter-spacing:.02em;transition:background .12s,color .12s,border-color .12s;}
-.scopebar button:hover{color:var(--fg);border-color:var(--sub);}
+.scopebar button:hover{color:var(--text);border-color:var(--muted);}
 .scopebar button[aria-selected="true"]{background:color-mix(in srgb,var(--accent) 14%,transparent);border-color:var(--accent);
   color:var(--accent);font-weight:600;}
-.scopebar .scopenote{align-self:center;color:var(--sub);font-size:12px;margin-left:4px;}
-.leg-note{color:var(--sub);font-size:11.5px;margin-top:2px;letter-spacing:.01em;}
+.scopebar .scopenote{align-self:center;color:var(--muted);font-size:12px;margin-left:4px;}
+.leg-note{color:var(--muted);font-size:11.5px;margin-top:2px;letter-spacing:.01em;}
 </style>
 </head>
 <body>
@@ -1072,12 +1075,16 @@ function claimedCategoryFromName(name){
 // import-by-code that bypasses this list). Kept deliberately conservative so it
 // never hides a genuine actively-managed equity fund. ELSS/value/contra/focused/
 // dividend-yield are equity and intentionally absent here.
+// So is "commodit", since v22. It used to be listed and it DID hide one: ICICI
+// Prudential Commodities Fund is an "Equity Scheme - Sectoral/ Thematic" fund, which
+// SECTOR_KEYWORDS routes to the Nifty Commodities TRI -- but it never reached the
+// picker. The commodity funds that are not equity say "global", "gold" or "fof" too.
 const NON_EQUITY_NAME_TOKENS = [
   "liquid","overnight","gilt","money market","ultra short","low duration",
   "short duration","medium duration","long duration","banking and psu",
   "corporate bond","credit risk","debt","duration","floater","dynamic bond","bond",
   "hybrid","balanced","arbitrage","equity savings","multi asset","asset allocation",
-  "gold","silver","commodit","fund of fund","fof","overseas","international","global",
+  "gold","silver","fund of fund","fof","overseas","international","global",
   "index fund","exchange traded","etf","retirement","children","pension",
 ];
 function nameLooksNonEquity(n){ return NON_EQUITY_NAME_TOKENS.some(t => n.includes(t)); }
@@ -2108,7 +2115,14 @@ function poolRuns(runs){
    have one. That is the user-visible contract: Live SIP answers "how is the money
    I am putting in NOW doing", so an ended leg's history must not inflate it. */
 function scopeLegs(list,scope){
-  return scope==="live" ? list.filter(s=>!s.endStr) : list;
+  return scope==="live" ? list.filter(legIsLive) : list;
+}
+/* Still being funded? An end date alone does not say so. SIP mandates are registered
+   with an end date years out, so a user who copies theirs in ("until Dec 2030") has an
+   ONGOING SIP -- which Live SIP used to drop, while that one date alone split the page
+   into All and Live SIP views. A leg has stopped once its end date is today or earlier. */
+function legIsLive(s){
+  return !(s && s.endStr) || s.endStr > isoDate(new Date());
 }
 
 /* Collapse legs into one row per scheme, preserving input order of first
@@ -2142,7 +2156,7 @@ function groupHoldings(list){
       fundSkipped:legs.reduce((t,s)=>t+(s.fundSkipped||0),0),
       startStr:legs.reduce((m,s)=>(!m||s.startStr<m)?s.startStr:m,""),
       legCount:legs.length,
-      liveCount:legs.filter(s=>!s.endStr).length,
+      liveCount:legs.filter(legIsLive).length,
       amountSpread:[...new Set(legs.map(s=>s.amount))].sort((a,b)=>a-b)
     };
   }).filter(g=>g.fund);
@@ -2160,9 +2174,9 @@ function legNoteText(g){
          (g.legs[0].endStr?" to "+fmtISO(g.legs[0].endStr):"");
 }
 
-/* Sub-tabs only earn their place once the two views can differ. With no end date
-   anywhere, "Live SIP" is identical to "All" and the control is pure noise. */
-function scopeApplies(){ return schemes.some(s=>s && s.endStr); }
+/* Sub-tabs only earn their place once the two views can differ. Until some leg has
+   actually ended, "Live SIP" is identical to "All" and the control is pure noise. */
+function scopeApplies(){ return schemes.some(s=>s && !legIsLive(s)); }
 
 function valuedSchemes(){ return schemes.filter(s=>!s.error && s.fund); }
 function portfolioMetrics(rows){
@@ -2246,7 +2260,9 @@ function renderScopeBar(){
 function render(){
   const wrap=$("tableWrap");
   if(!schemes.length){
-    wrap.innerHTML='<div class="empty">No schemes yet — search a fund above and add your SIP.</div>';
+    wrap.innerHTML = hydrationInProgress
+      ? '<div class="empty">Loading your portfolio…</div>'
+      : '<div class="empty">No schemes yet — search a fund above and add your SIP.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
     $("tabRow").style.display="none";$("paneInsights").style.display="none";
     $("panePortfolio").style.display="";
@@ -2264,11 +2280,11 @@ function render(){
   const scoped = scopeLegs(schemes.filter(s=>!s.error && s.fund), pfScope);
   const groups = groupHoldings(scoped);
   const port=portfolioMetrics(groups);
-  // Every holding has an end date and the user asked for Live SIP: say so rather
-  // than drawing an empty table with a PORTFOLIO row of zeros.
+  // Every SIP leg has ended and the user asked for Live SIP: say so rather than
+  // drawing an empty table with a PORTFOLIO row of zeros.
   if(!groups.length && pfScope==="live" && !schemes.some(s=>s.error)){
     $("summaryCard").style.display="none"; $("foot").style.display="none";
-    wrap.innerHTML='<div class="empty">No live SIPs — every holding has an end date. Switch to <b>All</b> to see the full portfolio.</div>';
+    wrap.innerHTML='<div class="empty">No live SIPs — every SIP in this portfolio has already ended. Switch to <b>All</b> to see the full portfolio.</div>';
     $("tabRow").style.display="flex";
     return;
   }
@@ -2352,7 +2368,7 @@ function render(){
         <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name||s.inputName)||('Code '+s.code))}</div>
             <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(fmtISO(s.startStr))}${s.endStr?' to '+escapeHtml(fmtISO(s.endStr)):''}</div>
             <div class="bmk-line" style="color:var(--danger);">⚠ Couldn't value: ${escapeHtml(s.error)}</div></td>
-        <td class="num" colspan="6" style="color:var(--sub);">retained — value not available right now</td>
+        <td class="num" colspan="6" style="color:var(--muted);">retained — value not available right now</td>
         <td class="num"><button class="btn small" data-retry="${i}">Retry</button> <button class="btn small icon" data-i="${i}" title="Remove" aria-label="Remove">×</button></td></tr>`;
   });
   groups.forEach(g=>{
@@ -2560,15 +2576,17 @@ async function hydrateActive(){
   const portfolioName = store.active;
   const specs = (store.portfolios[portfolioName] || []).map(spec=>({...spec}));
   schemes = [];
+  // Loading state BEFORE the first render: render() reads an empty `schemes` as an
+  // empty portfolio, so a portfolio with holdings used to say "No schemes yet — search
+  // a fund above" for the whole load (v22). Now it says it is loading.
+  setHydrationState(specs.length > 0);
   render();
 
   if(!specs.length){
-    setHydrationState(false);
     $("pmStatus").textContent = "";
     return;
   }
 
-  setHydrationState(true);
   $("pmStatus").textContent = "Loading "+specs.length+" scheme(s)…";
   const loaded = [];
   const failed = [];
@@ -2688,11 +2706,21 @@ $("eraseLocalBtn").addEventListener("click", async ()=>{
 /* ---- refresh (fund NAV + TRI). Button hidden by default since the nightly
    job keeps TRI current and fund NAV is refetched on load; kept for safety
    if the page is left open across days. ---- */
+/* Everything this page fetches once and then reuses: fund NAV, the TRI series, and the
+   Insights ranking files (ranksCache / ranksManifest, declared with the Insights code
+   further down -- safe, since this only ever runs on a click). Refresh used to skip
+   the ranking files, so a tab left open across days re-valued every holding on today's
+   NAV while Insights kept ranking against the first day's peer grids (v22). */
+function clearDataCaches(){
+  detailCache = {};
+  for(const k in triCache) delete triCache[k];
+  for(const k in ranksCache) delete ranksCache[k];
+  ranksManifest = null;
+}
 const updateNavBtnEl = $("updateNavBtn");
 if(updateNavBtnEl){
   updateNavBtnEl.addEventListener("click", ()=>{
-    detailCache = {};                          // force refetch of fund NAV
-    for(const k in triCache) delete triCache[k]; // force reload of TRI files
+    clearDataCaches();                         // fund NAV, TRI files and ranking files
     $("pmStatus").textContent = "Refreshing…";
     hydrateActive();                           // #8: re-value by stored code, list or no list
     if(!listReady){ listReadyPending = true; loadSchemeList(); }  // also retry the scheme list
@@ -2750,6 +2778,47 @@ $("importBtn").addEventListener("click",()=>{
   $("importFile").click();
 });
 function normHeader(h){return String(h||"").toLowerCase().replace(/[^a-z]/g,"");}
+/* Which sheet column holds which field. TWO PASSES, and the order is the fix.
+   #4 made "Scheme Code" map to the code column by testing exact names before loose
+   ones -- but inside ONE left-to-right pass, so a loose match on an EARLIER column
+   still claimed its field before the exact header further along was ever read:
+   "Fund House" became the fund name ahead of "Fund Name", "Scheme Category" ahead of
+   "Scheme Name", and an "Invested Amount" TOTAL ahead of "Monthly SIP", so every row
+   imported the total as its monthly instalment, marked Ready and pre-ticked.
+   Now exact names win outright; loose matches only fill what is still unmapped,
+   strongest first; and a column is never claimed twice. `cells` are the RAW header
+   cells: exact names compare the letters-only form ("Scheme Code" -> "schemecode"),
+   and the exclusions read whole words ("Fund House" is never a fund's name). */
+function mapImportHeaders(cells){
+  const hdr=cells.map(normHeader);
+  const words=cells.map(v=>" "+String(v||"").toLowerCase().replace(/[^a-z]+/g," ").trim()+" ");
+  const col={}, taken=new Set();
+  function claim(field, test){
+    if(col[field]!=null) return;
+    const i=hdr.findIndex((h,k)=>h && !taken.has(k) && test(h, words[k]));
+    if(i>=0){ col[field]=i; taken.add(i); }
+  }
+  // Pass 1 -- exact names, including the two optional columns the template writes.
+  // (No quote marks in comments in here: the test harness extracts this function by
+  // brace-matching and treats any quote character as the start of a string.)
+  claim("code",   h=>h==="code"||h==="schemecode"||h==="fundcode"||h==="amficode"||h==="codeoptional");
+  claim("scheme", h=>h==="scheme"||h==="schemename"||h==="fund"||h==="fundname"||h==="name");
+  claim("plan",   h=>h==="plan"||h==="plantype");
+  claim("start",  h=>h==="start"||h==="startdate"||h==="sipstart"||h==="sipstartdate");
+  claim("end",    h=>h==="end"||h==="enddate"||h==="sipend"||h==="sipenddate"||h==="endoptional");
+  claim("amount", h=>h==="monthlysip"||h==="monthly"||h==="sipamount"||h==="monthlyamount"||h==="sip"||h==="amount");
+  // Pass 2 -- substrings, only for fields still unmapped. A monthly or SIP column
+  // outranks a bare amount column, which is as likely to be a total as an instalment.
+  claim("start",  h=>h.includes("start"));
+  claim("end",    h=>h.includes("end") && !h.includes("dividend"));
+  claim("amount", h=>h.includes("monthly")||h.includes("sip"));
+  claim("amount", h=>h.includes("amount"));
+  claim("code",   h=>h.includes("code") && !h.includes("isin"));       // an ISIN is not an AMFI code
+  claim("scheme", h=>h.includes("schemename")||h.includes("fundname"));
+  claim("scheme", (h,w)=>(h.includes("scheme")||h.includes("fund")) &&
+                         !/ (house|amc|category|type|class|manager|option|size) /.test(w));
+  return col;
+}
 function normalisePlan(v){const n=normName(v);if(/\b(direct|dir)\b/.test(n))return "Direct";if(/\b(regular|reg)\b/.test(n))return "Regular";return "";}
 function detectPlanFromName(name){return normalisePlan(name);}
 // SEBI's "Recategorisation 2.0" (circular Mar-2025, deadline 30-Jun-2025) forced
@@ -2934,7 +3003,9 @@ async function resolveImportRow(row,rowNum,col){
   return base;
 }
 
-function renderImportPreview(){
+/* `focusRow` is set when a pick in row N re-renders the table, so the keyboard stays
+   on that row rather than being thrown back to Cancel. */
+function renderImportPreview(focusRow){
   const body=$("importPreviewBody");body.innerHTML="";
   importPreviewRows.forEach((r,i)=>{
     const tr=document.createElement("tr");
@@ -2955,7 +3026,7 @@ function renderImportPreview(){
   body.querySelectorAll("select[data-pick-i]").forEach(sel=>sel.onchange=async ()=>{
     const i=+sel.dataset.pickI, r=importPreviewRows[i], code=sel.value;
     if(!code){ r.importable=false; r.checked=false; r.pickedCode=""; r.statusClass="warn";
-               r.message="Couldn't identify this fund — choose the intended scheme"; renderImportPreview(); return; }
+               r.message="Couldn't identify this fund — choose the intended scheme"; renderImportPreview(i); return; }
     const chosen=(r.candidates||[]).find(c=>String(c.code)===String(code));
     sel.disabled=true;
     try{
@@ -2970,14 +3041,27 @@ function renderImportPreview(){
       r.importable=false; r.checked=false; r.statusClass="bad";
       r.message="Couldn't load that scheme: "+((e&&e.message)||"unknown error");
     }
-    renderImportPreview();
+    renderImportPreview(i);
   });
   body.querySelectorAll("input[data-preview-i]").forEach(cb=>cb.onchange=()=>{importPreviewRows[+cb.dataset.previewI].checked=cb.checked;updatePreviewSummary();});
   updatePreviewSummary();
-  importPrevFocus = document.activeElement;
-  $("importModal").style.display="flex";
-  document.addEventListener("keydown", importModalKeydown, true);
-  requestAnimationFrame(()=>{ const b=$("importCancelBtn"); if(b) b.focus(); });
+  const modal=$("importModal");
+  if(modal.style.display!=="flex"){
+    // Opening steps, FIRST render only. A pick re-renders this table, and repeating
+    // them pointed importPrevFocus at an element INSIDE the dialog -- a dropdown the
+    // rebuild had just removed -- so closing dropped focus entirely, and every pick
+    // pulled focus back to Cancel (v22).
+    importPrevFocus = document.activeElement;
+    modal.style.display="flex";
+    document.addEventListener("keydown", importModalKeydown, true);
+    requestAnimationFrame(()=>{ const b=$("importCancelBtn"); if(b) b.focus(); });
+  }else if(focusRow!=null){
+    requestAnimationFrame(()=>{
+      const el=body.querySelector('select[data-pick-i="'+focusRow+'"]') ||
+               body.querySelector('input[data-preview-i="'+focusRow+'"]');
+      if(el) el.focus();
+    });
+  }
 }
 function updatePreviewSummary(){
   const valid=importPreviewRows.filter(r=>r.importable).length,selected=importPreviewRows.filter(r=>r.importable&&r.checked).length,errors=importPreviewRows.length-valid;
@@ -2996,7 +3080,7 @@ function importModalKeydown(e){
   if($("importModal").style.display==="none") return;
   if(e.key==="Escape"){ e.preventDefault(); closeImportModal(); return; }
   if(e.key==="Tab"){                                   // focus trap
-    const f=[...$("importModal").querySelectorAll('button:not([disabled]),input:not([disabled])')]
+    const f=[...$("importModal").querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled])')]
       .filter(el=>el.offsetParent!==null);
     if(!f.length) return;
     const i=f.indexOf(document.activeElement);
@@ -3066,22 +3150,10 @@ $("importFile").addEventListener("change",function(){
       if(aoa.length>IMPORT_MAX_ROWS+1){$("pmStatus").textContent="Too many rows ("+aoa.length+"); the limit is "+IMPORT_MAX_ROWS+".";return;}
       aoa=aoa.map(r=>Array.isArray(r)?r.slice(0,IMPORT_MAX_COLS):r);   // bound column scan
       if(!aoa.length){$("pmStatus").textContent="Empty sheet.";return;}
-      const hdr=aoa[0].map(normHeader),col={};
-      // #4: "Scheme Code" contains "scheme", so a substring test that checks scheme
-      // BEFORE code mapped col.scheme at the code column and never set col.code at
-      // all — a silent wrong-fund import. Test exact normalized aliases, code first,
-      // and use ??= so a later duplicate header can't clobber the first valid match.
-      // (normHeader strips non-letters: "Scheme Code" -> "schemecode".)
-      hdr.forEach((h,i)=>{
-        if(h==="code"||h==="schemecode"||h==="fundcode"||h==="amficode"){col.code??=i;}
-        else if(h==="scheme"||h==="schemename"||h==="fund"||h==="fundname"||h==="name"){col.scheme??=i;}
-        else if(h==="plan"||h==="plantype"){col.plan??=i;}
-        else if(h.includes("start")){col.start??=i;}
-        else if(h.includes("end")){col.end??=i;}
-        else if(h.includes("monthly")||h.includes("amount")||h.includes("sip")){col.amount??=i;}
-        else if(h.includes("code")){col.code??=i;}      // late catch-all, after exact names
-        else if(h.includes("scheme")||h.includes("fund")){col.scheme??=i;}
-      });
+      // #4 / v22: which column is which -- exact names first, then loose ones. See
+      // mapImportHeaders(); a single left-to-right pass let "Fund House" or an
+      // "Invested Amount" total claim a field ahead of the real column.
+      const col=mapImportHeaders(aoa[0]);
       if(col.scheme==null||col.start==null||col.amount==null){$("pmStatus").textContent="Header must include Scheme, Start and Monthly SIP columns.";return;}
       $("pmStatus").textContent="Validating Excel rows…";importPreviewRows=[];
       for(let r=1;r<aoa.length;r++){
@@ -3109,6 +3181,9 @@ $("importFile").addEventListener("change",function(){
    ============================================================ */
 const FILL = {
   strong_beat:"1E7D46", beat:"3EC27A", lag:"E07A72", strong_lag:"B23B34", na:"4B5B6A",
+  // perfBand() has a sixth band, "match", for a spread of exactly 0. Without an entry
+  // here its cells got no fill under white text -- unreadable (v22). Grey, as in the legend.
+  match:"4B5B6A",
 };
 const FMT_INR = '"₹"#,##,##0';
 const FMT_PCT = '0.00%';
@@ -3278,7 +3353,7 @@ function triWindowFlag(s){
    one per SIP leg. Insights sheets carry exactly what an expanded
    Insights row shows, through the same insightFacts() the pane uses.
 
-   When any holding has an end date the two sub-tabs describe DIFFERENT
+   When any SIP leg has ended the two sub-tabs describe DIFFERENT
    populations (measured: 13.73% on Live SIP against 14.75% across all
    legs), so each gets its own Portfolio and Insights sheet and its OWN
    KPI block. A reader on the Live SIP sheet must be able to reconcile
@@ -3515,7 +3590,7 @@ function reportPortfolioSheet(d, genDate){
   shTitle(sh, d.pf, "Portfolio: "+store.active+"  ·  "+genDate+"  ·  "+scopeBlurb(d));
 
   if(!port){
-    shWrap(sh, "No holdings in this view. Every holding in this portfolio has an end date, so there is no live SIP to report.",
+    shWrap(sh, "No holdings in this view. Every SIP in this portfolio has already ended, so there is no live SIP to report.",
       {color:RPT.sub});
     return shDone(sh, cols.map(function(c){ return c.w; }),
       {orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0});
@@ -3529,12 +3604,14 @@ function reportPortfolioSheet(d, genDate){
     {label:"PORTFOLIO XIRR", val:port.xirr, fmt:FMT_PCT, tone:"neutral"},
     {label:"BENCHMARK TRI XIRR (COMPARABLE)", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
     {label:"ALPHA (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
-     tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
+     tone: (port.alpha==null || pBand.key==="match") ? "neutral" : (port.alpha>0?"good":"bad")}
   ]);
 
+  // An exactly-flat spread is its own state, as on screen ("Matching the index").
   shBand(sh, port.alpha==null ? "No benchmark comparison available"
-        : (port.alpha>=0 ? "Portfolio is BEATING its blended TRI benchmark"
-                         : "Portfolio is LAGGING its blended TRI benchmark"),
+        : pBand.key==="match" ? "Portfolio is MATCHING its blended TRI benchmark"
+        : (port.alpha>0 ? "Portfolio is BEATING its blended TRI benchmark"
+                        : "Portfolio is LAGGING its blended TRI benchmark"),
     {fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:11, hpt:18});
   shGap(sh, 4);
 
@@ -3734,7 +3811,7 @@ function reportInsightsSheet(d, genDate){
     if((f.catInfo && f.catInfo.status==="stale") || f.planStale){
       shWrap(sh, f.planStale && !(f.catInfo && f.catInfo.status==="stale")
         ? ("Note: the "+item.plan+" peer grid failed its last publish check, so the track record above "+
-           "is current but the peer ranking below is from an earlier run.")
+           "is current but the peer ranking is from an earlier run.")
         : "Note: this category's data failed its last publish check and may be out of date.",
         {color:RPT.bad, sz:9.5});
     }
@@ -3868,8 +3945,12 @@ function buildInsights(port, holdings){
   // 1) Overall verdict line.
   if(port.alpha!=null){
     const pp=(port.alpha*100);
-    lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI proxy by "
-      +Math.abs(pp).toFixed(2)+" pp per year of Alpha (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
+    // Exactly 0 is "Matched" everywhere else (perfBand), so it is not a beat here either.
+    lines.push(pp===0
+      ? "Overall the portfolio exactly matched its blended Nifty TRI proxy (comparable fund XIRR "+
+        pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+")."
+      : "Overall the portfolio "+(pp>0?"beat":"trailed")+" its blended Nifty TRI proxy by "
+        +Math.abs(pp).toFixed(2)+" pp per year of Alpha (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
   // 2) Best and worst holdings by alpha.
   const withAlpha=rows.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
@@ -3882,9 +3963,10 @@ function buildInsights(port, holdings){
         " ("+pp(best.a)+" p.a. vs its TRI)."
       : "Best performer vs its TRI: "+shortSchemeName(best.s.name)+" ("+pp(best.a)+" p.a.). "
         +"Weakest: "+shortSchemeName(worst.s.name)+" ("+pp(worst.a)+" p.a.).");
-    const beating=withAlpha.filter(x=>x.a>=0).length;
+    const beating=withAlpha.filter(x=>x.a>0).length, lagging=withAlpha.filter(x=>x.a<0).length;
+    const matched=withAlpha.length-beating-lagging;
     lines.push(beating+" of "+withAlpha.length+" comparable holdings beat their benchmark; "
-      +(withAlpha.length-beating)+" lagged.");
+      +lagging+" lagged"+(matched?"; "+matched+" matched it exactly":"")+".");
   }
   // 3) Concentration hint if many holdings share one benchmark.
   const byBench={};
@@ -4401,7 +4483,10 @@ function groupSchedule(g){
     // never been an `s.end`, and reading one silently scheduled stopped SIPs all
     // the way to today — a SIP that ended in Jan-2021 was given 103 instalments
     // instead of 37 and printed 13.41% where the row header said 14.90%.
-    const legEnd = leg.endStr ? parseInput(leg.endStr) : (g.fundValueDate || null);
+    // ...but never past the valuation date: a mandate end still years away (v22) would
+    // otherwise schedule instalments that have not happened yet.
+    let legEnd = leg.endStr ? parseInput(leg.endStr) : (g.fundValueDate || null);
+    if(legEnd && g.fundValueDate && legEnd > g.fundValueDate) legEnd = g.fundValueDate;
     if(!legEnd) continue;
     for(const d of scheduleDates(leg.start, legEnd)){
       const k = isoDate(d);
@@ -4488,6 +4573,23 @@ async function renderInsights(){
   });
 }
 
+/* The window the PEER GRID can rank. navs_<CAT>_<PLAN>.json is published nightly,
+   before mfapi has posted that day's NAVs, so the grid ends a trading day (over a
+   weekend, three) behind the live NAV the holding itself is valued on. An instalment
+   dated after the grid's last point has no peer NAV within 7 days, so runSIP() skipped
+   it for EVERY peer, both pool filters in rankCandidates() emptied, and the pane said
+   "could not be ranked" while putting the whole category down to NAV gaps. Measured on
+   the committed FLEXI_CAP Direct grid: a SIP on the 25th, valued on the 25th, ranked
+   against 0 of 45 peers; the same SIP on the 20th against 27.
+   So value on the grid's as_of and drop any instalment after it: every peer, and the
+   holding's own grid series, then describe exactly the same days. A holding valued
+   BEFORE the grid's end (a suspended fund) keeps its own date. */
+function peerWindow(schedule, valueDate, gridAsOf){
+  const asOf = parseInput(gridAsOf);
+  const vd = (asOf && valueDate && asOf < valueDate) ? asOf : valueDate;
+  return { schedule:(schedule||[]).filter(e=>e.date<=vd), valueDate:vd };
+}
+
 /* Everything one Insights row knows, gathered once and consumed twice: the
    expandable pane renders it as HTML, the Excel report writes it as cells.
 
@@ -4516,13 +4618,15 @@ async function insightFacts(item){
                spanDays:null, tooShort:false, rank:null, summary:null,
                inCohort:false, own:null, window:null};
   if(!(navs && item.schedule && item.schedule.length && item.valueDate)) return out;
+  // Rank over the days the peer grid covers, never past them -- see peerWindow().
+  const win = peerWindow(item.schedule, item.valueDate, navs.as_of);
   /* Too short to rank. XIRR annualises, so a two-month SIP reports a two-month move
      as an annual rate: the peer list reads 231%, 150%, 96% and the rank looks just
      as confident as a ten-year one. The track-record table is unaffected -- it is
      point-to-point and already withholds `ann` under a year. */
-  out.spanDays = daysBetween(item.schedule[0].date, item.valueDate);
+  out.spanDays = win.schedule.length ? daysBetween(win.schedule[0].date, win.valueDate) : 0;
   if(out.spanDays < MIN_RANK_DAYS){ out.tooShort = true; return out; }
-  out.rank = rankCandidates(navs, item.schedule, item.valueDate, item.code);
+  out.rank = rankCandidates(navs, win.schedule, win.valueDate, item.code);
   out.own  = out.rank.ownXirr!=null ? out.rank.ownXirr : item.xirr;
   /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
      failures with different remedies, and the single message "its history does
@@ -4536,10 +4640,10 @@ async function insightFacts(item){
   // then NOT "to today", and a reader comparing it against the portfolio tab
   // needs to know which window produced these numbers.
   out.window = {
-    n:item.schedule.length,
-    first:item.schedule[0].date,
-    last:item.schedule[item.schedule.length-1].date,
-    valueDate:item.valueDate,
+    n:win.schedule.length,
+    first:win.schedule[0].date,
+    last:win.schedule[win.schedule.length-1].date,
+    valueDate:win.valueDate,
     amounts:(item.amountSpread && item.amountSpread.length>1) ? item.amountSpread.slice() : null
   };
   return out;
@@ -4568,7 +4672,7 @@ async function fillInsightDetail(pane, item, gen){
       '<div class="ins-note">This SIP has run '+Math.max(0,Math.round(f.spanDays))+' days. '+
       'Ranking needs at least '+MIN_RANK_DAYS+' days: an annualised return over a shorter '+
       'window magnifies a few weeks of movement into a yearly rate, so both the rank and '+
-      'the peer figures would look far more precise than they are. The track record below '+
+      'the peer figures would look far more precise than they are. The track record above '+
       'is point-to-point and unaffected.</div>';
   }else if(f.rank){
     const res = f.rank, sum = f.summary, own = f.own, w = f.window;
@@ -4594,7 +4698,7 @@ async function fillInsightDetail(pane, item, gen){
             "and may be out of date.</div>";
   }else if(f.planStale){
     html += '<div class="ins-note"><b>Note:</b> the '+escapeHtml(item.plan)+' peer grid failed its last '+
-            "publish check, so the track record above is current but the peer ranking below is from an "+
+            "publish check, so the track record above is current but the peer ranking is from an "+
             "earlier run. The two are not describing the same day.</div>";
   }else if(catInfo.status === "stale"){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s track record failed its last publish '+

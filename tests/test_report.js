@@ -98,9 +98,13 @@ const EPILOGUE = `
   get store(){return store;},   set store(v){store=v;},
   get schemes(){return schemes;}, set schemes(v){schemes=v;},
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
+  get importPreviewRows(){return importPreviewRows;}, set importPreviewRows(v){importPreviewRows=v;},
+  get importPrevFocus(){return importPrevFocus;}, renderImportPreview,
+  // Guarded: against code that predates it this must fail ONE assertion, not the load.
+  clearDataCaches: typeof clearDataCaches === "function" ? clearDataCaches : null,
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
-  fmtISO, normaliseDateCell, fmtDate
+  fmtISO, normaliseDateCell, fmtDate, isoDate, mapImportHeaders, hydrateActive
 };`;
 
 vm.createContext(sandbox);
@@ -236,6 +240,38 @@ S.schemes = [
   ok("the two views really are different populations, so one KPI block could not serve both",
      investedFor("all") !== investedFor("live"));
 
+  // ---- v22: an exactly-flat spread reads "Matched" in the sheet too -- and is visible
+  /* Every holding in this fixture is benchmarked against its OWN series (MID vs MID,
+     F500 vs F500), so each Alpha is exactly 0: the one case perfBand() calls "Matched"
+     and the screen calls "Matching the index". The sheet disagreed three ways. FILL had
+     no "match" entry, so those cells were white text on no fill -- invisible. The
+     banner said BEATING. And Key Insights said the portfolio "beat" its benchmark and
+     counted every flat holding as beating. */
+  {
+    const ws = wb.Sheets["Portfolio — All"];
+    const cells = Object.keys(ws).filter(k => k[0] !== "!").map(k => ws[k]);
+    const matched = cells.filter(c => c.v === "Matched");
+    ok("v22 fixture: the spreads really are exactly flat", matched.length > 0, "found " + matched.length);
+    ok("v22: every 'Matched' cell is filled, so its white text can be read",
+       matched.length > 0 && matched.every(c => c.s && c.s.fill && c.s.fill.fgColor &&
+                                                 /^[0-9A-F]{6}$/i.test(c.s.fill.fgColor.rgb || "")));
+    ok("...in the grey the legend itself uses for Matched",
+       matched.length > 0 && matched.every(c => !!(c.s && c.s.fill && c.s.fill.fgColor) &&
+                                                 c.s.fill.fgColor.rgb === "4B5B6A"));
+    ok("the banner says MATCHING rather than BEATING",
+       cells.some(c => c.v === "Portfolio is MATCHING its blended TRI benchmark") &&
+       !cells.some(c => c.v === "Portfolio is BEATING its blended TRI benchmark"));
+    const alphaLabel = Object.keys(ws).find(k => k[0] !== "!" && ws[k].v === "ALPHA (p.a.)");
+    const alphaVal = alphaLabel && ws[XLSX.utils.encode_cell({r: XLSX.utils.decode_cell(alphaLabel).r + 1,
+                                                              c: XLSX.utils.decode_cell(alphaLabel).c})];
+    const alphaRgb = alphaVal && alphaVal.s && alphaVal.s.font && alphaVal.s.font.color && alphaVal.s.font.color.rgb;
+    ok("...and the Alpha card is not painted as a gain", !!alphaRgb && alphaRgb !== "1E7D46", alphaRgb);
+    ok("Key Insights says the portfolio matched, not that it beat",
+       /Overall the portfolio exactly matched/.test(all) && !/Overall the portfolio beat/.test(all));
+    ok("...and does not count a flat holding as beating its benchmark",
+       !/2 of 2 comparable holdings beat/.test(all) && /2 matched it exactly/.test(all));
+  }
+
   // ---- Insights sheets carry the tab's own content
   const insAll = txt("Insights — All");
   ok("Insights carries the track-record table", /Category Avg/.test(insAll) && /Annualized/.test(insAll));
@@ -252,12 +288,49 @@ S.schemes = [
   // ---- the screen and the sheet must agree on the RANK
   const item = S.insightsItems("all")[0];
   const facts = await S.insightFacts(item);
+  /* No escape hatch. This used to pass `true` whenever the holding was NOT ranked --
+     which is exactly the state the v22 peer-window bug put a holding in, so the check
+     meant to catch a disagreement went green precisely when the ranking had collapsed. */
+  ok("the holding under test is ranked, so the agreement check is a real one",
+     !!facts.summary && facts.summary.kind === "ranked", facts.summary && facts.summary.kind);
   if(facts.summary && facts.summary.kind === "ranked"){
     const sentence = S.rankSentence(facts.summary, item.plan);
     ok("the rank sentence in the sheet is the one insightFacts produced",
        insAll.includes(sentence.split(".")[0]), sentence);
-  } else {
-    ok("the rank sentence in the sheet is the one insightFacts produced", true);
+  }
+
+  // ---- v22: Insights ranks over the window the peer grid actually covers ----------
+  /* The nightly grid ends a trading day behind the live NAV a holding is valued on. A
+     SIP whose latest instalment falls on that newest day used to rank against ZERO
+     peers: runSIP() found no grid NAV within 7 days of it for any fund. Driven through
+     the REAL insightFacts() against the committed grid, dated relative to its own
+     as_of so the test holds whatever night the data was published. */
+  {
+    const end = S.parseInput(flexGrid.as_of);
+    const live = new Date(end.getTime()); live.setDate(live.getDate() + 1);
+    const start = new Date(live.getFullYear() - 5, live.getMonth(), live.getDate());
+    const lastOf = e => { const d = S.parseInput(e.t0); d.setDate(d.getDate() + e.d[e.d.length-1]); return d; };
+    const code = Object.keys(flexGrid.funds).find(c =>
+      S.parseInput(flexGrid.funds[c].t0) <= start && S.isoDate(lastOf(flexGrid.funds[c])) === flexGrid.as_of);
+    const pf = await S.insightFacts({
+      code, name: flexGrid.funds[code].n, plan: "Direct", planInferred: false,
+      cat: "FLEXI_CAP", catLabel: "Flexi Cap Fund", xirr: 0.12, alphaPP: 0, legCount: 1,
+      schedule: S.uniformSchedule(S.scheduleDates(start, live), 5000),
+      valueDate: live, amountSpread: [5000]
+    });
+    ok("v22: a SIP whose latest instalment is newer than the peer grid is still RANKED",
+       !!pf.summary && pf.summary.kind === "ranked", pf.summary && pf.summary.kind);
+    ok("...against a real pool of peers, not an empty one",
+       !!pf.rank && pf.rank.universe > 0, pf.rank && pf.rank.universe);
+    // Before the fix every fund that DID run the window (27 of 45 that night) was
+    // counted under "had gaps in their NAV history", with the pool at zero.
+    ok("...and the funds that ran the window are ranked, not blamed for NAV gaps",
+       !!pf.rank && !!pf.rank.excluded && pf.rank.excluded.other < pf.rank.universe,
+       pf.rank && JSON.stringify(pf.rank.excluded));
+    eq("...valued on the grid's own date, which the window line states",
+       pf.window && S.isoDate(pf.window.valueDate), flexGrid.as_of);
+    ok("...and the window never claims an instalment the grid cannot price",
+       !!pf.window && pf.window.last <= end);
   }
 
   // ---- v15: bare headings, and the disclosure that has to carry them
@@ -336,19 +409,15 @@ S.schemes = [
 
   // ---- the importer must not mistake a report sheet for a template
   // "Portfolio" is the sheet name the importer PREFERS. A report sheet opens with a
-  // title band, so row 1 is not a header row and the importer rejects it.
-  const hdrRow = (() => {
+  // title band, so row 1 is not a header row and the importer rejects it. Mapped by
+  // the REAL mapImportHeaders() (v22), not the hand-copied subset this used to carry,
+  // which could only ever agree with itself.
+  const hdrCells = (() => {
     const ws = wb.Sheets["Portfolio — All"];
     const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:""});
-    return (aoa[0] || []).map(h => String(h || "").toLowerCase().replace(/[^a-z]/g, ""));
+    return aoa[0] || [];
   })();
-  const col = {};
-  hdrRow.forEach((h, i) => {
-    if(h === "code" || h === "schemecode"){ if(col.code == null) col.code = i; }
-    else if(h === "scheme" || h === "schemename"){ if(col.scheme == null) col.scheme = i; }
-    else if(h.includes("start")){ if(col.start == null) col.start = i; }
-    else if(h.includes("monthly") || h.includes("amount") || h.includes("sip")){ if(col.amount == null) col.amount = i; }
-  });
+  const col = S.mapImportHeaders(hdrCells);
   ok("a report sheet is REJECTED by the importer rather than half-read as holdings",
      col.scheme == null || col.start == null || col.amount == null,
      JSON.stringify(col));
@@ -411,6 +480,74 @@ S.schemes = [
     const doc2 = await load("periods_Y.json");
     ok("...so the very next request actually goes out", doc2 && doc2.key === "OK");
     ok("a 404 is held longer than a transient failure", M.TTL404 > M.TTL);
+  }
+
+  // ---- v22: Refresh reloads the Insights ranking data too -------------------------
+  /* The Refresh button cleared the fund-NAV and TRI caches but not the ranking files, so
+     a tab left open across days re-valued every holding on today's NAV while Insights
+     kept ranking against the peer grids it loaded on the first day. */
+  if(typeof S.clearDataCaches !== "function"){
+    ok("v22: index.html has clearDataCaches(), which Refresh calls", false);
+  } else {
+    const seen = [];
+    const realFetch = sandbox.fetch;
+    sandbox.fetch = (url, opts) => { seen.push(String(url).split("?")[0]); return realFetch(url, opts); };
+    try {
+      const it = S.insightsItems("all")[0];
+      await S.insightFacts(it);                          // manifest and files now cached
+      const before = seen.length;
+      await S.insightFacts(it);
+      ok("v22 fixture: a second Insights read is served from cache", seen.length === before);
+      S.clearDataCaches();                               // what Refresh now calls
+      await S.insightFacts(it);
+      ok("v22: after a Refresh, Insights fetches the ranking manifest again",
+         seen.slice(before).includes("data/ranks/index.json"), JSON.stringify(seen.slice(before)));
+      ok("...and the category files", seen.slice(before).some(u => /^data\/ranks\/(periods|navs)_/.test(u)));
+    } finally { sandbox.fetch = realFetch; }
+  }
+
+  // ---- v22: re-rendering the import review keeps focus where it belongs -----------
+  /* Picking a fund in the review table re-renders it, and every render re-ran the
+     dialog's OPEN steps: it re-pointed importPrevFocus -- where focus returns when the
+     dialog closes -- at whatever had focus INSIDE the dialog (a dropdown the rebuild
+     had just removed), and it pulled focus back to Cancel after every single pick. */
+  {
+    S.importPreviewRows = [{rowNum:2, inputName:"X Fund", inputPlan:"", startStr:"2020-01-01",
+      endStr:"", amount:5000, importable:true, checked:true, statusClass:"ok", message:"Ready",
+      resolvedName:"X Fund", spec:{}}];
+    document.getElementById("importModal").style.display = "none";     // closed, pre-import
+    let cancelFocus = 0;
+    document.getElementById("importCancelBtn").focus = () => { cancelFocus++; };
+    const opener = makeEl("the-import-button");
+    document.activeElement = opener;
+    S.renderImportPreview();                                    // opens the dialog
+    ok("v22 fixture: opening the review focuses Cancel once", cancelFocus === 1, cancelFocus);
+    document.activeElement = makeEl("a-dropdown-inside-the-dialog");
+    S.renderImportPreview(0);                                   // what a pick does
+    ok("v22: a re-render keeps the element focus returns to when the dialog closes",
+       S.importPrevFocus === opener);
+    ok("...and does not pull focus back to Cancel after every pick", cancelFocus === 1, cancelFocus);
+  }
+
+  // ---- v22: while a saved portfolio loads, the table says so --------------------
+  /* hydrateActive() empties `schemes` and renders BEFORE it starts valuing, and render()
+     read an empty list as an empty PORTFOLIO: "No schemes yet — search a fund above and
+     add your SIP" sat in the table for the whole load, on a portfolio that has holdings.
+     Driven through the real hydrateActive(). Runs LAST: it replaces `schemes` when done. */
+  {
+    const table = () => document.getElementById("tableWrap").innerHTML;
+    S.store.portfolios[S.store.active] = [{holdingId:"hx", name:"Some Fund", code:"100000",
+      category:"", plan:"Direct", startStr:"2020-01-01", endStr:"", amount:5000}];
+    const loading = S.hydrateActive();          // synchronous up to its first await
+    const during = table();
+    ok("v22: while a saved portfolio is loading, the table says it is loading",
+       /Loading/i.test(during), during);
+    ok("...rather than inviting the user to add their first scheme", !/No schemes yet/.test(during));
+    await loading;
+    S.store.portfolios[S.store.active] = [];
+    await S.hydrateActive();
+    ok("...while an EMPTY portfolio still gets the add-your-first-scheme prompt",
+       /No schemes yet/.test(table()), table());
   }
 
   console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);
