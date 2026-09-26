@@ -47,8 +47,8 @@ LOAD DISCIPLINE
 USAGE
   python fetch_ranks.py                 # full nightly run
   python fetch_ranks.py --dry-run       # compute everything, write nothing
-  python fetch_ranks.py --canary MID_CAP  # one category end to end
-  python fetch_ranks.py --max-funds 40  # cap work while testing
+  python fetch_ranks.py --canary MID_CAP  # one category end to end (writes nothing)
+  python fetch_ranks.py --max-funds 40  # cap work while testing (writes nothing)
 """
 
 import argparse
@@ -928,8 +928,10 @@ def fetch_histories(funds, timeout, concurrency, log):
 def main():
     ap = argparse.ArgumentParser(description="Build category ranking data for the Insights tab.")
     ap.add_argument("--dry-run", action="store_true", help="compute everything, write nothing")
-    ap.add_argument("--canary", metavar="CAT", help="process a single category end to end")
-    ap.add_argument("--max-funds", type=int, default=0, help="cap funds per category (testing)")
+    ap.add_argument("--canary", metavar="CAT",
+                    help="process a single category end to end; diagnostic, writes nothing")
+    ap.add_argument("--max-funds", type=int, default=0,
+                    help="cap funds per category; diagnostic, writes nothing")
     ap.add_argument("--force", action="store_true",
                     help="bypass the publish gate; for deliberate schema/semantics changes")
     ap.add_argument("--concurrency", type=int, default=8)
@@ -969,6 +971,14 @@ def main():
     manifest = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "categories": copy.deepcopy(committed_cats)}
     written = refused = failed = 0
+
+    # --canary and --max-funds are diagnostic paths, not publish paths: each sees only
+    # part of the dataset, so neither writes ANYTHING. v17 stopped them rewriting the
+    # manifest, but category files were still written -- and --max-funds wrote TRUNCATED
+    # ones that pass the publish gate whenever the cap keeps 80% of the committed count
+    # (measured: VALUE 12 -> 10 funds on disk, exit 0, manifest still saying 12).
+    partial = bool(args.canary or args.max_funds)
+    publish = not args.dry_run and not partial
 
     for cat in sorted(by_cat):
         # ONE category must not be able to take down the others. write_json_atomic
@@ -1089,7 +1099,7 @@ def main():
             if args.force and not allowed:
                 allowed, why = True, why + "  [OVERRIDDEN by --force]"
             log(f"{cat}: periods {why}")
-            if allowed and not args.dry_run:
+            if allowed and publish:
                 write_json_atomic(p_path, periods)
                 written += 1
             elif not allowed:
@@ -1130,7 +1140,7 @@ def main():
                 if args.force and not ok_pub:
                     ok_pub, why2 = True, why2 + "  [OVERRIDDEN by --force]"
                 log(f"{cat}/{plan}: navs {why2}")
-                if ok_pub and not args.dry_run:
+                if ok_pub and publish:
                     write_json_atomic(n_path, doc)
                     written += 1
                 elif not ok_pub:
@@ -1153,7 +1163,10 @@ def main():
             continue
     # A category that is COMMITTED but absent from this discovery never entered the
     # loop above, so nothing marked it either way. Silence here is what deleted it.
-    for cat in sorted(set(committed_cats) - set(by_cat)):
+    # Not on a --canary run: it narrows discovery to one category ON PURPOSE, so every
+    # other category is absent by construction, not by failure. Counting them made every
+    # successful canary report "N category error(s)" and exit 1.
+    for cat in ([] if args.canary else sorted(set(committed_cats) - set(by_cat))):
         failed += 1
         log(f"{cat}: committed but ABSENT from this run's universe -- "
             f"keeping last-good, marking stale")
@@ -1161,15 +1174,15 @@ def main():
             committed_cats.get(cat), "absent from this run's universe")
 
     # A partial run must never rewrite the manifest, for the reason fetch_tri.py's
-    # --only already states: it cannot describe the whole dataset. --canary and
-    # --max-funds are diagnostic paths, not publish paths.
-    partial = bool(args.canary or args.max_funds)
-    if not args.dry_run and not partial:
+    # --only already states: it cannot describe the whole dataset. See `publish` above.
+    if publish:
         write_json_atomic(OUT_DIR / "index.json", manifest)
     elif partial:
-        log("partial run (--canary/--max-funds): manifest deliberately NOT rewritten")
+        log("partial run (--canary/--max-funds): diagnostic only -- no category file "
+            "written, and the manifest deliberately NOT rewritten")
     log(f"done: {written} file(s) written, {refused} refused, {failed} category error(s)"
-        + (" (dry run -- nothing written)" if args.dry_run else ""))
+        + (" (dry run -- nothing written)" if args.dry_run else "")
+        + (" (partial run -- nothing written)" if partial and not args.dry_run else ""))
     # A category that errored is a real failure even when others succeeded, so the
     # Action must go red rather than reporting a partial run as success.
     if failed:
