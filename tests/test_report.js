@@ -236,6 +236,38 @@ S.schemes = [
   ok("the two views really are different populations, so one KPI block could not serve both",
      investedFor("all") !== investedFor("live"));
 
+  // ---- v22: an exactly-flat spread reads "Matched" in the sheet too -- and is visible
+  /* Every holding in this fixture is benchmarked against its OWN series (MID vs MID,
+     F500 vs F500), so each Alpha is exactly 0: the one case perfBand() calls "Matched"
+     and the screen calls "Matching the index". The sheet disagreed three ways. FILL had
+     no "match" entry, so those cells were white text on no fill -- invisible. The
+     banner said BEATING. And Key Insights said the portfolio "beat" its benchmark and
+     counted every flat holding as beating. */
+  {
+    const ws = wb.Sheets["Portfolio — All"];
+    const cells = Object.keys(ws).filter(k => k[0] !== "!").map(k => ws[k]);
+    const matched = cells.filter(c => c.v === "Matched");
+    ok("v22 fixture: the spreads really are exactly flat", matched.length > 0, "found " + matched.length);
+    ok("v22: every 'Matched' cell is filled, so its white text can be read",
+       matched.length > 0 && matched.every(c => c.s && c.s.fill && c.s.fill.fgColor &&
+                                                 /^[0-9A-F]{6}$/i.test(c.s.fill.fgColor.rgb || "")));
+    ok("...in the grey the legend itself uses for Matched",
+       matched.length > 0 && matched.every(c => !!(c.s && c.s.fill && c.s.fill.fgColor) &&
+                                                 c.s.fill.fgColor.rgb === "4B5B6A"));
+    ok("the banner says MATCHING rather than BEATING",
+       cells.some(c => c.v === "Portfolio is MATCHING its blended TRI benchmark") &&
+       !cells.some(c => c.v === "Portfolio is BEATING its blended TRI benchmark"));
+    const alphaLabel = Object.keys(ws).find(k => k[0] !== "!" && ws[k].v === "ALPHA (p.a.)");
+    const alphaVal = alphaLabel && ws[XLSX.utils.encode_cell({r: XLSX.utils.decode_cell(alphaLabel).r + 1,
+                                                              c: XLSX.utils.decode_cell(alphaLabel).c})];
+    const alphaRgb = alphaVal && alphaVal.s && alphaVal.s.font && alphaVal.s.font.color && alphaVal.s.font.color.rgb;
+    ok("...and the Alpha card is not painted as a gain", !!alphaRgb && alphaRgb !== "1E7D46", alphaRgb);
+    ok("Key Insights says the portfolio matched, not that it beat",
+       /Overall the portfolio exactly matched/.test(all) && !/Overall the portfolio beat/.test(all));
+    ok("...and does not count a flat holding as beating its benchmark",
+       !/2 of 2 comparable holdings beat/.test(all) && /2 matched it exactly/.test(all));
+  }
+
   // ---- Insights sheets carry the tab's own content
   const insAll = txt("Insights — All");
   ok("Insights carries the track-record table", /Category Avg/.test(insAll) && /Annualized/.test(insAll));

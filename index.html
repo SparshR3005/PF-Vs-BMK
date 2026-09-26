@@ -3152,6 +3152,9 @@ $("importFile").addEventListener("change",function(){
    ============================================================ */
 const FILL = {
   strong_beat:"1E7D46", beat:"3EC27A", lag:"E07A72", strong_lag:"B23B34", na:"4B5B6A",
+  // perfBand() has a sixth band, "match", for a spread of exactly 0. Without an entry
+  // here its cells got no fill under white text -- unreadable (v22). Grey, as in the legend.
+  match:"4B5B6A",
 };
 const FMT_INR = '"₹"#,##,##0';
 const FMT_PCT = '0.00%';
@@ -3572,12 +3575,14 @@ function reportPortfolioSheet(d, genDate){
     {label:"PORTFOLIO XIRR", val:port.xirr, fmt:FMT_PCT, tone:"neutral"},
     {label:"BENCHMARK TRI XIRR (COMPARABLE)", val:port.anyBench?port.benchXirr:null, fmt:FMT_PCT, tone:"neutral"},
     {label:"ALPHA (p.a.)", val:port.alpha!=null?port.alpha*100:null, fmt:FMT_PP,
-     tone: port.alpha==null?"neutral":(port.alpha>=0?"good":"bad")}
+     tone: (port.alpha==null || pBand.key==="match") ? "neutral" : (port.alpha>0?"good":"bad")}
   ]);
 
+  // An exactly-flat spread is its own state, as on screen ("Matching the index").
   shBand(sh, port.alpha==null ? "No benchmark comparison available"
-        : (port.alpha>=0 ? "Portfolio is BEATING its blended TRI benchmark"
-                         : "Portfolio is LAGGING its blended TRI benchmark"),
+        : pBand.key==="match" ? "Portfolio is MATCHING its blended TRI benchmark"
+        : (port.alpha>0 ? "Portfolio is BEATING its blended TRI benchmark"
+                        : "Portfolio is LAGGING its blended TRI benchmark"),
     {fill:FILL[pBand.key], light:pBand.key!=="beat", bold:true, align:"center", sz:11, hpt:18});
   shGap(sh, 4);
 
@@ -3911,8 +3916,12 @@ function buildInsights(port, holdings){
   // 1) Overall verdict line.
   if(port.alpha!=null){
     const pp=(port.alpha*100);
-    lines.push("Overall the portfolio "+(pp>=0?"beat":"trailed")+" its blended Nifty TRI proxy by "
-      +Math.abs(pp).toFixed(2)+" pp per year of Alpha (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
+    // Exactly 0 is "Matched" everywhere else (perfBand), so it is not a beat here either.
+    lines.push(pp===0
+      ? "Overall the portfolio exactly matched its blended Nifty TRI proxy (comparable fund XIRR "+
+        pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+")."
+      : "Overall the portfolio "+(pp>0?"beat":"trailed")+" its blended Nifty TRI proxy by "
+        +Math.abs(pp).toFixed(2)+" pp per year of Alpha (comparable fund XIRR "+pct(port.cmpFundXirr)+" vs benchmark "+pct(port.benchXirr)+").");
   }
   // 2) Best and worst holdings by alpha.
   const withAlpha=rows.map(s=>({s,a:schemeView(s).alpha})).filter(x=>x.a!=null).sort((a,b)=>b.a-a.a);
@@ -3925,9 +3934,10 @@ function buildInsights(port, holdings){
         " ("+pp(best.a)+" p.a. vs its TRI)."
       : "Best performer vs its TRI: "+shortSchemeName(best.s.name)+" ("+pp(best.a)+" p.a.). "
         +"Weakest: "+shortSchemeName(worst.s.name)+" ("+pp(worst.a)+" p.a.).");
-    const beating=withAlpha.filter(x=>x.a>=0).length;
+    const beating=withAlpha.filter(x=>x.a>0).length, lagging=withAlpha.filter(x=>x.a<0).length;
+    const matched=withAlpha.length-beating-lagging;
     lines.push(beating+" of "+withAlpha.length+" comparable holdings beat their benchmark; "
-      +(withAlpha.length-beating)+" lagged.");
+      +lagging+" lagged"+(matched?"; "+matched+" matched it exactly":"")+".");
   }
   // 3) Concentration hint if many holdings share one benchmark.
   const byBench={};
