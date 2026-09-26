@@ -393,6 +393,10 @@ if(loaded){
           grabFn("poolRuns"), grabFn("scopeLegs"), grabFn("groupHoldings"),
           grabFn("scopeApplies"), grabFn("groupSchedule"), grabFn("insightsItems")].join("\n"));
   } catch(e){ v10Loaded = false; ok("could not load the v10 grouping layer: "+e.message, false); }
+  // v22's helper, loaded on its own: against code that predates it the scope functions
+  // still load, so the v22 assertions below fail on BEHAVIOUR rather than on absence.
+  try { eval(grabFn("legIsLive")); }
+  catch(e){ ok("index.html has legIsLive(): "+e.message, false); }
 
   if(v10Loaded){
     // Real published series, not a synthetic curve. A smooth exponential gives
@@ -493,6 +497,27 @@ if(loaded){
     schemes = [ mk("111","2019-03-05","",10000,b), mk("111","2019-03-05","",3000,leg("2019-03-05",null,3000)) ];
     const overlap = groupSchedule(groupHoldings(schemes)[0]);
     ok("two legs sharing a date sum their amounts", overlap[0].amount === 13000);
+
+    // ---- v22: an end date still to come is a LIVE SIP, not an ended one
+    // SIP mandates are registered with an end date years out, and a user who copies
+    // theirs in ("until Dec 2030") has an ongoing SIP. "Live SIP" keyed on the end date
+    // merely EXISTING, so it dropped that leg, the page split into All / Live SIP over
+    // it, and Insights scheduled instalments all the way to the mandate end: 107 of
+    // them to 2030 for a SIP valued in 2026, printed in the peer-window line.
+    const future = new Date(); future.setFullYear(future.getFullYear() + 5);
+    const FUT = isoDate(future);
+    schemes = [ mk("444","2019-03-05",FUT,5000,b) ];
+    eq("a leg whose end date is still to come is LIVE", scopeLegs(schemes,"live").length, 1);
+    ok("...so on its own it does not split the page into All and Live SIP", scopeApplies() === false);
+    eq("...and it is counted as a live leg of its scheme", groupHoldings(schemes)[0].liveCount, 1);
+    const fsched = groupSchedule(groupHoldings(schemes)[0]);
+    ok("...and its peer schedule stops at the valuation date, not at the mandate end",
+       fsched.length > 0 && fsched[fsched.length-1].date <= VD);
+    eq("...placing exactly the instalments an open-ended SIP would", fsched.length,
+       groupSchedule(groupHoldings([mk("444","2019-03-05","",5000,b)])[0]).length);
+    schemes = [ mk("555","2018-02-05","2019-02-05",1500,a) ];
+    ok("a leg whose end date has passed is still ended",
+       scopeLegs(schemes,"live").length === 0 && scopeApplies() === true);
 
     // ---- insightsItems is one row per scheme and honours the sub-tab
     schemes = [ mk("111","2018-02-05","2019-02-05",1500,a),

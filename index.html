@@ -2108,7 +2108,14 @@ function poolRuns(runs){
    have one. That is the user-visible contract: Live SIP answers "how is the money
    I am putting in NOW doing", so an ended leg's history must not inflate it. */
 function scopeLegs(list,scope){
-  return scope==="live" ? list.filter(s=>!s.endStr) : list;
+  return scope==="live" ? list.filter(legIsLive) : list;
+}
+/* Still being funded? An end date alone does not say so. SIP mandates are registered
+   with an end date years out, so a user who copies theirs in ("until Dec 2030") has an
+   ONGOING SIP -- which Live SIP used to drop, while that one date alone split the page
+   into All and Live SIP views. A leg has stopped once its end date is today or earlier. */
+function legIsLive(s){
+  return !(s && s.endStr) || s.endStr > isoDate(new Date());
 }
 
 /* Collapse legs into one row per scheme, preserving input order of first
@@ -2142,7 +2149,7 @@ function groupHoldings(list){
       fundSkipped:legs.reduce((t,s)=>t+(s.fundSkipped||0),0),
       startStr:legs.reduce((m,s)=>(!m||s.startStr<m)?s.startStr:m,""),
       legCount:legs.length,
-      liveCount:legs.filter(s=>!s.endStr).length,
+      liveCount:legs.filter(legIsLive).length,
       amountSpread:[...new Set(legs.map(s=>s.amount))].sort((a,b)=>a-b)
     };
   }).filter(g=>g.fund);
@@ -2160,9 +2167,9 @@ function legNoteText(g){
          (g.legs[0].endStr?" to "+fmtISO(g.legs[0].endStr):"");
 }
 
-/* Sub-tabs only earn their place once the two views can differ. With no end date
-   anywhere, "Live SIP" is identical to "All" and the control is pure noise. */
-function scopeApplies(){ return schemes.some(s=>s && s.endStr); }
+/* Sub-tabs only earn their place once the two views can differ. Until some leg has
+   actually ended, "Live SIP" is identical to "All" and the control is pure noise. */
+function scopeApplies(){ return schemes.some(s=>s && !legIsLive(s)); }
 
 function valuedSchemes(){ return schemes.filter(s=>!s.error && s.fund); }
 function portfolioMetrics(rows){
@@ -2264,11 +2271,11 @@ function render(){
   const scoped = scopeLegs(schemes.filter(s=>!s.error && s.fund), pfScope);
   const groups = groupHoldings(scoped);
   const port=portfolioMetrics(groups);
-  // Every holding has an end date and the user asked for Live SIP: say so rather
-  // than drawing an empty table with a PORTFOLIO row of zeros.
+  // Every SIP leg has ended and the user asked for Live SIP: say so rather than
+  // drawing an empty table with a PORTFOLIO row of zeros.
   if(!groups.length && pfScope==="live" && !schemes.some(s=>s.error)){
     $("summaryCard").style.display="none"; $("foot").style.display="none";
-    wrap.innerHTML='<div class="empty">No live SIPs — every holding has an end date. Switch to <b>All</b> to see the full portfolio.</div>';
+    wrap.innerHTML='<div class="empty">No live SIPs — every SIP in this portfolio has already ended. Switch to <b>All</b> to see the full portfolio.</div>';
     $("tabRow").style.display="flex";
     return;
   }
@@ -3307,7 +3314,7 @@ function triWindowFlag(s){
    one per SIP leg. Insights sheets carry exactly what an expanded
    Insights row shows, through the same insightFacts() the pane uses.
 
-   When any holding has an end date the two sub-tabs describe DIFFERENT
+   When any SIP leg has ended the two sub-tabs describe DIFFERENT
    populations (measured: 13.73% on Live SIP against 14.75% across all
    legs), so each gets its own Portfolio and Insights sheet and its OWN
    KPI block. A reader on the Live SIP sheet must be able to reconcile
@@ -3544,7 +3551,7 @@ function reportPortfolioSheet(d, genDate){
   shTitle(sh, d.pf, "Portfolio: "+store.active+"  ·  "+genDate+"  ·  "+scopeBlurb(d));
 
   if(!port){
-    shWrap(sh, "No holdings in this view. Every holding in this portfolio has an end date, so there is no live SIP to report.",
+    shWrap(sh, "No holdings in this view. Every SIP in this portfolio has already ended, so there is no live SIP to report.",
       {color:RPT.sub});
     return shDone(sh, cols.map(function(c){ return c.w; }),
       {orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0});
@@ -4430,7 +4437,10 @@ function groupSchedule(g){
     // never been an `s.end`, and reading one silently scheduled stopped SIPs all
     // the way to today — a SIP that ended in Jan-2021 was given 103 instalments
     // instead of 37 and printed 13.41% where the row header said 14.90%.
-    const legEnd = leg.endStr ? parseInput(leg.endStr) : (g.fundValueDate || null);
+    // ...but never past the valuation date: a mandate end still years away (v22) would
+    // otherwise schedule instalments that have not happened yet.
+    let legEnd = leg.endStr ? parseInput(leg.endStr) : (g.fundValueDate || null);
+    if(legEnd && g.fundValueDate && legEnd > g.fundValueDate) legEnd = g.fundValueDate;
     if(!legEnd) continue;
     for(const d of scheduleDates(leg.start, legEnd)){
       const k = isoDate(d);
