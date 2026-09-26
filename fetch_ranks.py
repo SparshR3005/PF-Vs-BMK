@@ -886,7 +886,7 @@ def fetch_histories(funds, timeout, concurrency, log):
     This MUST mirror the client's splice. A holding whose Portfolio row starts in
     2020 but whose peer grid starts at the 2022 merger would be reported as "its
     history does not cover this window" in Insights while Portfolio shows three
-    years of it â€” two panes disagreeing about one fund, which is the defect class
+    years of it -- two panes disagreeing about one fund, which is the defect class
     the drift guard in mf_universe.py exists to prevent."""
     spliced_ok, spliced_refused = [], []
 

@@ -1257,6 +1257,27 @@ with tempfile.TemporaryDirectory() as _d:
     ok("...but a run that DID publish advances it",
        _manifest(_t)["generated_utc"] != "2026-01-01T00:00:00Z")
 
+# #15 A comment in this file carried an em dash that had been saved as UTF-8, read back
+# as Windows-1252 and saved again. The paste-through-the-web-editor workflow this project
+# runs on is exactly where that happens, and inside a string rather than a comment it
+# would print straight into a client report. So scan every source file, not just this one.
+import os as _os  # noqa: E402
+
+# What UTF-8 dashes and quotes turn into via cp1252. Built with chr() so this file
+# never contains the sequence itself.
+_MOJIBAKE = chr(0xE2) + chr(0x20AC)
+_garbled = []
+for _dirpath, _dirnames, _files in _os.walk(ROOT):
+    _dirnames[:] = [d for d in _dirnames if d not in (".git", "node_modules", "data", "__pycache__")]
+    for _f in _files:
+        if _f.endswith((".py", ".js", ".html", ".md", ".yml")):
+            _p = Path(_dirpath) / _f
+            if _MOJIBAKE in _p.read_text(encoding="utf-8", errors="replace"):
+                _garbled.append(str(_p.relative_to(ROOT)))
+ok("v22: no source file carries UTF-8-read-as-cp1252 mojibake", not _garbled)
+if _garbled:
+    print(f"          found in {_garbled}")
+
 
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
