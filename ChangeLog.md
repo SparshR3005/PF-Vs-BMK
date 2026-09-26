@@ -9,7 +9,7 @@ appended verbatim below, newest release first.
 
 ---
 
-# v22 - four defects from a full-repository review
+# v22 - fifteen defects from a full-repository review
 
 Every file was read, and each defect below was reproduced against the real code and
 the committed data before it was touched. Same rule as v5-v21: **every claim names the
@@ -19,19 +19,20 @@ and passes against this one.
 ## Verification
 
 ```
-python3 tests/test_fetch_tri.py       42   + a next-day row is dropped, and the doc stays fresh   (was 40)
-python3 tests/test_fetch_ranks.py    220   unchanged
-python3 tests/test_probe_ranks.py    116   unchanged
+python3 tests/test_fetch_tri.py       42   + next-day row dropped, doc stays fresh (#2)            (was 40)
+python3 tests/test_fetch_ranks.py    231   + partial runs, generated_utc, mojibake (#6-#8, #15)   (was 220)
+python3 tests/test_probe_ranks.py    118   + Commodities name filter (#5)                          (was 116)
 python3 tests/test_mergers.py         17   unchanged
-node    tests/test_app.js             55   + ten header-mapping cases                           (was 45)
-node    tests/test_matching.js       128   unchanged
-node    tests/test_insights.js       234   + peer window, future end dates                      (was 218)
-node    tests/test_report.js          67   + peer window end to end, no always-pass fallback    (was 61)
+node    tests/test_app.js             57   + header mapping, Tab trap, Refresh wiring (#3 #12 #14) (was 45)
+node    tests/test_matching.js       133   + sector routes vs the name filter (#5)                 (was 128)
+node    tests/test_insights.js       236   + peer window, future end dates, CSS, wording (#1 #4 #9 #13) (was 218)
+node    tests/test_report.js          83   + peer window, flat Alpha, loading, focus, Refresh (#1 #10-#12 #14) (was 61)
 ```
 
-**879 tests**, up from v21's 845. Each fix's defect assertions were run against the v21
-code first and failed there; the controls beside them (what must NOT change) pass on
-both.
+**917 tests**, up from v21's 845. Each fix's defect assertions were run against the
+previous code first and failed there; the controls beside them (what must NOT change)
+pass on both. #1, #4, #9 and #11 were also checked in a real browser against the
+committed data.
 
 ---
 
@@ -125,12 +126,153 @@ already ended, instead of that every holding "has an end date".
 more, all failing against v21; the control *"a leg whose end date has passed is still
 ended"* holds on both.
 
-## Not in this release
+## 5 - An equity Commodities fund could not be found or imported by name
 
-The rest of the same review: the `"commodit"` name filter hiding ICICI Prudential
-Commodities Fund; `--max-funds` writing truncated files and `--canary` always exiting 1;
-`generated_utc` advancing on runs that publish nothing; the undefined `--sub`/`--fg` CSS
-variables; and smaller items.
+**`index.html`, `mf_universe.py` - `NON_EQUITY_NAME_TOKENS`**
+
+`"commodit"` was a non-equity name token, so `loadSchemeList()` dropped ICICI Prudential
+Commodities Fund (147661 / 147662) - a live "Equity Scheme - Sectoral/ Thematic" fund that
+`SECTOR_KEYWORDS` routes to the Nifty Commodities TRI - before anyone could pick it, and
+that TRI was fetched nightly only as a fallback. Removed from both copies of the list.
+The non-equity commodity funds are still caught by "global", "gold" and "fof", and the
+category check on add remains the real gate. v9's reachability audit passed throughout:
+it counted a benchmark as reachable whenever a routing table *mentioned* its key.
+
+*Proof:* `test_matching.js` *"no sector keyword is itself caught by the non-equity name
+filter"* and *"ICICI Prudential Commodities Fund reaches the picker"* (both fail against
+v21), with *"...and each one routes to its OWN benchmark, not shadowed by an earlier
+rule"* and a global-fund control; `test_probe_ranks.py` *"an equity Commodities fund is
+NOT flagged non-equity"*.
+
+## 6 - `--max-funds` overwrote published files with truncated ones
+
+**`fetch_ranks.py` - `main()`**
+
+The code and v17 call `--canary` and `--max-funds` diagnostic paths that "never write the
+manifest at all" - but both still wrote category files, and `--max-funds` writes
+truncated ones, which pass the publish gate whenever the cap keeps 80% of the committed
+count. Measured: VALUE went 12 -> 10 funds on disk, exit 0, the manifest still saying 12.
+Partial runs now write nothing. The nightly job uses neither flag.
+
+*Proof:* `test_fetch_ranks.py` *"v22: --max-funds leaves the committed category file
+untouched"*, *"...and writes no peer grid either"*, *"...and says the run was
+diagnostic"*, through the real `main()`.
+
+## 7 - A successful `--canary` run always exited 1
+
+**`fetch_ranks.py` - `main()`**
+
+`--canary` narrows discovery to one category on purpose; the absent-category check then
+counted every other committed category as an error: "2 category error(s)", exit 1. The
+check is skipped for `--canary`; full runs keep it. The existing canary test only covered
+a run in which every fetch failed.
+
+*Proof:* *"v22: a successful --canary run exits 0"*, *"...without reporting every other
+category as absent"*, *"...or counting them as category errors"*.
+
+## 8 - `generated_utc` advanced on runs that published nothing
+
+**`fetch_ranks.py` - `committed_generated_utc()`, `main()`**
+
+`committed_data_age_days()` - and through it the quiet "provider unavailable" exit -
+reads `generated_utc` as when the rankings last moved, and v19 says it "only advances on
+a successful publish". It was stamped on every full run, so a night on which every
+category failed reset the data's age to 0.0 days, and a following outage stayed quiet for
+up to `MAX_UPSTREAM_OUTAGE_DAYS` longer. It is now carried forward from the committed
+manifest and advanced only when a file is written. The client never reads it.
+
+*Proof:* *"v22: a run that published nothing keeps the committed generated_utc"* and
+*"...so the data's age still counts from the last real publish"*, with the control
+*"...but a run that DID publish advances it"*.
+
+## 9 - Sub-tab, leg-note and retained-row text used colours that did not exist
+
+**`index.html` - `.scopebar`, `.leg-note`, the retained error row**
+
+Styled with `var(--sub)` and `var(--fg)`, which the theme never defined, so every one of
+them fell back to full-brightness text. Now `--muted` / `--text`; in a browser the three
+elements compute to `rgb(139, 160, 154)`, the `--muted` grey.
+
+*Proof:* `test_insights.js` *"every CSS variable used ANYWHERE in index.html is defined
+by the theme"* (failed: missing --sub, --fg). The existing check stopped at the end of
+the Insights block, one screen above these rules.
+
+## 10 - An exactly-flat Alpha was invisible in the report, and called a beat
+
+**`index.html` - `FILL`, `reportPortfolioSheet()`, `buildInsights()`**
+
+`perfBand()` calls a spread of exactly 0 "Matched". The sheet had no `FILL.match`, so those
+cells were white text on no fill; the banner said BEATING, the Alpha card was painted as a
+gain, and Key Insights said the portfolio "beat" its benchmark "by 0.00 pp" and counted
+every flat holding as beating. `test_report.js`'s own fixture benchmarks each holding
+against its own series, so every spread in it IS exactly 0 - the existing test already
+produced the invisible cells; nothing looked at the fills.
+
+*Proof:* `test_report.js` *"v22: every 'Matched' cell is filled, so its white text can be
+read"* and five more.
+
+## 11 - A loading portfolio said "No schemes yet"
+
+**`index.html` - `hydrateActive()`, `render()`**
+
+The table invited the user to "search a fund above and add your SIP" for the whole load
+of a portfolio that had holdings. It now says "Loading your portfolio…" (seen in a
+browser); an empty portfolio keeps the prompt.
+
+*Proof:* `test_report.js` *"v22: while a saved portfolio is loading, the table says it is
+loading"* and one more, through the real `hydrateActive()`.
+
+## 12 - The import review dialog lost keyboard focus
+
+**`index.html` - `renderImportPreview()`, `importModalKeydown()`**
+
+Each pick re-rendered the table and re-ran the dialog's opening steps: the element focus
+returns to on close was re-pointed at a dropdown the rebuild had removed, and focus was
+pulled back to Cancel after every pick. The Tab trap also skipped the fund pickers.
+
+*Proof:* `test_report.js` *"v22: a re-render keeps the element focus returns to when the
+dialog closes"*, *"...and does not pull focus back to Cancel after every pick"*;
+`test_app.js` *"v22 the import dialog's Tab trap includes its fund pickers"* (a source
+invariant, like #7-#9: it needs a real DOM).
+
+## 13 - Insights notes pointed "below" at text printed above them
+
+**`index.html` - `fillInsightDetail()`, `reportInsightsSheet()`**
+
+*Proof:* `test_insights.js` *"v22: no Insights note points 'below' at a section printed
+above it"*.
+
+## 14 - Refresh did not reload the Insights ranking files
+
+**`index.html` - `clearDataCaches()`**
+
+A tab left open across days re-valued holdings on today's NAV while Insights kept
+ranking against the first day's peer grids.
+
+*Proof:* `test_report.js` *"v22: after a Refresh, Insights fetches the ranking manifest
+again"*, *"...and the category files"*; `test_app.js` *"v22 the Refresh button clears
+every data cache, the ranking files included"*.
+
+## 15 - Mojibake in a comment
+
+**`fetch_ranks.py` - `fetch_histories()` docstring**
+
+An em dash saved as UTF-8, read back as Windows-1252 and saved again.
+
+*Proof:* `test_fetch_ranks.py` *"v22: no source file carries UTF-8-read-as-cp1252
+mojibake"*, which scans every .py/.js/.html/.md/.yml file in the repository.
+
+## Not done
+
+From the same review, deliberately left for a later release:
+
+- `tests/test_app.js`'s #3 retry source check still cannot fail (its pattern contains
+  spaces but is matched against whitespace-stripped text), and its behavioural retry
+  test runs a hand copy of the logic;
+- a few tests still exercise local copies rather than the shipped code
+  (`test_fetch_ranks.py`'s duplicate-date checks, `test_probe_ranks.py`'s `run_funnel()`);
+- holdings still load one at a time, on page load and during import validation;
+- `mf_universe.get_json()` still sleeps after its final failed attempt.
 
 ---
 
