@@ -9,6 +9,131 @@ appended verbatim below, newest release first.
 
 ---
 
+# v22 - four defects from a full-repository review
+
+Every file was read, and each defect below was reproduced against the real code and
+the committed data before it was touched. Same rule as v5-v21: **every claim names the
+test that proves it**, and nothing is listed as done unless the test fails against v21
+and passes against this one.
+
+## Verification
+
+```
+python3 tests/test_fetch_tri.py       42   + a next-day row is dropped, and the doc stays fresh   (was 40)
+python3 tests/test_fetch_ranks.py    220   unchanged
+python3 tests/test_probe_ranks.py    116   unchanged
+python3 tests/test_mergers.py         17   unchanged
+node    tests/test_app.js             55   + ten header-mapping cases                           (was 45)
+node    tests/test_matching.js       128   unchanged
+node    tests/test_insights.js       234   + peer window, future end dates                      (was 218)
+node    tests/test_report.js          67   + peer window end to end, no always-pass fallback    (was 61)
+```
+
+**879 tests**, up from v21's 845. Each fix's defect assertions were run against the v21
+code first and failed there; the controls beside them (what must NOT change) pass on
+both.
+
+---
+
+## 1 - Insights said a fund "could not be ranked", about one day a month
+
+**`index.html` - `peerWindow()`, `insightFacts()`**
+
+The peer grids are published before mfapi posts that day's NAVs, so they always end a
+trading day behind the live NAV a holding is valued on (at the time: every grid ended
+2026-09-24, `data/tri` and live NAV 2026-09-25). An instalment dated after the grid's
+last point has no peer NAV within 7 days, so `runSIP()` skipped it for **every** fund
+and both pool filters in `rankCandidates()` emptied. It hits any SIP whose latest
+instalment falls on the newest NAV date - about a day a month per holding, and a whole
+weekend when that date is a Friday.
+
+Reproduced in a real browser against the committed data (Canara Robeco Flexi Cap Direct,
+Rs 5,000 on the 25th since 2021):
+
+```
+v21  Your fund could not be ranked over this window (its history does not cover it).
+     45 funds excluded: 18 started after your SIP began, 27 had gaps in their NAV history.
+     No comparable peers with a full history over this window.
+v22  Your fund ranks 20 of 27 over this window.
+     18 funds excluded: 18 started after your SIP began.
+```
+
+`peerWindow()` values on the grid's `as_of` and drops any instalment after it, so every
+peer and the holding's own grid series describe the same days; the window line states
+that date. A holding valued *before* the grid's end (a suspended fund) keeps its own.
+
+*Proof:* `test_insights.js` *"the peer window is valued on the grid's as_of, not the live
+NAV date"*, *"ranked over the grid's own window, the cohort is back"* and seven more on the
+real FLEXI_CAP Direct grid, plus *"insightFacts bounds the peer window by the grid's as_of
+before ranking"*; `test_report.js` *"v22: a SIP whose latest instalment is newer than the
+peer grid is still RANKED"* and four more, through the real `insightFacts()`.
+
+`test_report.js`'s screen/sheet rank-agreement check used to pass `true` whenever the
+holding was not ranked - the exact state this bug produced. It now requires a ranked
+holding: *"the holding under test is ranked, so the agreement check is a real one"*.
+
+## 2 - One next-day TRI row could block the whole nightly fetch
+
+**`fetch_tri.py` - `MAX_FUTURE_DAYS`**
+
+v16's future-row guard allowed two days of slack "to absorb IST-vs-UTC skew", copied
+from `fetch_ranks.py`, whose `date.today()` is the runner's UTC date. This module
+compares IST with IST, and `is_fresh()` refuses any negative age - so a row dated
+tomorrow passed the guard, became `doc["end"]`, and failed the index anyway. On a
+required index that skips all 39 series for the night: the outcome the guard was added
+to prevent. `MAX_FUTURE_DAYS` is now 0 here (`fetch_ranks.py` keeps its 2).
+
+*Proof:* `test_a_next_day_row_does_not_fail_the_freshness_gate` and
+`test_a_next_day_row_is_dropped_at_parse`, both failing against 2.
+`test_a_row_dated_today_is_kept` replaces `test_a_row_inside_the_skew_window_is_kept`,
+which pinned the next-day row as KEPT and never asked whether the doc could publish.
+
+## 3 - Excel import could read the wrong column
+
+**`index.html` - `mapImportHeaders()`**
+
+#4 tested exact header names before substrings, but inside ONE left-to-right pass, so a
+loose match on an *earlier* column still claimed its field first: "Fund House" became
+the fund name ahead of "Fund Name", "Scheme Category" ahead of "Scheme Name", and an
+"Invested Amount" total ahead of "Monthly SIP" - every row then imported the total as its
+monthly instalment, marked Ready and pre-ticked. Now exact names win outright, substrings
+only fill what is still unmapped (a monthly/SIP column before a bare amount), and no
+column is claimed twice. A "Dividend" column is no longer read as the End date, nor an
+"ISIN Code" column as the AMFI code.
+
+*Proof:* `test_app.js` `testHeaderClassifier`, which now extracts the real function by
+name, adds ten v22 cases; the seven behavioural ones all map the wrong column under v21's
+loop. `test_report.js`'s report-sheet rejection check now uses the real mapper rather
+than a hand-copied subset of it.
+
+## 4 - A SIP with an end date still to come was treated as ended
+
+**`index.html` - `legIsLive()`, `scopeLegs()`, `scopeApplies()`, `groupHoldings()`, `groupSchedule()`**
+
+SIP mandates are registered with an end date years out, and a user who copies theirs in
+("until Dec 2030") has an ongoing SIP. "Live SIP" keyed on the end date merely existing,
+so it dropped that leg as ended, the date alone split the page into All / Live SIP, and
+Insights scheduled instalments to the mandate end (107 to 2030 for a SIP valued in
+2026). In a real browser, two ongoing legs - one to 2030 - produced the Live SIP split
+and *"1 ongoing SIP leg — ended legs excluded"*.
+
+A leg has now stopped once its end date is today or earlier, and `groupSchedule()` never
+schedules past the valuation date. The two "no live SIPs" messages say every SIP has
+already ended, instead of that every holding "has an end date".
+
+*Proof:* `test_insights.js` *"a leg whose end date is still to come is LIVE"* and four
+more, all failing against v21; the control *"a leg whose end date has passed is still
+ended"* holds on both.
+
+## Not in this release
+
+The rest of the same review: the `"commodit"` name filter hiding ICICI Prudential
+Commodities Fund; `--max-funds` writing truncated files and `--canary` always exiting 1;
+`generated_utc` advancing on runs that publish nothing; the undefined `--sub`/`--fg` CSS
+variables; and smaller items.
+
+---
+
 # v21 - enforcing frame-ancestors where a meta tag cannot
 
 The CSP has carried `frame-ancestors 'none'` since it was written. It has never once
