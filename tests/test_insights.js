@@ -629,7 +629,10 @@ if(loaded){
   ok("rankCandidates has exactly ONE call site, inside insightFacts",
      ((CODE.match(/rankCandidates\(/g) || []).length -
       (CODE.match(/function rankCandidates\(/g) || []).length) === 1 &&
-     /out\.rank = rankCandidates\(navs, item\.schedule, item\.valueDate, item\.code\);/.test(CODE));
+     /out\.rank = rankCandidates\(navs, win\.schedule, win\.valueDate, item\.code\);/.test(CODE));
+  // v22: ...and that call ranks over the window the peer grid covers, not the live one.
+  ok("insightFacts bounds the peer window by the grid's as_of before ranking",
+     /const win = peerWindow\(item\.schedule, item\.valueDate, navs\.as_of\);/.test(CODE));
   ok("the rank sentence has one definition, parameterised by medium",
      /function rankSentence\(sum, planLabel, em\)/.test(HTML) &&
      (HTML.match(/rankSentence\(/g) || []).length === 3);
@@ -912,6 +915,66 @@ if(loaded){
   // It must reuse the existing note styling rather than introduce a new one.
   ok("the new notice reuses the existing .ins-note class, adding no styling",
      (HTML.match(/ins-note"><b>Note:<\/b>/g) || []).length >= 3);
+})();
+
+// ============== v22: the peer ranking stops where the peer grid stops ==============
+// navs_<CAT>_<PLAN>.json is written by the nightly job before mfapi has posted that
+// day's NAVs, so the grid always ends a trading day behind the live NAV a holding is
+// valued on (committed at the time: every grid ended 2026-09-24 while data/tri and live
+// NAV had reached 2026-09-25). An instalment dated after the grid's last point has no
+// peer NAV within 7 days, so runSIP() skipped it for EVERY peer, both pool filters
+// emptied, and the pane said "could not be ranked ... its history does not cover it"
+// while blaming every fund in the category for "gaps in their NAV history". Measured on
+// the committed FLEXI_CAP Direct grid: a SIP on the 25th ranked against 0 of 45 peers,
+// the same SIP on the 20th against 27. About one day a month for every holding, and a
+// whole weekend whenever the SIP date is a Friday.
+(function testPeerWindowStopsAtTheGrid(){
+  const fsx = require("fs"), px = require("path");
+  const file = px.join(__dirname, "..", "data", "ranks", "navs_FLEXI_CAP_Direct.json");
+  if(!fsx.existsSync(file)){ console.log("  SKIP  navs_FLEXI_CAP_Direct.json absent"); return; }
+  // Loaded on its own, so a missing helper is ONE failure rather than the whole suite.
+  let peerWindow;
+  try { peerWindow = eval("(function(){" + grabFn("peerWindow") + "\nreturn peerWindow;})()"); }
+  catch(e){ ok("index.html has peerWindow(): " + e.message, false); return; }
+
+  const navs = JSON.parse(fsx.readFileSync(file, "utf8"));
+  const gridEnd = parseInput(navs.as_of);
+  const live = new Date(gridEnd.getTime()); live.setDate(live.getDate() + 1);  // live NAV, a day on
+  // Five years of monthly instalments whose LATEST lands on the live NAV date.
+  const start = new Date(live.getFullYear() - 5, live.getMonth(), live.getDate());
+  const sched = uniformSchedule(scheduleDates(start, live), 5000);
+  // A fund that covers the whole window and is still reporting, so "has a rank" is
+  // about the window rather than about which fund happened to be listed first.
+  const own = Object.keys(navs.funds).find(function(c){
+    const s = gridSpan(navs.funds[c]);
+    return s.first <= start && isoDate(s.last) === navs.as_of;
+  });
+  ok("fixture: the grid has a fund that covers the whole window", !!own);
+
+  const raw = rankCandidates(navs, sched, live, own);
+  ok("fixture: fed the live valuation date, the pool collapses to zero (the v22 bug)",
+     raw.universe === 0 && raw.ownRank === null);
+
+  const w = peerWindow(sched, live, navs.as_of);
+  eq("the peer window is valued on the grid's as_of, not the live NAV date",
+     isoDate(w.valueDate), navs.as_of);
+  ok("...and drops only the instalment the grid cannot price",
+     w.schedule.length === sched.length - 1 && w.schedule.every(function(e){ return e.date <= gridEnd; }));
+  const res = rankCandidates(navs, w.schedule, w.valueDate, own);
+  ok("ranked over the grid's own window, the cohort is back", res.universe > 0);
+  ok("...and the holding has a rank again", res.ownRank !== null);
+
+  // Every other case is left exactly as it was. A suspended fund's last NAV (and so
+  // its schedule's end) predates the grid's as_of; nothing about it should move.
+  const earlier = new Date(gridEnd.getTime()); earlier.setDate(earlier.getDate() - 30);
+  const sched2 = uniformSchedule(scheduleDates(start, earlier), 5000);
+  const w2 = peerWindow(sched2, earlier, navs.as_of);
+  ok("a holding valued BEFORE the grid's end keeps its own valuation date",
+     +w2.valueDate === +earlier);
+  ok("...and its schedule is untouched", w2.schedule.length === sched2.length);
+  ok("a grid with no as_of changes nothing",
+     peerWindow(sched, live, undefined).schedule.length === sched.length &&
+     +peerWindow(sched, live, undefined).valueDate === +live);
 })();
 
 console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);

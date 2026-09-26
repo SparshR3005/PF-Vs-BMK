@@ -4488,6 +4488,23 @@ async function renderInsights(){
   });
 }
 
+/* The window the PEER GRID can rank. navs_<CAT>_<PLAN>.json is published nightly,
+   before mfapi has posted that day's NAVs, so the grid ends a trading day (over a
+   weekend, three) behind the live NAV the holding itself is valued on. An instalment
+   dated after the grid's last point has no peer NAV within 7 days, so runSIP() skipped
+   it for EVERY peer, both pool filters in rankCandidates() emptied, and the pane said
+   "could not be ranked" while putting the whole category down to NAV gaps. Measured on
+   the committed FLEXI_CAP Direct grid: a SIP on the 25th, valued on the 25th, ranked
+   against 0 of 45 peers; the same SIP on the 20th against 27.
+   So value on the grid's as_of and drop any instalment after it: every peer, and the
+   holding's own grid series, then describe exactly the same days. A holding valued
+   BEFORE the grid's end (a suspended fund) keeps its own date. */
+function peerWindow(schedule, valueDate, gridAsOf){
+  const asOf = parseInput(gridAsOf);
+  const vd = (asOf && valueDate && asOf < valueDate) ? asOf : valueDate;
+  return { schedule:(schedule||[]).filter(e=>e.date<=vd), valueDate:vd };
+}
+
 /* Everything one Insights row knows, gathered once and consumed twice: the
    expandable pane renders it as HTML, the Excel report writes it as cells.
 
@@ -4516,13 +4533,15 @@ async function insightFacts(item){
                spanDays:null, tooShort:false, rank:null, summary:null,
                inCohort:false, own:null, window:null};
   if(!(navs && item.schedule && item.schedule.length && item.valueDate)) return out;
+  // Rank over the days the peer grid covers, never past them -- see peerWindow().
+  const win = peerWindow(item.schedule, item.valueDate, navs.as_of);
   /* Too short to rank. XIRR annualises, so a two-month SIP reports a two-month move
      as an annual rate: the peer list reads 231%, 150%, 96% and the rank looks just
      as confident as a ten-year one. The track-record table is unaffected -- it is
      point-to-point and already withholds `ann` under a year. */
-  out.spanDays = daysBetween(item.schedule[0].date, item.valueDate);
+  out.spanDays = win.schedule.length ? daysBetween(win.schedule[0].date, win.valueDate) : 0;
   if(out.spanDays < MIN_RANK_DAYS){ out.tooShort = true; return out; }
-  out.rank = rankCandidates(navs, item.schedule, item.valueDate, item.code);
+  out.rank = rankCandidates(navs, win.schedule, win.valueDate, item.code);
   out.own  = out.rank.ownXirr!=null ? out.rank.ownXirr : item.xirr;
   /* Absent from the loaded grid and absent from the eligible pool are DIFFERENT
      failures with different remedies, and the single message "its history does
@@ -4536,10 +4555,10 @@ async function insightFacts(item){
   // then NOT "to today", and a reader comparing it against the portfolio tab
   // needs to know which window produced these numbers.
   out.window = {
-    n:item.schedule.length,
-    first:item.schedule[0].date,
-    last:item.schedule[item.schedule.length-1].date,
-    valueDate:item.valueDate,
+    n:win.schedule.length,
+    first:win.schedule[0].date,
+    last:win.schedule[win.schedule.length-1].date,
+    valueDate:win.valueDate,
     amounts:(item.amountSpread && item.amountSpread.length>1) ? item.amountSpread.slice() : null
   };
   return out;

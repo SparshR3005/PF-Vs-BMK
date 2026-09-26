@@ -100,7 +100,7 @@ const EPILOGUE = `
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
-  fmtISO, normaliseDateCell, fmtDate
+  fmtISO, normaliseDateCell, fmtDate, isoDate
 };`;
 
 vm.createContext(sandbox);
@@ -252,12 +252,49 @@ S.schemes = [
   // ---- the screen and the sheet must agree on the RANK
   const item = S.insightsItems("all")[0];
   const facts = await S.insightFacts(item);
+  /* No escape hatch. This used to pass `true` whenever the holding was NOT ranked --
+     which is exactly the state the v22 peer-window bug put a holding in, so the check
+     meant to catch a disagreement went green precisely when the ranking had collapsed. */
+  ok("the holding under test is ranked, so the agreement check is a real one",
+     !!facts.summary && facts.summary.kind === "ranked", facts.summary && facts.summary.kind);
   if(facts.summary && facts.summary.kind === "ranked"){
     const sentence = S.rankSentence(facts.summary, item.plan);
     ok("the rank sentence in the sheet is the one insightFacts produced",
        insAll.includes(sentence.split(".")[0]), sentence);
-  } else {
-    ok("the rank sentence in the sheet is the one insightFacts produced", true);
+  }
+
+  // ---- v22: Insights ranks over the window the peer grid actually covers ----------
+  /* The nightly grid ends a trading day behind the live NAV a holding is valued on. A
+     SIP whose latest instalment falls on that newest day used to rank against ZERO
+     peers: runSIP() found no grid NAV within 7 days of it for any fund. Driven through
+     the REAL insightFacts() against the committed grid, dated relative to its own
+     as_of so the test holds whatever night the data was published. */
+  {
+    const end = S.parseInput(flexGrid.as_of);
+    const live = new Date(end.getTime()); live.setDate(live.getDate() + 1);
+    const start = new Date(live.getFullYear() - 5, live.getMonth(), live.getDate());
+    const lastOf = e => { const d = S.parseInput(e.t0); d.setDate(d.getDate() + e.d[e.d.length-1]); return d; };
+    const code = Object.keys(flexGrid.funds).find(c =>
+      S.parseInput(flexGrid.funds[c].t0) <= start && S.isoDate(lastOf(flexGrid.funds[c])) === flexGrid.as_of);
+    const pf = await S.insightFacts({
+      code, name: flexGrid.funds[code].n, plan: "Direct", planInferred: false,
+      cat: "FLEXI_CAP", catLabel: "Flexi Cap Fund", xirr: 0.12, alphaPP: 0, legCount: 1,
+      schedule: S.uniformSchedule(S.scheduleDates(start, live), 5000),
+      valueDate: live, amountSpread: [5000]
+    });
+    ok("v22: a SIP whose latest instalment is newer than the peer grid is still RANKED",
+       !!pf.summary && pf.summary.kind === "ranked", pf.summary && pf.summary.kind);
+    ok("...against a real pool of peers, not an empty one",
+       !!pf.rank && pf.rank.universe > 0, pf.rank && pf.rank.universe);
+    // Before the fix every fund that DID run the window (27 of 45 that night) was
+    // counted under "had gaps in their NAV history", with the pool at zero.
+    ok("...and the funds that ran the window are ranked, not blamed for NAV gaps",
+       !!pf.rank && !!pf.rank.excluded && pf.rank.excluded.other < pf.rank.universe,
+       pf.rank && JSON.stringify(pf.rank.excluded));
+    eq("...valued on the grid's own date, which the window line states",
+       pf.window && S.isoDate(pf.window.valueDate), flexGrid.as_of);
+    ok("...and the window never claims an instalment the grid cannot price",
+       !!pf.window && pf.window.last <= end);
   }
 
   // ---- v15: bare headings, and the disclosure that has to carry them
