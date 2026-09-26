@@ -283,6 +283,16 @@ if(loaded){
   ok("every CSS variable used by Insights is defined by the theme"
      + (undefinedVars.length ? " (missing: " + undefinedVars.join(", ") + ")" : ""),
      undefinedVars.length === 0);
+  // v22: ...and across the WHOLE file. The check above stops at the end of the Insights
+  // block, and the All / Live SIP sub-tab styles written just below it used --sub and
+  // --fg, which the theme never defined, so the scope buttons, leg notes and "retained"
+  // row text fell back to full-brightness text. Same bug class as --ink/--pos/--neg,
+  // one screen further down.
+  const everyVar = [...new Set((HTML.match(/var\((--[a-z0-9-]+)/g) || []).map(m => m.slice(4)))];
+  const undefinedAnywhere = everyVar.filter(v => !themeDefined.has(v));
+  ok("every CSS variable used ANYWHERE in index.html is defined by the theme"
+     + (undefinedAnywhere.length ? " (missing: " + undefinedAnywhere.join(", ") + ")" : ""),
+     undefinedAnywhere.length === 0);
 
   // A <button> inherits font but NOT colour, so this is load-bearing.
   ok("the row button inherits its text colour", /\.ins-summary\{color:inherit/.test(cssBlock));

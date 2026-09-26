@@ -438,16 +438,19 @@
 
 /* Sub-tabs. Deliberately lighter than .tabbar: this is a filter WITHIN a view,
    not a change of view, and rendering it at equal weight made the page look like
-   it had four top-level tabs. */
+   it had four top-level tabs.
+   Theme tokens only: these rules were written against --sub and --fg, which the
+   theme never defined, so every one of them silently fell back to full-brightness
+   text (v22). tests/test_insights.js now checks every var() in the file. */
 .scopebar{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap;}
-.scopebar button{background:transparent;border:1px solid var(--line);color:var(--sub);
+.scopebar button{background:transparent;border:1px solid var(--line);color:var(--muted);
   padding:5px 13px;border-radius:999px;font:inherit;font-size:12.5px;cursor:pointer;
   letter-spacing:.02em;transition:background .12s,color .12s,border-color .12s;}
-.scopebar button:hover{color:var(--fg);border-color:var(--sub);}
+.scopebar button:hover{color:var(--text);border-color:var(--muted);}
 .scopebar button[aria-selected="true"]{background:color-mix(in srgb,var(--accent) 14%,transparent);border-color:var(--accent);
   color:var(--accent);font-weight:600;}
-.scopebar .scopenote{align-self:center;color:var(--sub);font-size:12px;margin-left:4px;}
-.leg-note{color:var(--sub);font-size:11.5px;margin-top:2px;letter-spacing:.01em;}
+.scopebar .scopenote{align-self:center;color:var(--muted);font-size:12px;margin-left:4px;}
+.leg-note{color:var(--muted);font-size:11.5px;margin-top:2px;letter-spacing:.01em;}
 </style>
 </head>
 <body>
@@ -2363,7 +2366,7 @@ function render(){
         <td><div class="fund-name">${escapeHtml(shortSchemeName(s.name||s.inputName)||('Code '+s.code))}</div>
             <div class="fund-meta">${escapeHtml(s.plan||'')} · SIP ${inr(s.amount)}/mo from ${escapeHtml(fmtISO(s.startStr))}${s.endStr?' to '+escapeHtml(fmtISO(s.endStr)):''}</div>
             <div class="bmk-line" style="color:var(--danger);">⚠ Couldn't value: ${escapeHtml(s.error)}</div></td>
-        <td class="num" colspan="6" style="color:var(--sub);">retained — value not available right now</td>
+        <td class="num" colspan="6" style="color:var(--muted);">retained — value not available right now</td>
         <td class="num"><button class="btn small" data-retry="${i}">Retry</button> <button class="btn small icon" data-i="${i}" title="Remove" aria-label="Remove">×</button></td></tr>`;
   });
   groups.forEach(g=>{
