@@ -100,7 +100,7 @@ const EPILOGUE = `
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
-  fmtISO, normaliseDateCell, fmtDate, isoDate, mapImportHeaders
+  fmtISO, normaliseDateCell, fmtDate, isoDate, mapImportHeaders, hydrateActive
 };`;
 
 vm.createContext(sandbox);
@@ -476,6 +476,27 @@ S.schemes = [
     const doc2 = await load("periods_Y.json");
     ok("...so the very next request actually goes out", doc2 && doc2.key === "OK");
     ok("a 404 is held longer than a transient failure", M.TTL404 > M.TTL);
+  }
+
+  // ---- v22: while a saved portfolio loads, the table says so --------------------
+  /* hydrateActive() empties `schemes` and renders BEFORE it starts valuing, and render()
+     read an empty list as an empty PORTFOLIO: "No schemes yet — search a fund above and
+     add your SIP" sat in the table for the whole load, on a portfolio that has holdings.
+     Driven through the real hydrateActive(). Runs LAST: it replaces `schemes` when done. */
+  {
+    const table = () => document.getElementById("tableWrap").innerHTML;
+    S.store.portfolios[S.store.active] = [{holdingId:"hx", name:"Some Fund", code:"100000",
+      category:"", plan:"Direct", startStr:"2020-01-01", endStr:"", amount:5000}];
+    const loading = S.hydrateActive();          // synchronous up to its first await
+    const during = table();
+    ok("v22: while a saved portfolio is loading, the table says it is loading",
+       /Loading/i.test(during), during);
+    ok("...rather than inviting the user to add their first scheme", !/No schemes yet/.test(during));
+    await loading;
+    S.store.portfolios[S.store.active] = [];
+    await S.hydrateActive();
+    ok("...while an EMPTY portfolio still gets the add-your-first-scheme prompt",
+       /No schemes yet/.test(table()), table());
   }
 
   console.log("\n" + (fail ? "FAILED" : "ALL PASSED") + ` (${pass} passed, ${fail} failed)`);

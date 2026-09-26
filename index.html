@@ -2260,7 +2260,9 @@ function renderScopeBar(){
 function render(){
   const wrap=$("tableWrap");
   if(!schemes.length){
-    wrap.innerHTML='<div class="empty">No schemes yet — search a fund above and add your SIP.</div>';
+    wrap.innerHTML = hydrationInProgress
+      ? '<div class="empty">Loading your portfolio…</div>'
+      : '<div class="empty">No schemes yet — search a fund above and add your SIP.</div>';
     $("toolbar").style.display="none";$("summaryCard").style.display="none";$("foot").style.display="none";
     $("tabRow").style.display="none";$("paneInsights").style.display="none";
     $("panePortfolio").style.display="";
@@ -2574,15 +2576,17 @@ async function hydrateActive(){
   const portfolioName = store.active;
   const specs = (store.portfolios[portfolioName] || []).map(spec=>({...spec}));
   schemes = [];
+  // Loading state BEFORE the first render: render() reads an empty `schemes` as an
+  // empty portfolio, so a portfolio with holdings used to say "No schemes yet — search
+  // a fund above" for the whole load (v22). Now it says it is loading.
+  setHydrationState(specs.length > 0);
   render();
 
   if(!specs.length){
-    setHydrationState(false);
     $("pmStatus").textContent = "";
     return;
   }
 
-  setHydrationState(true);
   $("pmStatus").textContent = "Loading "+specs.length+" scheme(s)…";
   const loaded = [];
   const failed = [];
