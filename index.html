@@ -3801,7 +3801,7 @@ function reportInsightsSheet(d, genDate){
     if((f.catInfo && f.catInfo.status==="stale") || f.planStale){
       shWrap(sh, f.planStale && !(f.catInfo && f.catInfo.status==="stale")
         ? ("Note: the "+item.plan+" peer grid failed its last publish check, so the track record above "+
-           "is current but the peer ranking below is from an earlier run.")
+           "is current but the peer ranking is from an earlier run.")
         : "Note: this category's data failed its last publish check and may be out of date.",
         {color:RPT.bad, sz:9.5});
     }
@@ -4662,7 +4662,7 @@ async function fillInsightDetail(pane, item, gen){
       '<div class="ins-note">This SIP has run '+Math.max(0,Math.round(f.spanDays))+' days. '+
       'Ranking needs at least '+MIN_RANK_DAYS+' days: an annualised return over a shorter '+
       'window magnifies a few weeks of movement into a yearly rate, so both the rank and '+
-      'the peer figures would look far more precise than they are. The track record below '+
+      'the peer figures would look far more precise than they are. The track record above '+
       'is point-to-point and unaffected.</div>';
   }else if(f.rank){
     const res = f.rank, sum = f.summary, own = f.own, w = f.window;
@@ -4688,7 +4688,7 @@ async function fillInsightDetail(pane, item, gen){
             "and may be out of date.</div>";
   }else if(f.planStale){
     html += '<div class="ins-note"><b>Note:</b> the '+escapeHtml(item.plan)+' peer grid failed its last '+
-            "publish check, so the track record above is current but the peer ranking below is from an "+
+            "publish check, so the track record above is current but the peer ranking is from an "+
             "earlier run. The two are not describing the same day.</div>";
   }else if(catInfo.status === "stale"){
     html += '<div class="ins-note"><b>Note:</b> this category&rsquo;s track record failed its last publish '+

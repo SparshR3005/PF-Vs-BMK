@@ -942,7 +942,12 @@ if(loaded){
   ok("...and exposes it as planStale",
      /planStale: !!\(planInfo && planInfo\.status === "stale"\)/.test(HTML));
   ok("the pane distinguishes a stale plan grid from a stale category",
-     /the track record above is current but the peer ranking below is from an/.test(HTML));
+     /the track record above is current but the peer ranking is from an/.test(HTML));
+  // v22: these notes are printed AFTER both sections -- in the pane and in the sheet --
+  // so "the peer ranking below" pointed at nothing, and the too-short note said "the
+  // track record below" about a table drawn above it.
+  ok("v22: no Insights note points 'below' at a section printed above it",
+     !/track record below/.test(HTML) && !/peer ranking below/.test(HTML));
   ok("...and still covers the both-stale case",
      /catInfo\.status === "stale" && f\.planStale/.test(HTML));
   ok("the report carries the same distinction",
