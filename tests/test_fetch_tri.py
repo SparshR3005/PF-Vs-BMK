@@ -527,12 +527,35 @@ def test_the_future_row_no_longer_kills_the_whole_run():
     assert ft.validate_series(doc) == "", "the surviving series must still validate"
 
 
-def test_a_row_inside_the_skew_window_is_kept():
-    # Two days of slack absorbs IST-vs-UTC skew on the runner; it must not become a
-    # blanket ban on anything dated today or tomorrow.
-    soon = ft.today_ist() + datetime.timedelta(days=1)
-    doc = ft.rows_to_doc("K", "NIFTY TEST", _good_rows() + [_row(soon.isoformat(), 1000.0)])
-    assert soon.isoformat() in doc["series"], "a next-day row was wrongly dropped"
+def test_a_row_dated_today_is_kept():
+    # The guard must not become a blanket ban: today's close is the row this job
+    # exists to fetch. (Added explicitly, so the test holds on a weekend too.)
+    today = ft.today_ist().isoformat()
+    rows = [r for r in _good_rows() if ft.to_iso(r["Date"]) != today]
+    doc = ft.rows_to_doc("K", "NIFTY TEST", rows + [_row(today, 1000.0)])
+    assert today in doc["series"], "today's row was wrongly dropped"
+    assert ft.is_fresh(doc)
+
+
+# v22: the slack WAS the hole. MAX_FUTURE_DAYS = 2 was copied from fetch_ranks.py,
+# where it absorbs the runner's UTC date trailing IST, but this module compares IST
+# with IST -- and is_fresh() refuses any negative age. So a row dated tomorrow passed
+# the future guard, became doc["end"], and failed the index anyway; on a REQUIRED index
+# that skips all 39 series for the night, which is exactly what the guard was added to
+# prevent. The test this replaces asserted that the next-day row was KEPT, and never
+# asked whether the document it produced could still be published.
+def test_a_next_day_row_does_not_fail_the_freshness_gate():
+    tomorrow = (ft.today_ist() + datetime.timedelta(days=1)).isoformat()
+    doc = ft.rows_to_doc("K", "NIFTY TEST", _good_rows() + [_row(tomorrow, 1000.0)])
+    assert ft.is_fresh(doc), f"end={doc['end']}: one next-day row still fails the index"
+    assert ft.validate_series(doc) == ""
+
+
+def test_a_next_day_row_is_dropped_at_parse():
+    tomorrow = (ft.today_ist() + datetime.timedelta(days=1)).isoformat()
+    doc = ft.rows_to_doc("K", "NIFTY TEST", _good_rows() + [_row(tomorrow, 1000.0)])
+    assert tomorrow not in doc["series"], "a next-day row survived into the series"
+    assert doc["end"] <= ft.today_ist().isoformat(), f"end was pulled forward to {doc['end']}"
 
 
 def test_ordinary_rows_are_untouched_by_the_guard():

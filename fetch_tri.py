@@ -39,8 +39,16 @@ MAX_STALE_DAYS = 7
 # before anything is written, so ALL 39 series are skipped for the night. --force
 # is no escape either -- it bypasses the continuity gate, not the freshness one.
 # Dropping the row at parse, before it can reach max(), keeps the failure local to
-# the row instead of the run. Two days of slack absorbs IST-vs-UTC skew.
-MAX_FUTURE_DAYS = 2
+# the row instead of the run.
+#
+# NO slack here, unlike fetch_ranks.py. That script compares against the runner's
+# date.today(), which is UTC and trails IST by a day for five and a half hours every
+# night, so it needs a margin. This one compares IST with IST -- today_ist() against
+# niftyindices' own IST dates -- so there is no skew to absorb, and a TRI value dated
+# after today cannot exist. Any slack re-opens the hole this guard closes: is_fresh()
+# refuses a negative age, so with the two days this used to allow, a row dated
+# tomorrow was KEPT, became doc["end"], and failed the index regardless.
+MAX_FUTURE_DAYS = 0
 
 # An OPTIONAL index that fails keeps its last-good file and is flagged in the
 # manifest -- deliberately, so one bad sector fetch never blocks the broad-market
