@@ -2706,11 +2706,21 @@ $("eraseLocalBtn").addEventListener("click", async ()=>{
 /* ---- refresh (fund NAV + TRI). Button hidden by default since the nightly
    job keeps TRI current and fund NAV is refetched on load; kept for safety
    if the page is left open across days. ---- */
+/* Everything this page fetches once and then reuses: fund NAV, the TRI series, and the
+   Insights ranking files (ranksCache / ranksManifest, declared with the Insights code
+   further down -- safe, since this only ever runs on a click). Refresh used to skip
+   the ranking files, so a tab left open across days re-valued every holding on today's
+   NAV while Insights kept ranking against the first day's peer grids (v22). */
+function clearDataCaches(){
+  detailCache = {};
+  for(const k in triCache) delete triCache[k];
+  for(const k in ranksCache) delete ranksCache[k];
+  ranksManifest = null;
+}
 const updateNavBtnEl = $("updateNavBtn");
 if(updateNavBtnEl){
   updateNavBtnEl.addEventListener("click", ()=>{
-    detailCache = {};                          // force refetch of fund NAV
-    for(const k in triCache) delete triCache[k]; // force reload of TRI files
+    clearDataCaches();                         // fund NAV, TRI files and ranking files
     $("pmStatus").textContent = "Refreshing…";
     hydrateActive();                           // #8: re-value by stored code, list or no list
     if(!listReady){ listReadyPending = true; loadSchemeList(); }  // also retry the scheme list

@@ -100,6 +100,8 @@ const EPILOGUE = `
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
   get importPreviewRows(){return importPreviewRows;}, set importPreviewRows(v){importPreviewRows=v;},
   get importPrevFocus(){return importPrevFocus;}, renderImportPreview,
+  // Guarded: against code that predates it this must fail ONE assertion, not the load.
+  clearDataCaches: typeof clearDataCaches === "function" ? clearDataCaches : null,
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
   fmtISO, normaliseDateCell, fmtDate, isoDate, mapImportHeaders, hydrateActive
@@ -478,6 +480,30 @@ S.schemes = [
     const doc2 = await load("periods_Y.json");
     ok("...so the very next request actually goes out", doc2 && doc2.key === "OK");
     ok("a 404 is held longer than a transient failure", M.TTL404 > M.TTL);
+  }
+
+  // ---- v22: Refresh reloads the Insights ranking data too -------------------------
+  /* The Refresh button cleared the fund-NAV and TRI caches but not the ranking files, so
+     a tab left open across days re-valued every holding on today's NAV while Insights
+     kept ranking against the peer grids it loaded on the first day. */
+  if(typeof S.clearDataCaches !== "function"){
+    ok("v22: index.html has clearDataCaches(), which Refresh calls", false);
+  } else {
+    const seen = [];
+    const realFetch = sandbox.fetch;
+    sandbox.fetch = (url, opts) => { seen.push(String(url).split("?")[0]); return realFetch(url, opts); };
+    try {
+      const it = S.insightsItems("all")[0];
+      await S.insightFacts(it);                          // manifest and files now cached
+      const before = seen.length;
+      await S.insightFacts(it);
+      ok("v22 fixture: a second Insights read is served from cache", seen.length === before);
+      S.clearDataCaches();                               // what Refresh now calls
+      await S.insightFacts(it);
+      ok("v22: after a Refresh, Insights fetches the ranking manifest again",
+         seen.slice(before).includes("data/ranks/index.json"), JSON.stringify(seen.slice(before)));
+      ok("...and the category files", seen.slice(before).some(u => /^data\/ranks\/(periods|navs)_/.test(u)));
+    } finally { sandbox.fetch = realFetch; }
   }
 
   // ---- v22: re-rendering the import review keeps focus where it belongs -----------

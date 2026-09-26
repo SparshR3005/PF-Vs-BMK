@@ -199,6 +199,12 @@ function extractFn(name) {
      /querySelectorAll\('button:not\(\[disabled\]\),input:not\(\[disabled\]\),select:not\(\[disabled\]\)'\)/.test(HTML),
      "select missing from the focus trap");
 
+  // v22: Refresh must clear the Insights ranking files as well as fund NAV and TRI.
+  // clearDataCaches() itself is exercised in tests/test_report.js; this pins the wiring.
+  const refreshHandler = HTML.slice(HTML.indexOf('updateNavBtnEl.addEventListener("click"')).slice(0, 400);
+  ok("v22 the Refresh button clears every data cache, the ranking files included",
+     /clearDataCaches\(\);/.test(refreshHandler), "Refresh handler does not call clearDataCaches()");
+
   ok("#9 listComplete tracks pagination", /let listComplete/.test(HTML));
   ok("#9 partial-list miss falls back to server search",
      /if\(!listComplete\)\{ serverSearch\(q\); return; \}/.test(HTML),
