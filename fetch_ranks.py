@@ -603,6 +603,18 @@ def load_committed_manifest(path):
     return copy.deepcopy(cats) if isinstance(cats, dict) else {}
 
 
+def committed_generated_utc(path):
+    """The committed manifest's `generated_utc`, or None when there is none to keep.
+
+    main() carries this forward unchanged unless the run actually publishes a file, so
+    the stamp keeps meaning what committed_data_age_days() reads it as."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc.get("generated_utc") if isinstance(doc, dict) else None
+
+
 def committed_data_age_days(path, now=None):
     """How old is the published data, in days? None when that cannot be established.
 
@@ -968,7 +980,11 @@ def main():
     # Seed from what is ALREADY PUBLISHED, then update only what this run actually
     # concluded. A fresh dict here deleted every category the run did not reach.
     committed_cats = load_committed_manifest(OUT_DIR / "index.json")
-    manifest = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    # generated_utc is "when the rankings last MOVED" -- committed_data_age_days(), and
+    # so the quiet upstream-outage exit, read it that way. It used to be stamped on every
+    # full run, so a night where every category FAILED still reset the data's age to 0.
+    # Carry the committed stamp forward; it advances below only if a file is written.
+    manifest = {"generated_utc": committed_generated_utc(OUT_DIR / "index.json"),
                 "categories": copy.deepcopy(committed_cats)}
     written = refused = failed = 0
 
@@ -1176,6 +1192,8 @@ def main():
     # A partial run must never rewrite the manifest, for the reason fetch_tri.py's
     # --only already states: it cannot describe the whole dataset. See `publish` above.
     if publish:
+        if written:
+            manifest["generated_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         write_json_atomic(OUT_DIR / "index.json", manifest)
     elif partial:
         log("partial run (--canary/--max-funds): diagnostic only -- no category file "

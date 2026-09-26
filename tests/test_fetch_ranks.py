@@ -1232,6 +1232,31 @@ with tempfile.TemporaryDirectory() as _d:
     ok("...without reporting every other category as absent", "ABSENT" not in _log)
     ok("...or counting them as category errors", "0 category error(s)" in _log)
 
+# #8 committed_data_age_days() -- and so whether a provider outage exits quietly -- reads
+# generated_utc as "when the rankings last MOVED", and its docstring (and v19's changelog)
+# say it only advances on a successful publish. It advanced on EVERY full run: one where
+# every category failed still stamped a fresh time, the data read as 0 days old, and a
+# following outage stayed quiet for up to MAX_UPSTREAM_OUTAGE_DAYS longer than it should.
+with tempfile.TemporaryDirectory() as _d:
+    _t = Path(_d)
+    _seed_manifest(_t, {"MID_CAP": {"status": "ok", "as_of": "2026-07-17", "ranked": 10}})
+    _code, _ = _run_main(_t, [{"code": "1", "name": "A", "plan": "Direct", "cat": "MID_CAP"}],
+                         lambda funds: [], [])
+    _m = _manifest(_t)
+    eq("v22: a run that published nothing keeps the committed generated_utc",
+       _m["generated_utc"], "2026-01-01T00:00:00Z")
+    eq("...while still recording the category as stale", _m["categories"]["MID_CAP"]["status"], "stale")
+    ok("...so the data's age still counts from the last real publish",
+       (R.committed_data_age_days(_t / "data" / "ranks" / "index.json") or 0) > 30)
+
+with tempfile.TemporaryDirectory() as _d:
+    _t = Path(_d)
+    _seed_manifest(_t, {})
+    _code, _ = _run_main(_t, [{"code": str(100 + i), "name": f"F{i}", "plan": "Direct",
+                               "cat": "MID_CAP"} for i in range(10)], _with_rows, [])
+    ok("...but a run that DID publish advances it",
+       _manifest(_t)["generated_utc"] != "2026-01-01T00:00:00Z")
+
 
 print(f"\n{'FAILED' if _fail else 'ALL PASSED'} ({_pass} passed, {_fail} failed)")
 sys.exit(1 if _fail else 0)
