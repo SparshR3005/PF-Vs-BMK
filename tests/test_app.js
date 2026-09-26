@@ -81,15 +81,14 @@ function extractFn(name) {
 
 // ====================================================== #4 import header map
 (function testHeaderClassifier() {
-  const normHeader = h => String(h || "").toLowerCase().replace(/[^a-z]/g, "");
-  // Extract the real classifier body out of the import handler.
-  const m = HTML.match(/hdr\.forEach\(\(h,i\)=>\{[\s\S]*?\n      \}\);/);
-  if (!m) { ok("#4 classifier extracted", false, "pattern not found"); return; }
-  const classify = hdrRaw => {
-    const hdr = hdrRaw.map(normHeader), col = {};
-    eval(m[0]);
-    return col;
-  };
+  // The REAL mapper, extracted by name. (It used to be an inline loop inside the import
+  // handler, pulled out here with a regex; v22 made it a function so it can be tested
+  // like everything else.)
+  let classify;
+  try {
+    classify = new Function(extractFn("normHeader") + "\n" + extractFn("mapImportHeaders") +
+                            "\nreturn mapImportHeaders;")();
+  } catch (e) { ok("#4 index.html has mapImportHeaders()", false, e.message); return; }
 
   let col = classify(["Scheme Name", "Plan", "Start", "Monthly", "Scheme Code"]);
   ok("#4 'Scheme Name' maps to the NAME column (index 0)", col.scheme === 0, "got " + col.scheme);
@@ -109,6 +108,43 @@ function extractFn(name) {
 
   col = classify(["Scheme Name", "Start", "Monthly"]);
   ok("#4 code column stays undefined when absent", col.code === undefined);
+
+  // ---- v22: a loose match must never beat an exact header further along the row.
+  // The single left-to-right pass let a substring catch-all claim a field before the
+  // exact header was ever read. Every case below mapped the WRONG column before v22.
+  col = classify(["Fund House", "Fund Name", "Start", "Monthly SIP"]);
+  ok("v22 'Fund House' ahead of 'Fund Name' is not taken as the fund name",
+     col.scheme === 1, JSON.stringify(col));
+  col = classify(["Scheme Category", "Scheme Name", "Start", "Monthly SIP"]);
+  ok("v22 'Scheme Category' ahead of 'Scheme Name' is not taken as the fund name",
+     col.scheme === 1, JSON.stringify(col));
+  col = classify(["Fund House", "Name of the Scheme", "Start", "Monthly SIP"]);
+  ok("v22 ...nor when the real name column only matches loosely",
+     col.scheme === 1, JSON.stringify(col));
+  col = classify(["Scheme", "Start", "Invested Amount", "Monthly SIP"]);
+  ok("v22 an 'Invested Amount' TOTAL ahead of 'Monthly SIP' is not imported as the instalment",
+     col.amount === 3, JSON.stringify(col));
+  col = classify(["Scheme", "Start", "Invested Amount", "SIP Amount (Rs)"]);
+  ok("v22 ...and a SIP column outranks a bare amount even when neither is exact",
+     col.amount === 3, JSON.stringify(col));
+
+  // What the fix must NOT change.
+  col = classify(["Scheme", "Start", "Amount"]);
+  ok("v22 a sheet whose only amount column is 'Amount' still imports", col.amount === 2);
+  col = classify(["Scheme", "Plan", "Start", "End (optional)", "Monthly SIP", "Code (optional)"]);
+  ok("v22 the template's own header row maps every field",
+     col.scheme === 0 && col.plan === 1 && col.start === 2 && col.end === 3 &&
+     col.amount === 4 && col.code === 5, JSON.stringify(col));
+  col = classify(["Scheme", "SIP Start"]);
+  ok("v22 a column already mapped (SIP Start) is never re-used for another field",
+     col.start === 1 && col.amount === undefined, JSON.stringify(col));
+
+  // Columns that merely CONTAIN a field's letters.
+  col = classify(["Scheme", "Dividend", "Start", "Monthly SIP"]);
+  ok("v22 a 'Dividend' column is not read as the End date", col.end === undefined, JSON.stringify(col));
+  col = classify(["Scheme", "ISIN Code", "Start", "Monthly SIP"]);
+  ok("v22 an 'ISIN Code' column is not read as the AMFI scheme code",
+     col.code === undefined, JSON.stringify(col));
 })();
 
 // ======================================================== #6 non-finite SIP

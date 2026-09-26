@@ -2750,6 +2750,47 @@ $("importBtn").addEventListener("click",()=>{
   $("importFile").click();
 });
 function normHeader(h){return String(h||"").toLowerCase().replace(/[^a-z]/g,"");}
+/* Which sheet column holds which field. TWO PASSES, and the order is the fix.
+   #4 made "Scheme Code" map to the code column by testing exact names before loose
+   ones -- but inside ONE left-to-right pass, so a loose match on an EARLIER column
+   still claimed its field before the exact header further along was ever read:
+   "Fund House" became the fund name ahead of "Fund Name", "Scheme Category" ahead of
+   "Scheme Name", and an "Invested Amount" TOTAL ahead of "Monthly SIP", so every row
+   imported the total as its monthly instalment, marked Ready and pre-ticked.
+   Now exact names win outright; loose matches only fill what is still unmapped,
+   strongest first; and a column is never claimed twice. `cells` are the RAW header
+   cells: exact names compare the letters-only form ("Scheme Code" -> "schemecode"),
+   and the exclusions read whole words ("Fund House" is never a fund's name). */
+function mapImportHeaders(cells){
+  const hdr=cells.map(normHeader);
+  const words=cells.map(v=>" "+String(v||"").toLowerCase().replace(/[^a-z]+/g," ").trim()+" ");
+  const col={}, taken=new Set();
+  function claim(field, test){
+    if(col[field]!=null) return;
+    const i=hdr.findIndex((h,k)=>h && !taken.has(k) && test(h, words[k]));
+    if(i>=0){ col[field]=i; taken.add(i); }
+  }
+  // Pass 1 -- exact names, including the two optional columns the template writes.
+  // (No quote marks in comments in here: the test harness extracts this function by
+  // brace-matching and treats any quote character as the start of a string.)
+  claim("code",   h=>h==="code"||h==="schemecode"||h==="fundcode"||h==="amficode"||h==="codeoptional");
+  claim("scheme", h=>h==="scheme"||h==="schemename"||h==="fund"||h==="fundname"||h==="name");
+  claim("plan",   h=>h==="plan"||h==="plantype");
+  claim("start",  h=>h==="start"||h==="startdate"||h==="sipstart"||h==="sipstartdate");
+  claim("end",    h=>h==="end"||h==="enddate"||h==="sipend"||h==="sipenddate"||h==="endoptional");
+  claim("amount", h=>h==="monthlysip"||h==="monthly"||h==="sipamount"||h==="monthlyamount"||h==="sip"||h==="amount");
+  // Pass 2 -- substrings, only for fields still unmapped. A monthly or SIP column
+  // outranks a bare amount column, which is as likely to be a total as an instalment.
+  claim("start",  h=>h.includes("start"));
+  claim("end",    h=>h.includes("end") && !h.includes("dividend"));
+  claim("amount", h=>h.includes("monthly")||h.includes("sip"));
+  claim("amount", h=>h.includes("amount"));
+  claim("code",   h=>h.includes("code") && !h.includes("isin"));       // an ISIN is not an AMFI code
+  claim("scheme", h=>h.includes("schemename")||h.includes("fundname"));
+  claim("scheme", (h,w)=>(h.includes("scheme")||h.includes("fund")) &&
+                         !/ (house|amc|category|type|class|manager|option|size) /.test(w));
+  return col;
+}
 function normalisePlan(v){const n=normName(v);if(/\b(direct|dir)\b/.test(n))return "Direct";if(/\b(regular|reg)\b/.test(n))return "Regular";return "";}
 function detectPlanFromName(name){return normalisePlan(name);}
 // SEBI's "Recategorisation 2.0" (circular Mar-2025, deadline 30-Jun-2025) forced
@@ -3066,22 +3107,10 @@ $("importFile").addEventListener("change",function(){
       if(aoa.length>IMPORT_MAX_ROWS+1){$("pmStatus").textContent="Too many rows ("+aoa.length+"); the limit is "+IMPORT_MAX_ROWS+".";return;}
       aoa=aoa.map(r=>Array.isArray(r)?r.slice(0,IMPORT_MAX_COLS):r);   // bound column scan
       if(!aoa.length){$("pmStatus").textContent="Empty sheet.";return;}
-      const hdr=aoa[0].map(normHeader),col={};
-      // #4: "Scheme Code" contains "scheme", so a substring test that checks scheme
-      // BEFORE code mapped col.scheme at the code column and never set col.code at
-      // all — a silent wrong-fund import. Test exact normalized aliases, code first,
-      // and use ??= so a later duplicate header can't clobber the first valid match.
-      // (normHeader strips non-letters: "Scheme Code" -> "schemecode".)
-      hdr.forEach((h,i)=>{
-        if(h==="code"||h==="schemecode"||h==="fundcode"||h==="amficode"){col.code??=i;}
-        else if(h==="scheme"||h==="schemename"||h==="fund"||h==="fundname"||h==="name"){col.scheme??=i;}
-        else if(h==="plan"||h==="plantype"){col.plan??=i;}
-        else if(h.includes("start")){col.start??=i;}
-        else if(h.includes("end")){col.end??=i;}
-        else if(h.includes("monthly")||h.includes("amount")||h.includes("sip")){col.amount??=i;}
-        else if(h.includes("code")){col.code??=i;}      // late catch-all, after exact names
-        else if(h.includes("scheme")||h.includes("fund")){col.scheme??=i;}
-      });
+      // #4 / v22: which column is which -- exact names first, then loose ones. See
+      // mapImportHeaders(); a single left-to-right pass let "Fund House" or an
+      // "Invested Amount" total claim a field ahead of the real column.
+      const col=mapImportHeaders(aoa[0]);
       if(col.scheme==null||col.start==null||col.amount==null){$("pmStatus").textContent="Header must include Scheme, Start and Monthly SIP columns.";return;}
       $("pmStatus").textContent="Validating Excel rows…";importPreviewRows=[];
       for(let r=1;r<aoa.length;r++){

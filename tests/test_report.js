@@ -100,7 +100,7 @@ const EPILOGUE = `
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
-  fmtISO, normaliseDateCell, fmtDate, isoDate
+  fmtISO, normaliseDateCell, fmtDate, isoDate, mapImportHeaders
 };`;
 
 vm.createContext(sandbox);
@@ -373,19 +373,15 @@ S.schemes = [
 
   // ---- the importer must not mistake a report sheet for a template
   // "Portfolio" is the sheet name the importer PREFERS. A report sheet opens with a
-  // title band, so row 1 is not a header row and the importer rejects it.
-  const hdrRow = (() => {
+  // title band, so row 1 is not a header row and the importer rejects it. Mapped by
+  // the REAL mapImportHeaders() (v22), not the hand-copied subset this used to carry,
+  // which could only ever agree with itself.
+  const hdrCells = (() => {
     const ws = wb.Sheets["Portfolio — All"];
     const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:""});
-    return (aoa[0] || []).map(h => String(h || "").toLowerCase().replace(/[^a-z]/g, ""));
+    return aoa[0] || [];
   })();
-  const col = {};
-  hdrRow.forEach((h, i) => {
-    if(h === "code" || h === "schemecode"){ if(col.code == null) col.code = i; }
-    else if(h === "scheme" || h === "schemename"){ if(col.scheme == null) col.scheme = i; }
-    else if(h.includes("start")){ if(col.start == null) col.start = i; }
-    else if(h.includes("monthly") || h.includes("amount") || h.includes("sip")){ if(col.amount == null) col.amount = i; }
-  });
+  const col = S.mapImportHeaders(hdrCells);
   ok("a report sheet is REJECTED by the importer rather than half-read as holdings",
      col.scheme == null || col.start == null || col.amount == null,
      JSON.stringify(col));
