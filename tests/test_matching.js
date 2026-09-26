@@ -497,5 +497,42 @@ const C_LARGEMID = "Equity Scheme - Large & Mid Cap Fund";
      unreachable.length === 0, unreachable.join(","));
 })();
 
+// ============= v22: a sector route is only reachable if the NAME filter lets it in ===
+// The audit above counts a benchmark as reachable when some routing table MENTIONS its
+// key. That was not enough for NIFTY_COMMODITIES: SECTOR_KEYWORDS routes "commodit"
+// there, but NON_EQUITY_NAME_TOKENS carried the same "commodit", so loadSchemeList()
+// dropped every such fund before anyone could pick it. ICICI Prudential Commodities
+// Fund (147661 / 147662, "Equity Scheme - Sectoral/ Thematic", live on mfapi) was
+// unsearchable, and the Nifty Commodities TRI was fetched nightly only as a fallback.
+(function testSectorRoutesSurviveTheNameFilter() {
+  let F;
+  try {
+    F = new Function(extractConst("NON_EQUITY_NAME_TOKENS") + "\n" + extractConst("SECTOR_KEYWORDS") +
+                     "\n" + extractFn("nameLooksNonEquity") +
+                     "\nreturn {nameLooksNonEquity, SECTOR_KEYWORDS};")();
+  } catch (e) { ok("the name filter and sector table could be loaded: " + e.message, false); return; }
+  const S = "Equity Scheme - Sectoral/ Thematic";
+  const blocked = [], misrouted = [];
+  for (const s of F.SECTOR_KEYWORDS) {
+    for (const kw of [...(s.words || []), ...(s.subs || [])]) {
+      const name = "abc " + kw + " fund - direct plan - growth";
+      if (F.nameLooksNonEquity(name)) blocked.push(kw + " -> " + s.key);
+      else if (A.resolveBenchmarkKey(name, S).key !== s.key) misrouted.push(kw + " -> " + s.key);
+    }
+  }
+  ok("no sector keyword is itself caught by the non-equity name filter",
+     blocked.length === 0, blocked.join(", "));
+  // First match wins, so an earlier, broader rule can shadow a later one completely.
+  ok("...and each one routes to its OWN benchmark, not shadowed by an earlier rule",
+     misrouted.length === 0, misrouted.join(", "));
+
+  const real = "ICICI Prudential Commodities Fund - Direct Plan - Growth";   // verbatim from mfapi
+  ok("ICICI Prudential Commodities Fund reaches the picker", !F.nameLooksNonEquity(real.toLowerCase()));
+  ok("...and is benchmarked to the Nifty Commodities TRI",
+     A.resolveBenchmarkKey(real, S).key === "NIFTY_COMMODITIES");
+  ok("a GLOBAL commodity fund is still screened out, by 'global'",
+     F.nameLooksNonEquity("mirae asset global commodity stocks - growth option"));
+})();
+
 console.log(`\n${fail ? "FAILED" : "ALL PASSED"} (${pass} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);

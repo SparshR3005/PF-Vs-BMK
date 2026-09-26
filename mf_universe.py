@@ -26,12 +26,17 @@ from urllib.request import Request, urlopen
 API = "https://api.mfapi.in"
 UA = "PF-Vs-BMK/1.0 (+https://github.com/SparshR3005/PF-Vs-BMK)"
 
+# "commodit" is deliberately absent since v22. It hid a live EQUITY fund -- ICICI
+# Prudential Commodities Fund, "Equity Scheme - Sectoral/ Thematic" -- from the
+# client's picker. The category lookup decides what is equity; this screen only
+# pre-filters, and the non-equity commodity funds are caught by "global"/"gold"/"fof".
+# Must stay identical to index.html; tests/test_probe_ranks.py fails on drift.
 NON_EQUITY_NAME_TOKENS = [
     "liquid", "overnight", "gilt", "money market", "ultra short", "low duration",
     "short duration", "medium duration", "long duration", "banking and psu",
     "corporate bond", "credit risk", "debt", "duration", "floater", "dynamic bond", "bond",
     "hybrid", "balanced", "arbitrage", "equity savings", "multi asset", "asset allocation",
-    "gold", "silver", "commodit", "fund of fund", "fof", "overseas", "international", "global",
+    "gold", "silver", "fund of fund", "fof", "overseas", "international", "global",
     "index fund", "exchange traded", "etf", "retirement", "children", "pension",
 ]
 

@@ -1072,12 +1072,16 @@ function claimedCategoryFromName(name){
 // import-by-code that bypasses this list). Kept deliberately conservative so it
 // never hides a genuine actively-managed equity fund. ELSS/value/contra/focused/
 // dividend-yield are equity and intentionally absent here.
+// So is "commodit", since v22. It used to be listed and it DID hide one: ICICI
+// Prudential Commodities Fund is an "Equity Scheme - Sectoral/ Thematic" fund, which
+// SECTOR_KEYWORDS routes to the Nifty Commodities TRI -- but it never reached the
+// picker. The commodity funds that are not equity say "global", "gold" or "fof" too.
 const NON_EQUITY_NAME_TOKENS = [
   "liquid","overnight","gilt","money market","ultra short","low duration",
   "short duration","medium duration","long duration","banking and psu",
   "corporate bond","credit risk","debt","duration","floater","dynamic bond","bond",
   "hybrid","balanced","arbitrage","equity savings","multi asset","asset allocation",
-  "gold","silver","commodit","fund of fund","fof","overseas","international","global",
+  "gold","silver","fund of fund","fof","overseas","international","global",
   "index fund","exchange traded","etf","retirement","children","pension",
 ];
 function nameLooksNonEquity(n){ return NON_EQUITY_NAME_TOKENS.some(t => n.includes(t)); }

@@ -151,6 +151,13 @@ ok("a real flexi cap is NOT flagged",
    not P.name_looks_non_equity("parag parikh flexi cap fund - direct plan - growth"))
 ok("a real mid cap is NOT flagged",
    not P.name_looks_non_equity("hdfc mid cap opportunities fund - direct plan - growth"))
+# v22: "commodit" was a non-equity token, which hid a live EQUITY fund -- ICICI
+# Prudential Commodities Fund, "Equity Scheme - Sectoral/ Thematic" -- from the picker.
+# The category gate decides what is equity; the name screen only pre-filters.
+ok("an equity Commodities fund is NOT flagged non-equity",
+   not P.name_looks_non_equity("icici prudential commodities fund - direct plan - growth"))
+ok("...while a global commodity fund still is, by 'global'",
+   P.name_looks_non_equity("mirae asset global commodity stocks - growth option"))
 
 
 # ------------------------------------------------------------------ plan split
