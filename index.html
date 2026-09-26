@@ -2993,7 +2993,9 @@ async function resolveImportRow(row,rowNum,col){
   return base;
 }
 
-function renderImportPreview(){
+/* `focusRow` is set when a pick in row N re-renders the table, so the keyboard stays
+   on that row rather than being thrown back to Cancel. */
+function renderImportPreview(focusRow){
   const body=$("importPreviewBody");body.innerHTML="";
   importPreviewRows.forEach((r,i)=>{
     const tr=document.createElement("tr");
@@ -3014,7 +3016,7 @@ function renderImportPreview(){
   body.querySelectorAll("select[data-pick-i]").forEach(sel=>sel.onchange=async ()=>{
     const i=+sel.dataset.pickI, r=importPreviewRows[i], code=sel.value;
     if(!code){ r.importable=false; r.checked=false; r.pickedCode=""; r.statusClass="warn";
-               r.message="Couldn't identify this fund — choose the intended scheme"; renderImportPreview(); return; }
+               r.message="Couldn't identify this fund — choose the intended scheme"; renderImportPreview(i); return; }
     const chosen=(r.candidates||[]).find(c=>String(c.code)===String(code));
     sel.disabled=true;
     try{
@@ -3029,14 +3031,27 @@ function renderImportPreview(){
       r.importable=false; r.checked=false; r.statusClass="bad";
       r.message="Couldn't load that scheme: "+((e&&e.message)||"unknown error");
     }
-    renderImportPreview();
+    renderImportPreview(i);
   });
   body.querySelectorAll("input[data-preview-i]").forEach(cb=>cb.onchange=()=>{importPreviewRows[+cb.dataset.previewI].checked=cb.checked;updatePreviewSummary();});
   updatePreviewSummary();
-  importPrevFocus = document.activeElement;
-  $("importModal").style.display="flex";
-  document.addEventListener("keydown", importModalKeydown, true);
-  requestAnimationFrame(()=>{ const b=$("importCancelBtn"); if(b) b.focus(); });
+  const modal=$("importModal");
+  if(modal.style.display!=="flex"){
+    // Opening steps, FIRST render only. A pick re-renders this table, and repeating
+    // them pointed importPrevFocus at an element INSIDE the dialog -- a dropdown the
+    // rebuild had just removed -- so closing dropped focus entirely, and every pick
+    // pulled focus back to Cancel (v22).
+    importPrevFocus = document.activeElement;
+    modal.style.display="flex";
+    document.addEventListener("keydown", importModalKeydown, true);
+    requestAnimationFrame(()=>{ const b=$("importCancelBtn"); if(b) b.focus(); });
+  }else if(focusRow!=null){
+    requestAnimationFrame(()=>{
+      const el=body.querySelector('select[data-pick-i="'+focusRow+'"]') ||
+               body.querySelector('input[data-preview-i="'+focusRow+'"]');
+      if(el) el.focus();
+    });
+  }
 }
 function updatePreviewSummary(){
   const valid=importPreviewRows.filter(r=>r.importable).length,selected=importPreviewRows.filter(r=>r.importable&&r.checked).length,errors=importPreviewRows.length-valid;
@@ -3055,7 +3070,7 @@ function importModalKeydown(e){
   if($("importModal").style.display==="none") return;
   if(e.key==="Escape"){ e.preventDefault(); closeImportModal(); return; }
   if(e.key==="Tab"){                                   // focus trap
-    const f=[...$("importModal").querySelectorAll('button:not([disabled]),input:not([disabled])')]
+    const f=[...$("importModal").querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled])')]
       .filter(el=>el.offsetParent!==null);
     if(!f.length) return;
     const i=f.indexOf(document.activeElement);

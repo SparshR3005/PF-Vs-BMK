@@ -191,6 +191,14 @@ function extractFn(name) {
      HTML.indexOf("let serverSearchSeq") < HTML.indexOf("function closeResults"),
      "declaration order unsafe");
 
+  // v22: the import review's Tab trap listed buttons and inputs only, so a keyboard
+  // user on one of its fund pickers (<select>) fell out of the trap: Shift+Tab from
+  // one jumped to the LAST control instead of the previous one. Needs a DOM to test
+  // behaviourally, so it is pinned as a source invariant like #7-#9.
+  ok("v22 the import dialog's Tab trap includes its fund pickers",
+     /querySelectorAll\('button:not\(\[disabled\]\),input:not\(\[disabled\]\),select:not\(\[disabled\]\)'\)/.test(HTML),
+     "select missing from the focus trap");
+
   ok("#9 listComplete tracks pagination", /let listComplete/.test(HTML));
   ok("#9 partial-list miss falls back to server search",
      /if\(!listComplete\)\{ serverSearch\(q\); return; \}/.test(HTML),

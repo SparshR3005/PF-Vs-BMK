@@ -98,6 +98,8 @@ const EPILOGUE = `
   get store(){return store;},   set store(v){store=v;},
   get schemes(){return schemes;}, set schemes(v){schemes=v;},
   get pfScope(){return pfScope;}, set pfScope(v){pfScope=v;},
+  get importPreviewRows(){return importPreviewRows;}, set importPreviewRows(v){importPreviewRows=v;},
+  get importPrevFocus(){return importPrevFocus;}, renderImportPreview,
   exportReport, insightsItems, insightFacts, rankSentence, scopeApplies,
   parseInput, scheduleDates, uniformSchedule, runSIP, groupHoldings, portfolioMetrics,
   fmtISO, normaliseDateCell, fmtDate, isoDate, mapImportHeaders, hydrateActive
@@ -476,6 +478,29 @@ S.schemes = [
     const doc2 = await load("periods_Y.json");
     ok("...so the very next request actually goes out", doc2 && doc2.key === "OK");
     ok("a 404 is held longer than a transient failure", M.TTL404 > M.TTL);
+  }
+
+  // ---- v22: re-rendering the import review keeps focus where it belongs -----------
+  /* Picking a fund in the review table re-renders it, and every render re-ran the
+     dialog's OPEN steps: it re-pointed importPrevFocus -- where focus returns when the
+     dialog closes -- at whatever had focus INSIDE the dialog (a dropdown the rebuild
+     had just removed), and it pulled focus back to Cancel after every single pick. */
+  {
+    S.importPreviewRows = [{rowNum:2, inputName:"X Fund", inputPlan:"", startStr:"2020-01-01",
+      endStr:"", amount:5000, importable:true, checked:true, statusClass:"ok", message:"Ready",
+      resolvedName:"X Fund", spec:{}}];
+    document.getElementById("importModal").style.display = "none";     // closed, pre-import
+    let cancelFocus = 0;
+    document.getElementById("importCancelBtn").focus = () => { cancelFocus++; };
+    const opener = makeEl("the-import-button");
+    document.activeElement = opener;
+    S.renderImportPreview();                                    // opens the dialog
+    ok("v22 fixture: opening the review focuses Cancel once", cancelFocus === 1, cancelFocus);
+    document.activeElement = makeEl("a-dropdown-inside-the-dialog");
+    S.renderImportPreview(0);                                   // what a pick does
+    ok("v22: a re-render keeps the element focus returns to when the dialog closes",
+       S.importPrevFocus === opener);
+    ok("...and does not pull focus back to Cancel after every pick", cancelFocus === 1, cancelFocus);
   }
 
   // ---- v22: while a saved portfolio loads, the table says so --------------------
